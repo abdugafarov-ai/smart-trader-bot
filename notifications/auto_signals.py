@@ -76,16 +76,13 @@ class AutoSignalScanner:
 
         is_weekend = DataFetcher.is_weekend()
 
-        # На выходных — только крипто
+        # На выходных рынки Форекс и металлов закрыты
         if is_weekend:
-            scan_list = [s for s in self.symbols if config.is_crypto(s)]
-            if not scan_list:
-                logger.info("Weekend: Forex closed. No crypto pairs to scan.")
-                return
-            logger.info("Weekend: scanning %d crypto pairs only.", len(scan_list))
-        else:
-            scan_list = self.symbols
-            logger.info("Scanning %d pairs for signals...", len(scan_list))
+            logger.info("Weekend: Forex and Gold markets are closed. Scanner paused.")
+            return
+
+        scan_list = self.symbols
+        logger.info("Scanning %d pairs for signals...", len(scan_list))
 
         # Получаем пары, заблокированные новостями
         news_blocked = await self._get_news_blocked_pairs()

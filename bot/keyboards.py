@@ -29,13 +29,11 @@ def main_menu_keyboard() -> InlineKeyboardMarkup:
 def symbols_keyboard() -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.row(
-        InlineKeyboardButton(text="Мажоры", callback_data="cat:majors"),
-        InlineKeyboardButton(text="Кроссы", callback_data="cat:crosses"),
-        InlineKeyboardButton(text="Металлы", callback_data="cat:commodities")
+        InlineKeyboardButton(text="💎 Мажоры", callback_data="cat:majors"),
+        InlineKeyboardButton(text="💱 Кроссы", callback_data="cat:crosses"),
     )
     builder.row(
-        InlineKeyboardButton(text="Индексы", callback_data="cat:indices"),
-        InlineKeyboardButton(text="Крипто", callback_data="cat:crypto")
+        InlineKeyboardButton(text="🥇 Золото (XAUUSD)", callback_data="sym:XAUUSD")
     )
     builder.row(InlineKeyboardButton(text="◀️ Назад", callback_data="menu"))
     return builder.as_markup()
@@ -50,10 +48,6 @@ def category_pairs_keyboard(category: str) -> InlineKeyboardMarkup:
         pairs = config.PAIRS_CROSSES
     elif category == 'commodities':
         pairs = config.PAIRS_COMMODITIES
-    elif category == 'indices':
-        pairs = config.PAIRS_INDICES
-    elif category == 'crypto':
-        pairs = config.PAIRS_CRYPTO
         
     for sym in pairs:
         builder.add(InlineKeyboardButton(text=sym, callback_data=f"sym:{sym}"))

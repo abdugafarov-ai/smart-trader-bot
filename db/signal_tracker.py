@@ -150,7 +150,7 @@ class SignalTracker:
 
         if 'JPY' in symbol:
             mult = 100
-        elif symbol in ('XAUUSD', 'XAGUSD', 'US30', 'NAS100', 'SPX500', 'DE40', 'BTCUSDT', 'ETHUSDT'):
+        elif symbol == 'XAUUSD':
             mult = 1
         else:
             mult = 10000

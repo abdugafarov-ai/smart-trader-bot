@@ -118,7 +118,7 @@ async def run_multi_tf_analysis(symbol: str) -> MultiTFResult:
     rr1 = abs(tp1 - entry) / abs(entry - sl) if entry and sl and tp1 and abs(entry - sl) > 0 else None
     rr2 = abs(tp2 - entry) / abs(entry - sl) if entry and sl and tp2 and abs(entry - sl) > 0 else None
     
-    pip_mult = 100 if 'JPY' in symbol else (1 if symbol in ['XAUUSD','XAGUSD','US30','NAS100','SPX500','DE40','BTCUSDT','ETHUSDT'] else 10000)
+    pip_mult = 100 if 'JPY' in symbol else (1 if symbol == 'XAUUSD' else 10000)
     pips_sl = abs(entry - sl) * pip_mult if entry and sl else None
     pips_tp1 = abs(tp1 - entry) * pip_mult if entry and tp1 else None
     pips_tp2 = abs(tp2 - entry) * pip_mult if entry and tp2 else None

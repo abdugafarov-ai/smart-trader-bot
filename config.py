@@ -37,17 +37,13 @@ PAIRS_CROSSES: list[str] = [
     "EURCHF", "CADJPY", "AUDCAD", "AUDNZD",
 ]
 PAIRS_COMMODITIES: list[str] = [
-    "XAUUSD", "XAGUSD",
+    "XAUUSD",
 ]
-PAIRS_INDICES: list[str] = [
-    "US30", "NAS100", "SPX500", "DE40",
-]
-PAIRS_CRYPTO: list[str] = [
-    "BTCUSDT", "ETHUSDT",
-]
+PAIRS_INDICES: list[str] = []
+PAIRS_CRYPTO: list[str] = []
 
 ALL_PAIRS: list[str] = (
-    PAIRS_MAJORS + PAIRS_CROSSES + PAIRS_COMMODITIES + PAIRS_INDICES + PAIRS_CRYPTO
+    PAIRS_MAJORS + PAIRS_CROSSES + PAIRS_COMMODITIES
 )
 
 # Пары по умолчанию (из .env или все)
@@ -92,14 +88,12 @@ YFINANCE_SYMBOL_MAP: dict[str, str] = {
     "EURGBP": "EURGBP=X", "EURJPY": "EURJPY=X", "GBPJPY": "GBPJPY=X",
     "EURAUD": "EURAUD=X", "GBPAUD": "GBPAUD=X", "EURCHF": "EURCHF=X",
     "CADJPY": "CADJPY=X", "AUDCAD": "AUDCAD=X", "AUDNZD": "AUDNZD=X",
-    # Металлы / Сырьё
-    "XAUUSD": "GC=F", "XAGUSD": "SI=F",
-    # Индексы
-    "US30": "YM=F", "NAS100": "NQ=F", "SPX500": "ES=F", "DE40": "^GDAXI",
+    # Металлы
+    "XAUUSD": "GC=F",
 }
 
-# ── Крипто-пары (через ccxt) ─────────────────────────────
-CRYPTO_SYMBOLS: set[str] = {"BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT"}
+# ── Крипто-пары (отключены) ───────────────────────────────
+CRYPTO_SYMBOLS: set[str] = set()
 
 # ── Доступные таймфреймы ──────────────────────────────────
 AVAILABLE_TIMEFRAMES: list[str] = ["M5", "M15", "M30", "H1", "H4", "D1", "W1"]
@@ -130,9 +124,7 @@ PAIR_CURRENCIES: dict[str, list[str]] = {
     "EURAUD": ["EUR", "AUD"], "GBPAUD": ["GBP", "AUD"],
     "EURCHF": ["EUR", "CHF"], "CADJPY": ["CAD", "JPY"],
     "AUDCAD": ["AUD", "CAD"], "AUDNZD": ["AUD", "NZD"],
-    "XAUUSD": ["USD"], "XAGUSD": ["USD"],
-    "US30": ["USD"], "NAS100": ["USD"], "SPX500": ["USD"], "DE40": ["EUR"],
-    "BTCUSDT": ["USD"], "ETHUSDT": ["USD"],
+    "XAUUSD": ["USD"],
 }
 
 
