@@ -23,19 +23,26 @@ class EconomicCalendar:
         if self._cache_time and (now - self._cache_time) < timedelta(hours=1) and self._cache_data:
             return self._cache_data
         
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "application/json"
+        }
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.get(self.url, timeout=10) as response:
+                async with session.get(self.url, headers=headers, timeout=10) as response:
                     if response.status == 200:
                         self._cache_data = await response.json()
                         self._cache_time = now
                         return self._cache_data
                     else:
-                        logger.error("Failed to fetch economic calendar: HTTP %s", response.status)
-                        return []
+                        logger.warning("Failed to fetch economic calendar: HTTP %s. Using cache.", response.status)
+                        # Защита от частых запросов при 429 — не долбить сервер чаще раза в 15 минут
+                        self._cache_time = now - timedelta(minutes=45)
+                        return self._cache_data
         except Exception as e:
-            logger.error("Error fetching economic calendar: %s", e)
-            return []
+            logger.warning("Error fetching economic calendar: %s. Using cached data.", e)
+            self._cache_time = now - timedelta(minutes=45)
+            return self._cache_data
 
     def _parse_datetime(self, date_str: str, time_str: str) -> datetime | None:
         if not time_str or time_str.lower() in ("all day", "tentative"):

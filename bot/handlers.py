@@ -283,7 +283,7 @@ async def cmd_sessions(message: Message):
 
 @router.message(Command("signals"))
 async def cmd_signals(message: Message):
-    await message.answer("Анализ всех 28 пар...", parse_mode=None)
+    await message.answer(f"🔍 Анализирую {len(config.ALL_PAIRS)} пар Forex и Золото...", parse_mode=None)
     results = []
     for sym in config.ALL_PAIRS:
         res = await run_multi_tf_analysis(sym)
