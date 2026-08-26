@@ -1,12 +1,13 @@
 """
 Smart Trader Bot — SQLite Database Manager.
-Хранит сигналы, отслеживает win-rate, ведёт историю.
+Хранит сигналы с уникальными эмодзи-маркерами, отслеживает активацию, TP/SL и ведет историю.
 """
 
 import aiosqlite
 import logging
 from pathlib import Path
 from datetime import datetime, timezone
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -14,7 +15,7 @@ DB_PATH = Path(__file__).parent.parent / "data" / "signals.db"
 
 
 async def init_db():
-    """Создаёт базу данных и таблицы если не существуют."""
+    """Создаёт базу данных, таблицы и выполняет миграции если нужно."""
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
     async with aiosqlite.connect(str(DB_PATH)) as db:
@@ -23,7 +24,10 @@ async def init_db():
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 symbol TEXT NOT NULL,
                 direction TEXT NOT NULL,
+                order_type TEXT DEFAULT 'BUY_LIMIT',
+                tag_emoji TEXT DEFAULT '🔥',
                 stars INTEGER NOT NULL DEFAULT 0,
+                current_price REAL,
                 entry_price REAL,
                 stop_loss REAL,
                 take_profit_1 REAL,
@@ -31,14 +35,28 @@ async def init_db():
                 risk_reward REAL,
                 strategies_agreed TEXT DEFAULT '',
                 timeframes_agreed TEXT DEFAULT '',
-                status TEXT DEFAULT 'OPEN',
+                status TEXT DEFAULT 'PENDING',
                 created_at TEXT NOT NULL,
+                activated_at TEXT,
                 closed_at TEXT,
                 close_price REAL,
                 pnl_pips REAL DEFAULT 0.0,
                 result TEXT DEFAULT ''
             )
         """)
+
+        # Миграция колонок на случай старой структуры БД
+        cursor = await db.execute("PRAGMA table_info(signals)")
+        columns = [row[1] for row in await cursor.fetchall()]
+        
+        if "order_type" not in columns:
+            await db.execute("ALTER TABLE signals ADD COLUMN order_type TEXT DEFAULT 'BUY_LIMIT'")
+        if "tag_emoji" not in columns:
+            await db.execute("ALTER TABLE signals ADD COLUMN tag_emoji TEXT DEFAULT '🔥'")
+        if "current_price" not in columns:
+            await db.execute("ALTER TABLE signals ADD COLUMN current_price REAL")
+        if "activated_at" not in columns:
+            await db.execute("ALTER TABLE signals ADD COLUMN activated_at TEXT")
 
         await db.execute("""
             CREATE TABLE IF NOT EXISTS daily_stats (
@@ -53,13 +71,16 @@ async def init_db():
         """)
 
         await db.commit()
-    logger.info("Database initialized at %s", DB_PATH)
+    logger.info("Database initialized with full schema at %s", DB_PATH)
 
 
 async def save_signal(
     symbol: str,
     direction: str,
+    order_type: str,
+    tag_emoji: str,
     stars: int,
+    current_price: float | None,
     entry_price: float | None,
     stop_loss: float | None,
     take_profit_1: float | None,
@@ -68,17 +89,19 @@ async def save_signal(
     strategies_agreed: str = "",
     timeframes_agreed: str = "",
 ) -> int | None:
-    """Сохраняет новый сигнал в БД. Возвращает ID."""
+    """Сохраняет новый сигнал в БД в статусе PENDING. Возвращает ID."""
     try:
         async with aiosqlite.connect(str(DB_PATH)) as db:
             cursor = await db.execute(
                 """INSERT INTO signals
-                   (symbol, direction, stars, entry_price, stop_loss,
+                   (symbol, direction, order_type, tag_emoji, stars,
+                    current_price, entry_price, stop_loss,
                     take_profit_1, take_profit_2, risk_reward,
                     strategies_agreed, timeframes_agreed, status, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', ?)""",
                 (
-                    symbol, direction, stars, entry_price, stop_loss,
+                    symbol, direction, order_type, tag_emoji, stars,
+                    current_price, entry_price, stop_loss,
                     take_profit_1, take_profit_2, risk_reward,
                     strategies_agreed, timeframes_agreed,
                     datetime.now(timezone.utc).isoformat(),
@@ -91,6 +114,21 @@ async def save_signal(
         return None
 
 
+async def activate_signal(signal_id: int):
+    """Переводит сигнал из статуса PENDING в ACTIVE (цена коснулась входа)."""
+    try:
+        async with aiosqlite.connect(str(DB_PATH)) as db:
+            await db.execute(
+                """UPDATE signals
+                   SET status = 'ACTIVE', activated_at = ?
+                   WHERE id = ? AND status = 'PENDING'""",
+                (datetime.now(timezone.utc).isoformat(), signal_id),
+            )
+            await db.commit()
+    except Exception as e:
+        logger.error("activate_signal error: %s", e)
+
+
 async def update_signal_status(
     signal_id: int,
     status: str,
@@ -98,7 +136,7 @@ async def update_signal_status(
     pnl_pips: float = 0.0,
     result: str = "",
 ):
-    """Обновляет статус сигнала (TP1_HIT, SL_HIT, EXPIRED)."""
+    """Обновляет статус сигнала (TP1_HIT, TP2_HIT, SL_HIT, EXPIRED, CANCELLED)."""
     try:
         async with aiosqlite.connect(str(DB_PATH)) as db:
             await db.execute(
@@ -120,23 +158,54 @@ async def update_signal_status(
         logger.error("update_signal_status error: %s", e)
 
 
-async def get_open_signals() -> list[dict]:
-    """Возвращает все открытые сигналы."""
+async def has_open_signal_for_pair(symbol: str) -> bool:
+    """Проверяет, есть ли уже активный или ожидающий сигнал по этой паре (анти-спам)."""
+    try:
+        async with aiosqlite.connect(str(DB_PATH)) as db:
+            cursor = await db.execute(
+                """SELECT COUNT(*) FROM signals
+                   WHERE symbol = ? AND status IN ('PENDING', 'ACTIVE', 'OPEN')""",
+                (symbol,),
+            )
+            count = (await cursor.fetchone())[0]
+            return count > 0
+    except Exception as e:
+        logger.error("has_open_signal_for_pair error: %s", e)
+        return False
+
+
+async def get_pending_signals() -> list[dict]:
+    """Возвращает все отложенные сигналы (ожидающие касания цены входа)."""
     try:
         async with aiosqlite.connect(str(DB_PATH)) as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute(
-                "SELECT * FROM signals WHERE status = 'OPEN' ORDER BY created_at DESC"
+                "SELECT * FROM signals WHERE status = 'PENDING' ORDER BY created_at ASC"
             )
             rows = await cursor.fetchall()
             return [dict(r) for r in rows]
     except Exception as e:
-        logger.error("get_open_signals error: %s", e)
+        logger.error("get_pending_signals error: %s", e)
+        return []
+
+
+async def get_active_signals() -> list[dict]:
+    """Возвращает все сигналы в рынке (активированные, ожидающие TP/SL)."""
+    try:
+        async with aiosqlite.connect(str(DB_PATH)) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                "SELECT * FROM signals WHERE status IN ('ACTIVE', 'OPEN') ORDER BY created_at ASC"
+            )
+            rows = await cursor.fetchall()
+            return [dict(r) for r in rows]
+    except Exception as e:
+        logger.error("get_active_signals error: %s", e)
         return []
 
 
 async def get_recent_signals(limit: int = 20) -> list[dict]:
-    """Возвращает последние N сигналов."""
+    """Возвращает последние N сигналов для истории."""
     try:
         async with aiosqlite.connect(str(DB_PATH)) as db:
             db.row_factory = aiosqlite.Row
@@ -155,53 +224,43 @@ async def get_stats() -> dict:
     """Возвращает общую статистику по сигналам."""
     try:
         async with aiosqlite.connect(str(DB_PATH)) as db:
-            # Общее количество
             cursor = await db.execute("SELECT COUNT(*) FROM signals")
             total = (await cursor.fetchone())[0]
 
-            # Открытые
             cursor = await db.execute(
-                "SELECT COUNT(*) FROM signals WHERE status = 'OPEN'"
+                "SELECT COUNT(*) FROM signals WHERE status IN ('PENDING', 'ACTIVE', 'OPEN')"
             )
             open_count = (await cursor.fetchone())[0]
 
-            # Закрытые
             closed = total - open_count
 
-            # Победы (TP1 или TP2)
             cursor = await db.execute(
                 "SELECT COUNT(*) FROM signals WHERE status IN ('TP1_HIT', 'TP2_HIT')"
             )
             wins = (await cursor.fetchone())[0]
 
-            # Проигрыши (SL)
             cursor = await db.execute(
                 "SELECT COUNT(*) FROM signals WHERE status = 'SL_HIT'"
             )
             losses = (await cursor.fetchone())[0]
 
-            # Истёкшие
             cursor = await db.execute(
                 "SELECT COUNT(*) FROM signals WHERE status = 'EXPIRED'"
             )
             expired = (await cursor.fetchone())[0]
 
-            # Общие пипсы
             cursor = await db.execute(
-                "SELECT COALESCE(SUM(pnl_pips), 0) FROM signals WHERE status != 'OPEN'"
+                "SELECT COALESCE(SUM(pnl_pips), 0) FROM signals WHERE status NOT IN ('PENDING', 'ACTIVE', 'OPEN')"
             )
             total_pips = (await cursor.fetchone())[0]
 
-            # Win rate
             win_rate = (wins / closed * 100) if closed > 0 else 0.0
 
-            # Средний R:R
             cursor = await db.execute(
                 "SELECT AVG(risk_reward) FROM signals WHERE risk_reward IS NOT NULL AND risk_reward > 0"
             )
             avg_rr = (await cursor.fetchone())[0] or 0.0
 
-            # По направлениям
             cursor = await db.execute(
                 "SELECT direction, COUNT(*) as cnt, "
                 "SUM(CASE WHEN status IN ('TP1_HIT','TP2_HIT') THEN 1 ELSE 0 END) as w "
@@ -212,7 +271,6 @@ async def get_stats() -> dict:
                 d, cnt, w = row
                 by_direction[d] = {"total": cnt, "wins": w}
 
-            # По парам (топ-5 по кол-ву)
             cursor = await db.execute(
                 "SELECT symbol, COUNT(*) as cnt, "
                 "SUM(CASE WHEN status IN ('TP1_HIT','TP2_HIT') THEN 1 ELSE 0 END) as w "
@@ -246,18 +304,6 @@ async def get_stats() -> dict:
         }
 
 
-async def check_signal_exists(symbol: str, direction: str, hours: int = 4) -> bool:
-    """Проверяет, есть ли уже похожий открытый сигнал за последние N часов."""
-    try:
-        async with aiosqlite.connect(str(DB_PATH)) as db:
-            cursor = await db.execute(
-                """SELECT COUNT(*) FROM signals
-                   WHERE symbol = ? AND direction = ? AND status = 'OPEN'
-                   AND datetime(created_at) > datetime('now', ?)""",
-                (symbol, direction, f"-{hours} hours"),
-            )
-            count = (await cursor.fetchone())[0]
-            return count > 0
-    except Exception as e:
-        logger.error("check_signal_exists error: %s", e)
-        return False
+async def check_signal_exists(symbol: str, direction: str, hours: int = 6) -> bool:
+    """Проверяет наличие активного сигнала по паре."""
+    return await has_open_signal_for_pair(symbol)

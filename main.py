@@ -35,7 +35,7 @@ async def main():
         timeframe=config.DEFAULT_TIMEFRAME
     )
     
-    tracker = SignalTracker()
+    tracker = SignalTracker(bot=bot, check_interval_minutes=5)
     reporter = WeeklyReporter(bot=bot)
     
     async def on_startup():

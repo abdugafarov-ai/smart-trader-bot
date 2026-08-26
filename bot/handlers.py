@@ -16,7 +16,7 @@ from bot.keyboards import (
 from utils.formatters import (
     format_indicators, format_strategy, format_multi_tf_analysis,
     format_notification, format_signals_summary, format_news_alert,
-    format_welcome, format_help, format_full_analysis,
+    format_welcome, format_help,
     format_stats, format_history
 )
 from strategies.base import (
@@ -39,6 +39,8 @@ def get_user_state(user_id: int) -> dict:
         }
     return user_state[user_id]
 
+from utils.emoji_markers import get_random_marker
+
 async def run_multi_tf_analysis(symbol: str) -> MultiTFResult:
     tf_analyses = []
     
@@ -54,27 +56,19 @@ async def run_multi_tf_analysis(symbol: str) -> MultiTFResult:
             result = strategy.analyze(df, symbol, tf)
             strategy_results.append(result)
         
-        directions = [r.signal.direction for r in strategy_results if r.signal.direction != 'NEUTRAL']
-        longs = directions.count('LONG')
-        shorts = directions.count('SHORT')
-        
-        if longs > shorts:
-            tf_dir = 'LONG'
-            tf_conf = min(5, longs)
-        elif shorts > longs:
-            tf_dir = 'SHORT'
-            tf_conf = min(5, shorts)
-        else:
-            tf_dir = 'NEUTRAL'
-            tf_conf = 0
+        # Получаем сигнал ICT/SMC как главный якорный сигнал таймфрейма
+        ict_res = next((r for r in strategy_results if r.name == 'ICT / Smart Money Concepts'), strategy_results[0])
+        tf_dir = ict_res.signal.direction
+        tf_conf = ict_res.signal.confidence
+        order_type = ict_res.signal.order_type
         
         tf_analyses.append(TimeframeAnalysis(
-            timeframe=tf, direction=tf_dir, confidence=tf_conf,
+            timeframe=tf, direction=tf_dir, order_type=order_type, confidence=tf_conf,
             strategies=strategy_results, indicators=indicators
         ))
     
     if not tf_analyses:
-        return MultiTFResult(symbol=symbol)
+        return MultiTFResult(symbol=symbol, tag_emoji=get_random_marker())
     
     non_neutral = [t for t in tf_analyses if t.direction != 'NEUTRAL']
     if non_neutral:
@@ -93,35 +87,51 @@ async def run_multi_tf_analysis(symbol: str) -> MultiTFResult:
         overall_dir = 'NEUTRAL'
         tf_agree = 0
     
-    best_tf = max(
-        [t for t in tf_analyses if t.direction == overall_dir],
-        key=lambda t: t.confidence,
-        default=tf_analyses[0]
-    ) if overall_dir != 'NEUTRAL' else tf_analyses[0]
+    # Выбираем лучший TF в направлении тренда (приоритет H1 / H4)
+    matching_tfs = [t for t in tf_analyses if t.direction == overall_dir]
+    if matching_tfs:
+        best_tf = max(matching_tfs, key=lambda t: t.confidence)
+    else:
+        best_tf = tf_analyses[0]
     
-    strat_agree = sum(1 for s in best_tf.strategies if s.signal.direction == overall_dir)
+    # Берем чистые параметры ICT/SMC из лучшего таймфрейма
+    best_ict = next((s for s in best_tf.strategies if s.name == 'ICT / Smart Money Concepts'), None)
     
-    strat_score = 2 if strat_agree >= 4 else (1 if strat_agree >= 3 else 0)
-    tf_score = 2 if tf_agree >= 3 else (1 if tf_agree >= 2 else 0)
-    overall_stars = min(5, strat_score + tf_score + (1 if overall_dir != 'NEUTRAL' else 0))
+    if best_ict and best_ict.signal.direction == overall_dir and overall_dir != 'NEUTRAL':
+        entry = best_ict.signal.entry
+        sl = best_ict.signal.stop_loss
+        tp1 = best_ict.signal.take_profit_1
+        tp2 = best_ict.signal.take_profit_2
+        rr1 = best_ict.signal.risk_reward
+        current_price = best_ict.signal.current_price
+        order_type = best_ict.signal.order_type
+    else:
+        entry = sl = tp1 = tp2 = rr1 = current_price = None
+        order_type = "BUY_LIMIT" if overall_dir == "LONG" else "SELL_LIMIT"
+
+    # Рассчитываем rr2
+    if entry and sl and tp2 and abs(entry - sl) > 0:
+        rr2 = abs(tp2 - entry) / abs(entry - sl)
+    else:
+        rr2 = None
     
-    entries = [s.signal.entry for s in best_tf.strategies if s.signal.entry and s.signal.direction == overall_dir]
-    sls = [s.signal.stop_loss for s in best_tf.strategies if s.signal.stop_loss and s.signal.direction == overall_dir]
-    tp1s = [s.signal.take_profit_1 for s in best_tf.strategies if s.signal.take_profit_1 and s.signal.direction == overall_dir]
-    tp2s = [s.signal.take_profit_2 for s in best_tf.strategies if s.signal.take_profit_2 and s.signal.direction == overall_dir]
-    
-    entry = sum(entries)/len(entries) if entries else None
-    sl = sum(sls)/len(sls) if sls else None
-    tp1 = sum(tp1s)/len(tp1s) if tp1s else None
-    tp2 = sum(tp2s)/len(tp2s) if tp2s else None
-    
-    rr1 = abs(tp1 - entry) / abs(entry - sl) if entry and sl and tp1 and abs(entry - sl) > 0 else None
-    rr2 = abs(tp2 - entry) / abs(entry - sl) if entry and sl and tp2 and abs(entry - sl) > 0 else None
-    
-    pip_mult = 100 if 'JPY' in symbol else (1 if symbol == 'XAUUSD' else 10000)
+    # Пипсы
+    pip_mult = 100 if ('JPY' in symbol or 'XAU' in symbol) else 10000
+    if 'XAU' in symbol:
+        pip_mult = 10  # 1 пункт по золоту = 0.1$
+
     pips_sl = abs(entry - sl) * pip_mult if entry and sl else None
     pips_tp1 = abs(tp1 - entry) * pip_mult if entry and tp1 else None
     pips_tp2 = abs(tp2 - entry) * pip_mult if entry and tp2 else None
+    
+    # Звезды уверенности (только при R:R >= 2.4)
+    if overall_dir != 'NEUTRAL' and rr1 and rr1 >= 2.4 and tf_agree >= 2:
+        overall_stars = 5 if tf_agree >= 3 else 4
+    elif overall_dir != 'NEUTRAL' and rr1 and rr1 >= 2.4:
+        overall_stars = 4
+    else:
+        overall_stars = 0
+        overall_dir = "NEUTRAL"
     
     verdicts = []
     for s in best_tf.strategies:
@@ -132,12 +142,15 @@ async def run_multi_tf_analysis(symbol: str) -> MultiTFResult:
     
     return MultiTFResult(
         symbol=symbol,
+        tag_emoji=get_random_marker(),
         tf_analyses=tf_analyses,
         overall_direction=overall_dir,
+        order_type=order_type,
+        current_price=current_price,
         overall_stars=overall_stars,
         tf_agreement=tf_agree,
         total_tfs=len(tf_analyses),
-        strategy_agreement=strat_agree,
+        strategy_agreement=1 if overall_dir != 'NEUTRAL' else 0,
         total_strategies=len(ALL_STRATEGIES),
         entry=entry, stop_loss=sl,
         take_profit_1=tp1, take_profit_2=tp2,

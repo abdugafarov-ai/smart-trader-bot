@@ -1,8 +1,9 @@
 import pandas as pd
 import numpy as np
-from typing import Tuple, List
+from typing import Tuple, List, Optional
 
 from .base import BaseStrategy, StrategySignal, StrategyResult
+
 
 class ICTSMCStrategy(BaseStrategy):
     name = 'ICT / Smart Money Concepts'
@@ -10,11 +11,12 @@ class ICTSMCStrategy(BaseStrategy):
     emoji = '🧠'
 
     def _format_price(self, price: float, symbol: str) -> str:
-        if 'XAU' in symbol or 'BTC' in symbol:
+        if 'XAU' in symbol or 'JPY' in symbol:
             return f"{price:.2f}"
         return f"{price:.5f}"
 
     def _find_swing_points(self, df: pd.DataFrame, lookback: int = 5) -> Tuple[List[Tuple[int, float]], List[Tuple[int, float]]]:
+        """Находит свинги максимумов и минимумов (Fractals / Pivots)."""
         swing_highs = []
         swing_lows = []
         for i in range(lookback, len(df) - lookback):
@@ -27,180 +29,228 @@ class ICTSMCStrategy(BaseStrategy):
 
     def analyze(self, df: pd.DataFrame, symbol: str, timeframe: str) -> StrategyResult:
         if len(df) < 50:
-            return self._make_result(StrategySignal("NEUTRAL", 0, details=["Недостаточно данных"]), ["Недостаточно данных для анализа"])
+            return self._make_result(
+                StrategySignal(direction="NEUTRAL", confidence=0, details=["Недостаточно данных"]),
+                ["Недостаточно данных для анализа"]
+            )
 
-        # Вычисление ATR
+        # Вычисление ATR (14)
         high_low = df['high'] - df['low']
         high_close = np.abs(df['high'] - df['close'].shift())
         low_close = np.abs(df['low'] - df['close'].shift())
         ranges = pd.concat([high_low, high_close, low_close], axis=1)
         true_range = np.max(ranges, axis=1)
         atr = true_range.rolling(14).mean().iloc[-1]
-        
-        current_price = df['close'].iloc[-1]
+        if pd.isna(atr) or atr <= 0:
+            atr = (df['high'].max() - df['low'].min()) * 0.01
+
+        current_price = float(df['close'].iloc[-1])
         swing_highs, swing_lows = self._find_swing_points(df, lookback=5)
-        
+
         if len(swing_highs) < 2 or len(swing_lows) < 2:
-            return self._make_result(StrategySignal("NEUTRAL", 0, details=["Мало экстремумов"]), ["Недостаточно данных (Swing Points)"])
-            
+            return self._make_result(
+                StrategySignal(direction="NEUTRAL", confidence=0, details=["Мало экстремумов"]),
+                ["Недостаточно данных (Swing Points)"]
+            )
+
         last_highs = swing_highs[-4:]
         last_lows = swing_lows[-4:]
-        
-        is_bullish_structure = (len(last_highs) >= 2 and last_highs[-1][1] > last_highs[-2][1]) and (len(last_lows) >= 2 and last_lows[-1][1] > last_lows[-2][1])
-        is_bearish_structure = (len(last_highs) >= 2 and last_highs[-1][1] < last_highs[-2][1]) and (len(last_lows) >= 2 and last_lows[-1][1] < last_lows[-2][1])
-        
+
+        is_bullish_structure = (len(last_highs) >= 2 and last_highs[-1][1] > last_highs[-2][1]) and \
+                               (len(last_lows) >= 2 and last_lows[-1][1] > last_lows[-2][1])
+        is_bearish_structure = (len(last_highs) >= 2 and last_highs[-1][1] < last_highs[-2][1]) and \
+                               (len(last_lows) >= 2 and last_lows[-1][1] < last_lows[-2][1])
+
         direction = "NEUTRAL"
         confidence = 0
         details = []
-        
+
         bos_found = False
         choch_found = False
-        
-        # BOS
+
+        # 1. Break of Structure (BOS)
         if is_bullish_structure and current_price > last_highs[-1][1]:
             bos_found = True
             direction = "LONG"
-            confidence += 1
-            details.append(f"Структура рынка: бычий BOS (пробой предыдущего максимума {self._format_price(last_highs[-1][1], symbol)})")
+            confidence += 2
+            details.append(f"Структура: бычий BOS (пробой максимума {self._format_price(last_highs[-1][1], symbol)})")
         elif is_bearish_structure and current_price < last_lows[-1][1]:
             bos_found = True
             direction = "SHORT"
-            confidence += 1
-            details.append(f"Структура рынка: медвежий BOS (пробой предыдущего минимума {self._format_price(last_lows[-1][1], symbol)})")
-        
-        # CHoCH
+            confidence += 2
+            details.append(f"Структура: медвежий BOS (пробой минимума {self._format_price(last_lows[-1][1], symbol)})")
+
+        # 2. Change of Character (CHoCH)
         if is_bearish_structure and current_price > last_highs[-1][1]:
             choch_found = True
             direction = "LONG"
-            confidence += 1
-            details.append(f"Структура рынка: бычий CHoCH (смена тренда вверх, пробой {self._format_price(last_highs[-1][1], symbol)})")
+            confidence += 3
+            details.append(f"Слом структуры: бычий CHoCH (разворот вверх через {self._format_price(last_highs[-1][1], symbol)})")
         elif is_bullish_structure and current_price < last_lows[-1][1]:
             choch_found = True
             direction = "SHORT"
-            confidence += 1
-            details.append(f"Структура рынка: медвежий CHoCH (смена тренда вниз, пробой {self._format_price(last_lows[-1][1], symbol)})")
-            
+            confidence += 3
+            details.append(f"Слом структуры: медвежий CHoCH (разворот вниз через {self._format_price(last_lows[-1][1], symbol)})")
+
+        # 3. Трендовый контекст
         if not bos_found and not choch_found:
             if is_bullish_structure:
                 direction = "LONG"
-                details.append("Структура рынка: восходящий тренд (HH, HL)")
+                confidence += 1
+                details.append("Структура: восходящий тренд (Higher Highs / Higher Lows)")
             elif is_bearish_structure:
                 direction = "SHORT"
-                details.append("Структура рынка: нисходящий тренд (LL, LH)")
-            
-        # Order Blocks (OB)
-        ob_zone = None
-        for i in range(len(df)-20, len(df)-2):
-            is_bullish_candle = df['close'].iloc[i+1] > df['open'].iloc[i+1]
-            is_bearish_candle = df['close'].iloc[i+1] < df['open'].iloc[i+1]
-            
-            impulse = abs(df['close'].iloc[i+1] - df['open'].iloc[i+1])
-            
-            if impulse > 1.5 * atr:
-                if df['close'].iloc[i] < df['open'].iloc[i] and is_bullish_candle: # Bearish candle before bullish impulse
-                    ob_high, ob_low = df['high'].iloc[i], df['low'].iloc[i]
-                    if direction == "LONG" and abs(current_price - ob_high) < atr * 2:
-                        ob_zone = (ob_high, ob_low)
-                        confidence += 1
-                        details.append(f"Бычий Order Block найден на уровне {self._format_price(ob_low, symbol)} — {self._format_price(ob_high, symbol)}")
-                        break
-                elif df['close'].iloc[i] > df['open'].iloc[i] and is_bearish_candle: # Bullish candle before bearish impulse
-                    ob_high, ob_low = df['high'].iloc[i], df['low'].iloc[i]
-                    if direction == "SHORT" and abs(current_price - ob_low) < atr * 2:
-                        ob_zone = (ob_high, ob_low)
-                        confidence += 1
-                        details.append(f"Медвежий Order Block найден на уровне {self._format_price(ob_low, symbol)} — {self._format_price(ob_high, symbol)}")
-                        break
-        
-        # FVG
-        fvg_zone = None
-        for i in range(len(df)-10, len(df)-1):
-            if df['close'].iloc[i-1] > df['open'].iloc[i-1]: # Bullish impulse
-                if df['low'].iloc[i] > df['high'].iloc[i-2]:
-                    fvg_low, fvg_high = df['high'].iloc[i-2], df['low'].iloc[i]
-                    if direction == "LONG":
-                        confidence += 1
-                        fvg_zone = (fvg_low, fvg_high)
-                        details.append(f"Бычий FVG (имбаланс) между {self._format_price(fvg_low, symbol)} и {self._format_price(fvg_high, symbol)}")
-                        break
-            elif df['close'].iloc[i-1] < df['open'].iloc[i-1]: # Bearish impulse
-                if df['high'].iloc[i] < df['low'].iloc[i-2]:
-                    fvg_low, fvg_high = df['high'].iloc[i], df['low'].iloc[i-2]
-                    if direction == "SHORT":
-                        confidence += 1
-                        fvg_zone = (fvg_low, fvg_high)
-                        details.append(f"Медвежий FVG (имбаланс) между {self._format_price(fvg_low, symbol)} и {self._format_price(fvg_high, symbol)}")
-                        break
-
-        # OTE
-        ote_zone = None
-        if direction == "LONG" and len(last_lows) > 0 and len(last_highs) > 0:
-            swing_l = last_lows[-1][1]
-            swing_h = last_highs[-1][1]
-            if swing_h > swing_l:
-                diff = swing_h - swing_l
-                fib_05 = swing_h - 0.5 * diff
-                fib_0618 = swing_h - 0.618 * diff
-                fib_0786 = swing_h - 0.786 * diff
-                if fib_0786 <= current_price <= fib_0618:
-                    confidence += 1
-                    ote_zone = (fib_0618, fib_0786)
-                    details.append(f"Цена находится в OTE зоне Фибоначчи (0.618-0.786)")
-                details.append(f"Уровни Фибо: 0.5 = {self._format_price(fib_05, symbol)} | 0.618 = {self._format_price(fib_0618, symbol)} | 0.786 = {self._format_price(fib_0786, symbol)}")
-        elif direction == "SHORT" and len(last_lows) > 0 and len(last_highs) > 0:
-            swing_l = last_lows[-1][1]
-            swing_h = last_highs[-1][1]
-            if swing_h > swing_l:
-                diff = swing_h - swing_l
-                fib_05 = swing_l + 0.5 * diff
-                fib_0618 = swing_l + 0.618 * diff
-                fib_0786 = swing_l + 0.786 * diff
-                if fib_0618 <= current_price <= fib_0786:
-                    confidence += 1
-                    ote_zone = (fib_0618, fib_0786)
-                    details.append(f"Цена находится в OTE зоне Фибоначчи (0.618-0.786)")
-                details.append(f"Уровни Фибо: 0.5 = {self._format_price(fib_05, symbol)} | 0.618 = {self._format_price(fib_0618, symbol)} | 0.786 = {self._format_price(fib_0786, symbol)}")
-                
-        # Liquidity
-        target = None
-        for h1, h2 in zip(last_highs[:-1], last_highs[1:]):
-            if abs(h1[1] - h2[1]) / h1[1] < 0.001:
-                details.append(f"Зона ликвидности (equal highs) на уровне {self._format_price(h1[1], symbol)}")
-                if direction == "LONG":
-                    target = h1[1]
-                break
-        for l1, l2 in zip(last_lows[:-1], last_lows[1:]):
-            if abs(l1[1] - l2[1]) / l1[1] < 0.001:
-                details.append(f"Зона ликвидности (equal lows) на уровне {self._format_price(l1[1], symbol)}")
-                if direction == "SHORT":
-                    target = l1[1]
-                break
+                confidence += 1
+                details.append("Структура: нисходящий тренд (Lower Highs / Lower Lows)")
 
         if direction == "NEUTRAL":
-            return self._make_result(StrategySignal("NEUTRAL", 0, details=details), details)
+            return self._make_result(
+                StrategySignal(direction="NEUTRAL", confidence=0, details=details),
+                details
+            )
 
-        confidence = min(confidence, 5)
-        
-        entry, sl, tp1, tp2 = self._calc_entry_sl_tp(df, direction, atr)
+        # 4. Поиск Order Block (OB)
+        ob_zone: Optional[Tuple[float, float]] = None
+        for i in range(len(df)-25, len(df)-2):
+            is_bull = df['close'].iloc[i+1] > df['open'].iloc[i+1]
+            is_bear = df['close'].iloc[i+1] < df['open'].iloc[i+1]
+            impulse = abs(df['close'].iloc[i+1] - df['open'].iloc[i+1])
+
+            if impulse > 1.3 * atr:
+                if df['close'].iloc[i] < df['open'].iloc[i] and is_bull and direction == "LONG":
+                    ob_high, ob_low = df['high'].iloc[i], df['low'].iloc[i]
+                    ob_zone = (ob_high, ob_low)
+                    confidence += 1
+                    details.append(f"Бычий Order Block: {self._format_price(ob_low, symbol)} — {self._format_price(ob_high, symbol)}")
+                    break
+                elif df['close'].iloc[i] > df['open'].iloc[i] and is_bear and direction == "SHORT":
+                    ob_high, ob_low = df['high'].iloc[i], df['low'].iloc[i]
+                    ob_zone = (ob_high, ob_low)
+                    confidence += 1
+                    details.append(f"Медвежий Order Block: {self._format_price(ob_low, symbol)} — {self._format_price(ob_high, symbol)}")
+                    break
+
+        # 5. Fair Value Gap (FVG)
+        fvg_zone: Optional[Tuple[float, float]] = None
+        for i in range(len(df)-12, len(df)-1):
+            if df['close'].iloc[i-1] > df['open'].iloc[i-1] and direction == "LONG":
+                if df['low'].iloc[i] > df['high'].iloc[i-2]:
+                    fvg_low, fvg_high = df['high'].iloc[i-2], df['low'].iloc[i]
+                    confidence += 1
+                    fvg_zone = (fvg_low, fvg_high)
+                    details.append(f"Бычий FVG (имбаланс): {self._format_price(fvg_low, symbol)} — {self._format_price(fvg_high, symbol)}")
+                    break
+            elif df['close'].iloc[i-1] < df['open'].iloc[i-1] and direction == "SHORT":
+                if df['high'].iloc[i] < df['low'].iloc[i-2]:
+                    fvg_low, fvg_high = df['high'].iloc[i], df['low'].iloc[i-2]
+                    confidence += 1
+                    fvg_zone = (fvg_low, fvg_high)
+                    details.append(f"Медвежий FVG (имбаланс): {self._format_price(fvg_low, symbol)} — {self._format_price(fvg_high, symbol)}")
+                    break
+
+        # 6. OTE (Optimal Trade Entry) — Fibonacci 0.618 - 0.705 - 0.786
+        ote_entry = None
+        swing_l = last_lows[-1][1] if last_lows else df['low'].min()
+        swing_h = last_highs[-1][1] if last_highs else df['high'].max()
+
+        if direction == "LONG" and swing_h > swing_l:
+            diff = swing_h - swing_l
+            fib_0618 = swing_h - 0.618 * diff
+            fib_0705 = swing_h - 0.705 * diff
+            ote_entry = fib_0618
+            details.append(f"Зона OTE (0.618-0.705): {self._format_price(fib_0705, symbol)} — {self._format_price(fib_0618, symbol)}")
+        elif direction == "SHORT" and swing_h > swing_l:
+            diff = swing_h - swing_l
+            fib_0618 = swing_l + 0.618 * diff
+            fib_0705 = swing_l + 0.705 * diff
+            ote_entry = fib_0618
+            details.append(f"Зона OTE (0.618-0.705): {self._format_price(fib_0618, symbol)} — {self._format_price(fib_0705, symbol)}")
+
+        # 7. Расчет точной институциональной точки входа (Entry, SL, TP1, TP2)
         if direction == "LONG":
-            if ob_zone: 
+            # Точка входа: OTE или верх Order Block / FVG
+            if ob_zone:
                 entry = ob_zone[0]
-                sl = ob_zone[1] - 0.5 * atr
-            elif ote_zone: 
-                entry = ote_zone[0]
-                sl = ote_zone[1] - 0.5 * atr
-            if target: tp1 = target
-        elif direction == "SHORT":
+                sl = ob_zone[1] - 0.3 * atr
+            elif ote_entry:
+                entry = ote_entry
+                sl = swing_l - 0.3 * atr
+            elif fvg_zone:
+                entry = fvg_zone[1]
+                sl = fvg_zone[0] - 0.3 * atr
+            else:
+                entry = current_price - 0.5 * atr
+                sl = swing_l - 0.3 * atr
+
+            # Проверка разумности SL
+            if sl >= entry or (entry - sl) < 0.3 * atr:
+                sl = entry - 1.0 * atr
+
+            risk = entry - sl
+            # Жесткий R:R минимум 1:2.5, TP2 на 1:4.5
+            tp1 = entry + 2.5 * risk
+            tp2 = entry + 4.5 * risk
+
+            # Определение типа ордера
+            if entry < current_price - 0.1 * atr:
+                order_type = "BUY_LIMIT"
+            elif entry > current_price + 0.1 * atr:
+                order_type = "BUY_STOP"
+            else:
+                order_type = "BUY_LIMIT"
+
+        else:  # SHORT
             if ob_zone:
                 entry = ob_zone[1]
-                sl = ob_zone[0] + 0.5 * atr
-            elif ote_zone:
-                entry = ote_zone[0]
-                sl = ote_zone[1] + 0.5 * atr
-            if target: tp1 = target
-        
-        rr = abs(tp1 - entry) / abs(entry - sl) if sl != entry else 0
-        details.append(f"📍 Вход: {self._format_price(entry, symbol)} | 🛑 Стоп: {self._format_price(sl, symbol)} | 🎯 Цель: {self._format_price(tp1, symbol)} | R:R = 1:{rr:.2f}")
+                sl = ob_zone[0] + 0.3 * atr
+            elif ote_entry:
+                entry = ote_entry
+                sl = swing_h + 0.3 * atr
+            elif fvg_zone:
+                entry = fvg_zone[0]
+                sl = fvg_zone[1] + 0.3 * atr
+            else:
+                entry = current_price + 0.5 * atr
+                sl = swing_h + 0.3 * atr
 
-        signal = StrategySignal(direction=direction, confidence=confidence, entry=entry, stop_loss=sl, take_profit_1=tp1, take_profit_2=tp2, risk_reward=rr, details=details)
+            if sl <= entry or (sl - entry) < 0.3 * atr:
+                sl = entry + 1.0 * atr
+
+            risk = sl - entry
+            tp1 = entry - 2.5 * risk
+            tp2 = entry - 4.5 * risk
+
+            if entry > current_price + 0.1 * atr:
+                order_type = "SELL_LIMIT"
+            elif entry < current_price - 0.1 * atr:
+                order_type = "SELL_STOP"
+            else:
+                order_type = "SELL_LIMIT"
+
+        risk = abs(entry - sl)
+        reward_1 = abs(tp1 - entry)
+        rr1 = reward_1 / risk if risk > 0 else 0
+
+        # Жесткий фильтр: если R:R < 2.4 — сигнал ВЫБРАСЫВАЕТСЯ!
+        if rr1 < 2.4:
+            return self._make_result(
+                StrategySignal(direction="NEUTRAL", confidence=0, details=["R:R сетапа меньше 1:2.5 — отброшен"]),
+                ["Сетап не соответствует строгому критерию R:R >= 1:2.5"]
+            )
+
+        confidence = max(4, min(confidence + 2, 5))
+
+        signal = StrategySignal(
+            direction=direction,
+            order_type=order_type,
+            confidence=confidence,
+            current_price=current_price,
+            entry=entry,
+            stop_loss=sl,
+            take_profit_1=tp1,
+            take_profit_2=tp2,
+            risk_reward=rr1,
+            details=details,
+        )
+
         return self._make_result(signal, details)

@@ -59,7 +59,9 @@ class StrategySignal:
     """Торговый сигнал от стратегии."""
 
     direction: str = "NEUTRAL"
+    order_type: str = "BUY_LIMIT"   # BUY_LIMIT, SELL_LIMIT, BUY_STOP, SELL_STOP, BUY_NOW, SELL_NOW
     confidence: int = 0
+    current_price: Optional[float] = None
     entry: Optional[float] = None
     stop_loss: Optional[float] = None
     take_profit_1: Optional[float] = None
@@ -89,6 +91,7 @@ class TimeframeAnalysis:
 
     timeframe: str = ""
     direction: str = "NEUTRAL"
+    order_type: str = "BUY_LIMIT"
     confidence: int = 0
     strategies: list[StrategyResult] = field(default_factory=list)
     indicators: Optional[IndicatorResult] = None
@@ -101,10 +104,13 @@ class MultiTFResult:
     """Агрегированный результат мульти-таймфрейм анализа."""
 
     symbol: str = ""
+    tag_emoji: str = "🔥"
     tf_analyses: list[TimeframeAnalysis] = field(default_factory=list)
 
     # Общий вердикт
     overall_direction: str = "NEUTRAL"
+    order_type: str = "BUY_LIMIT"   # BUY_LIMIT, SELL_LIMIT, BUY_STOP, SELL_STOP, BUY_NOW, SELL_NOW
+    current_price: Optional[float] = None
     overall_stars: int = 0          # 1-5 итоговых звёзд
     tf_agreement: int = 0           # Сколько TF совпадают
     total_tfs: int = 0

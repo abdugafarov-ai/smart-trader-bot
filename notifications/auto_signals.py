@@ -1,7 +1,7 @@
 """
 Smart Trader Bot — AutoSignalScanner.
-Сканирует все пары, фильтрует по звёздам, блокирует при новостях,
-отправляет уведомления всем одобренным пользователям.
+Сканирует 17 пар Форекс и Золото, фильтрует по институциональным критериям ICT/SMC (R:R >= 1:2.5),
+блокирует сигналы перед важными новостями, отправляет 1-й ЭТАП сделки с уникальным эмодзи-маркером.
 """
 
 import asyncio
@@ -50,7 +50,6 @@ class AutoSignalScanner:
                 approved.append(config.ADMIN_ID)
             return approved
         except Exception:
-            # Fallback на статичный список
             return self.user_ids
 
     async def _get_news_blocked_pairs(self) -> set[str]:
@@ -82,54 +81,61 @@ class AutoSignalScanner:
             return
 
         scan_list = self.symbols
-        logger.info("Scanning %d pairs for signals...", len(scan_list))
+        logger.info("Scanning %d pairs for ICT/SMC institutional signals...", len(scan_list))
 
-        # Получаем пары, заблокированные новостями
         news_blocked = await self._get_news_blocked_pairs()
 
         for symbol in scan_list:
             try:
-                # Пропускаем пары с предстоящими новостями
                 if symbol in news_blocked:
                     logger.info("Skipping %s — blocked by upcoming news.", symbol)
                     self.signals_skipped_by_news += 1
+                    continue
+
+                # Проверяем, нет ли уже активной/ожидающей сделки по этой паре (1 пара = 1 сделка!)
+                if await check_signal_exists(symbol, "ANY"):
                     continue
 
                 result = await run_multi_tf_analysis(symbol)
                 if not result or result.overall_direction == 'NEUTRAL':
                     continue
 
-                # Только >= MIN_SIGNAL_STARS
-                if result.overall_stars >= config.MIN_SIGNAL_STARS:
-                    # Проверяем дубликаты
-                    if not await check_signal_exists(symbol, result.overall_direction, hours=4):
-                        # Сохраняем в БД
-                        strategies_str = ", ".join(
-                            [f"{e} {n}: {v}" for e, n, v in result.strategy_verdicts]
-                        )
-                        timeframes_str = ", ".join(
-                            [f"{t.timeframe}: {t.direction}" for t in result.tf_analyses]
-                        )
-                        await save_signal(
-                            symbol=symbol,
-                            direction=result.overall_direction,
-                            stars=result.overall_stars,
-                            entry_price=result.entry,
-                            stop_loss=result.stop_loss,
-                            take_profit_1=result.take_profit_1,
-                            take_profit_2=result.take_profit_2,
-                            risk_reward=result.risk_reward_1,
-                            strategies_agreed=strategies_str,
-                            timeframes_agreed=timeframes_str,
-                        )
-                        # Уведомление
-                        msg = format_notification(result)
-                        await self._send_to_all(msg)
-                        self.last_signals[symbol] = (
-                            result.overall_direction, result.overall_stars
-                        )
-                        logger.info("Signal sent: %s %s ⭐%d",
-                                    symbol, result.overall_direction, result.overall_stars)
+                # Только надежные сигналы (>= 4 звезд) и жесткий R:R >= 2.4
+                if result.overall_stars >= config.MIN_SIGNAL_STARS and (result.risk_reward_1 or 0) >= 2.4:
+                    strategies_str = ", ".join(
+                        [f"{e} {n}: {v}" for e, n, v in result.strategy_verdicts]
+                    )
+                    timeframes_str = ", ".join(
+                        [f"{t.timeframe}: {t.direction}" for t in result.tf_analyses]
+                    )
+                    
+                    # Сохраняем в БД в статусе PENDING
+                    await save_signal(
+                        symbol=symbol,
+                        direction=result.overall_direction,
+                        order_type=result.order_type,
+                        tag_emoji=result.tag_emoji,
+                        stars=result.overall_stars,
+                        current_price=result.current_price,
+                        entry_price=result.entry,
+                        stop_loss=result.stop_loss,
+                        take_profit_1=result.take_profit_1,
+                        take_profit_2=result.take_profit_2,
+                        risk_reward=result.risk_reward_1,
+                        strategies_agreed=strategies_str,
+                        timeframes_agreed=timeframes_str,
+                    )
+                    
+                    # Отправляем ЭТАП 1 (Сигнал на выставление отложенного ордера)
+                    msg = format_notification(result)
+                    await self._send_to_all(msg)
+                    
+                    self.last_signals[symbol] = (
+                        result.overall_direction, result.overall_stars
+                    )
+                    logger.info("Signal sent: %s %s [%s] ⭐%d (tag %s)",
+                                symbol, result.order_type, result.overall_direction,
+                                result.overall_stars, result.tag_emoji)
             except Exception as e:
                 logger.error("Error scanning %s: %s", symbol, e, exc_info=True)
 

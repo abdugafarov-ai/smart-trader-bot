@@ -1,6 +1,16 @@
 from strategies.base import IndicatorResult, StrategyResult, FullAnalysisResult, MultiTFResult, EconomicEvent
 from market.data_fetcher import DataFetcher
 
+
+def format_price(price: float | None, symbol: str) -> str:
+    """Форматирует цену в зависимости от инструмента."""
+    if price is None:
+        return "—"
+    if 'XAU' in symbol or 'JPY' in symbol:
+        return f"{price:.2f}"
+    return f"{price:.5f}"
+
+
 def escape_md(text: str) -> str:
     """Escapes special characters for Telegram MarkdownV2 (if needed)."""
     special_chars = r'_*[]()~`>#+-=|{}.!'
@@ -9,6 +19,7 @@ def escape_md(text: str) -> str:
         res = res.replace(char, f'\\{char}')
     return res
 
+
 def format_indicators(result: IndicatorResult, symbol: str, timeframe: str) -> str:
     """Форматирует вывод технических индикаторов."""
     trend_emoji = "📈" if result.trend == "BULLISH" else "📉" if result.trend == "BEARISH" else "⚪"
@@ -16,12 +27,12 @@ def format_indicators(result: IndicatorResult, symbol: str, timeframe: str) -> s
     vol_emoji = "💥" if result.volume_state in ["очень высокий", "повышенный"] else "📊"
     
     text = f"📊 Технический Анализ: {symbol} ({timeframe})\n"
-    text += f"Текущая цена: {result.current_price:.5f}\n\n"
+    text += f"Текущая цена: {format_price(result.current_price, symbol)}\n\n"
     
     text += f"🧭 Тренд {trend_emoji}\n"
     text += f"Состояние: {result.trend}\n"
-    text += f"EMA 21: {result.ema_21:.5f} | EMA 50: {result.ema_50:.5f}\n"
-    text += f"EMA 200: {result.ema_200:.5f}\n"
+    text += f"EMA 21: {format_price(result.ema_21, symbol)} | EMA 50: {format_price(result.ema_50, symbol)}\n"
+    text += f"EMA 200: {format_price(result.ema_200, symbol)}\n"
     text += f"Резюме: {result.price_vs_ema}\n\n"
     
     text += f"⚡ Моментум {rsi_emoji}\n"
@@ -30,13 +41,14 @@ def format_indicators(result: IndicatorResult, symbol: str, timeframe: str) -> s
     
     text += f"🌪 Волатильность (Bollinger & ATR)\n"
     text += f"Позиция BB: {result.bb_position}\n"
-    text += f"ATR: {result.atr:.5f} ({result.atr_percent:.2f}%)\n\n"
+    text += f"ATR: {format_price(result.atr, symbol)} ({result.atr_percent:.2f}%)\n\n"
     
     text += f"📦 Объемы {vol_emoji}\n"
     text += f"Состояние: {result.volume_state} (x{result.volume_ratio:.2f})\n"
     text += f"Позиция к VWAP: {result.price_vs_vwap}\n"
     
     return text
+
 
 def format_strategy(result: StrategyResult) -> str:
     """Форматирует вывод одной торговой стратегии."""
@@ -55,8 +67,9 @@ def format_strategy(result: StrategyResult) -> str:
         
     return text
 
+
 def format_multi_tf_analysis(result: MultiTFResult) -> str:
-    """Новый форматтер для мульти-таймфрейм анализа."""
+    """Форматтер для ручного мульти-таймфрейм анализа."""
     if not result.tf_analyses:
         return f"Нет данных для анализа {result.symbol}."
         
@@ -68,10 +81,10 @@ def format_multi_tf_analysis(result: MultiTFResult) -> str:
     if DataFetcher.is_weekend():
         text += DataFetcher.get_weekend_note() + "\n"
         
-    text += f"🔎 АНАЛИЗ: {result.symbol}\n"
-    text += f"━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+    text += f"{result.tag_emoji} АНАЛИЗ ICT / SMC: {result.symbol} [ Маркер: {result.tag_emoji} ]\n"
+    text += f"{'━' * 28}\n\n"
     
-    text += f"⏱ Мульти-таймфрейм:\n"
+    text += f"⏱ Мульти-таймфрейм структура:\n"
     for tf_res in result.tf_analyses:
         tf_dir_em = direction_emoji.get(tf_res.direction, "⚪")
         tf_stars = "⭐" * tf_res.confidence if tf_res.confidence > 0 else "—"
@@ -79,97 +92,183 @@ def format_multi_tf_analysis(result: MultiTFResult) -> str:
         
     text += f"   ✅ Совпадение {result.tf_agreement}/{result.total_tfs} TF\n\n"
     
-    best_tf = max(
-        [t for t in result.tf_analyses if t.direction == result.overall_direction],
-        key=lambda t: t.confidence,
-        default=result.tf_analyses[0]
-    ) if result.overall_direction != 'NEUTRAL' else result.tf_analyses[0]
-    
-    text += f"📊 Стратегии (лучший TF — {best_tf.timeframe}):\n"
-    for emoji, name, verdict in result.strategy_verdicts:
-        text += f"   {verdict[0]} {emoji} {name} — {verdict[2:]}\n"
-        
-    text += "\n"
     if result.overall_direction != "NEUTRAL":
+        order_type_clean = result.order_type.replace('_', ' ')
+        text += f"🎯 ТИП ОРДЕРА: {overall_emoji} {order_type_clean}\n"
+        if result.current_price:
+            text += f"💵 Текущая цена: {format_price(result.current_price, result.symbol)}\n\n"
+        
         if result.entry:
-            text += f"📍 Вход: {result.entry:.5f}\n"
+            text += f"📍 Точка входа: {format_price(result.entry, result.symbol)}\n"
         if result.stop_loss:
-            pips_text = f" ({'-' if result.overall_direction == 'LONG' else '+'}{result.pips_sl:.1f} пипсов)" if result.pips_sl else ""
-            text += f"🛑 Стоп: {result.stop_loss:.5f}{pips_text}\n"
+            pips_text = f" (-{result.pips_sl:.1f} пипсов)" if result.pips_sl else ""
+            text += f"🛑 Стоп-лосс: {format_price(result.stop_loss, result.symbol)}{pips_text}\n"
         if result.take_profit_1:
             pips_text = f" (+{result.pips_tp1:.1f} пипсов)" if result.pips_tp1 else ""
-            text += f"🎯 Цель 1: {result.take_profit_1:.5f}{pips_text}\n"
+            rr1_str = f" | 📐 R:R = 1:{result.risk_reward_1:.1f}" if result.risk_reward_1 else ""
+            text += f"🎯 Тейк-профит 1: {format_price(result.take_profit_1, result.symbol)}{pips_text}{rr1_str}\n"
         if result.take_profit_2:
             pips_text = f" (+{result.pips_tp2:.1f} пипсов)" if result.pips_tp2 else ""
-            text += f"🎯 Цель 2: {result.take_profit_2:.5f}{pips_text}\n"
-        if result.risk_reward_1 or result.risk_reward_2:
-            rr1 = f"1:{result.risk_reward_1:.1f}" if result.risk_reward_1 else ""
-            rr2 = f" / 1:{result.risk_reward_2:.1f}" if result.risk_reward_2 else ""
-            text += f"📐 R:R = {rr1}{rr2}\n\n"
+            rr2_str = f" | 📐 R:R = 1:{result.risk_reward_2:.1f}" if result.risk_reward_2 else ""
+            text += f"🎯 Тейк-профит 2: {format_price(result.take_profit_2, result.symbol)}{pips_text}{rr2_str}\n\n"
     else:
-        text += f"Сигналов для входа нет.\n\n"
+        text += f"⚪ Четких институциональных сигналов для входа нет (R:R < 1:2.5).\n\n"
         
     if result.session_text:
-        text += f"🕒 Сессии: {result.session_text}\n\n"
+        text += f"🕒 Сессия: {result.session_text}\n\n"
         
     text += f"🎯 ВЕРДИКТ: {overall_emoji} {result.overall_direction} {stars}\n"
-    text += f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
+    text += f"{'━' * 28}\n"
     text += f"💡 Торгуй с умом. Риск 1-2% депозита."
     
     return text
 
+
 def format_notification(result: MultiTFResult) -> str:
-    """Clean notification format."""
+    """
+    ЭТАП 1: Выход сигнала.
+    Отправляет полный институциональный сетап с уникальным эмодзи-маркером и типом ордера.
+    """
     direction_emoji = {"LONG": "🟢", "SHORT": "🔴", "NEUTRAL": "⚪"}
     overall_emoji = direction_emoji.get(result.overall_direction, "⚪")
-    stars = "⭐" * result.overall_stars
+    tag = result.tag_emoji or "🔥"
+    order_type_clean = result.order_type.replace('_', ' ')
     
-    text = f"🔔 УВЕРЕННЫЙ СИГНАЛ | {result.symbol} | {stars}\n\n"
+    text = (
+        f"{tag} СИГНАЛ ICT / SMC | {result.symbol} [ Маркер: {tag} ]\n"
+        f"{'━' * 28}\n"
+        f"{overall_emoji} ТИП ОРДЕРА: {order_type_clean} 📥\n"
+    )
     
-    dir_ru = "Покупка" if result.overall_direction == "LONG" else ("Продажа" if result.overall_direction == "SHORT" else "Нейтрально")
-    text += f"{overall_emoji} {result.overall_direction} ({dir_ru})\n\n"
+    if result.current_price:
+        text += f"💵 Рыночная цена сейчас: {format_price(result.current_price, result.symbol)}\n\n"
     
-    text += f"📊 Стратегии: {result.strategy_agreement}/{result.total_strategies} совпадают\n"
-    strat_agreed = [f"✅ {name.split(' ')[0]}" for emoji, name, verdict in result.strategy_verdicts if "✅" in verdict]
-    text += f"   {' | '.join(strat_agreed)}\n\n"
-    
+    if result.entry:
+        text += f"📍 ТОЧКА ВХОДА: {format_price(result.entry, result.symbol)}\n"
+    if result.stop_loss:
+        pips_text = f" (-{result.pips_sl:.1f} пипсов)" if result.pips_sl else ""
+        text += f"🛑 СТОП-ЛОСС: {format_price(result.stop_loss, result.symbol)}{pips_text}\n"
+    if result.take_profit_1:
+        pips_text = f" (+{result.pips_tp1:.1f} пипсов)" if result.pips_tp1 else ""
+        rr1_str = f" | 📐 R:R = 1:{result.risk_reward_1:.1f}" if result.risk_reward_1 else ""
+        text += f"🎯 ТЕЙК-ПРОФИТ 1: {format_price(result.take_profit_1, result.symbol)}{pips_text}{rr1_str}\n"
+    if result.take_profit_2:
+        pips_text = f" (+{result.pips_tp2:.1f} пипсов)" if result.pips_tp2 else ""
+        rr2_str = f" | 📐 R:R = 1:{result.risk_reward_2:.1f}" if result.risk_reward_2 else ""
+        text += f"🎯 ТЕЙК-ПРОФИТ 2: {format_price(result.take_profit_2, result.symbol)}{pips_text}{rr2_str}\n\n"
+        
     text += f"⏱ Таймфреймы: "
     tf_texts = []
     for tf_res in result.tf_analyses:
         if tf_res.direction != 'NEUTRAL':
-            tf_texts.append(f"{tf_res.timeframe} {direction_emoji.get(tf_res.direction)}")
-    text += " | ".join(tf_texts) + "\n\n"
+            tf_texts.append(f"{tf_res.timeframe} {direction_emoji.get(tf_res.direction, '⚪')}")
+    text += " | ".join(tf_texts) + "\n"
     
-    if result.entry:
-        text += f"📍 Вход: {result.entry:.5f}\n"
-    if result.stop_loss:
-        pips_text = f" ({'-' if result.overall_direction == 'LONG' else '+'}{result.pips_sl:.1f} пипсов)" if result.pips_sl else ""
-        text += f"🛑 Стоп: {result.stop_loss:.5f}{pips_text}\n"
-    if result.take_profit_1:
-        pips_text = f" (+{result.pips_tp1:.1f} пипсов)" if result.pips_tp1 else ""
-        text += f"🎯 Цель 1: {result.take_profit_1:.5f}{pips_text}\n"
-    if result.risk_reward_1:
-        text += f"📐 R:R = 1:{result.risk_reward_1:.1f}\n\n"
-        
-    text += f"💡 Торгуй с умом. Риск 1-2% депозита."
+    text += (
+        f"{'━' * 28}\n"
+        f"⏳ Выставьте отложенный ордер {order_type_clean} на {format_price(result.entry, result.symbol)}.\n"
+        f"💡 Риск не более 1-2% депозита."
+    )
     return text
 
+
+def format_order_activated(signal: dict) -> str:
+    """
+    ЭТАП 2: Активация входа (цена коснулась точки входа).
+    """
+    tag = signal.get('tag_emoji') or '🔥'
+    symbol = signal.get('symbol', '')
+    direction = signal.get('direction', 'LONG')
+    order_type = (signal.get('order_type') or 'BUY_LIMIT').replace('_', ' ')
+    dir_emoji = "🟢" if direction == "LONG" else "🔴"
+    entry = format_price(signal.get('entry_price'), symbol)
+    sl = format_price(signal.get('stop_loss'), symbol)
+    tp1 = format_price(signal.get('take_profit_1'), symbol)
+    tp2 = format_price(signal.get('take_profit_2'), symbol)
+
+    text = (
+        f"⚡️ ОРДЕР АКТИВИРОВАН! [ Маркер: {tag} ]\n"
+        f"{'━' * 28}\n"
+        f"📊 Пара: {symbol} | {dir_emoji} {order_type}\n"
+        f"📍 Цена коснулась точки входа: {entry}\n\n"
+        f"🚀 Сделка открыта и находится в рынке!\n"
+        f"🛑 Стоп-лосс: {sl}\n"
+        f"🎯 Цель 1: {tp1} | Цель 2: {tp2}\n\n"
+        f"{'━' * 28}\n"
+        f"👀 Бот ведет сделку и пришлет отчет о результате."
+    )
+    return text
+
+
+def format_signal_result(signal: dict, status: str, close_price: float, pnl_pips: float) -> str:
+    """
+    ЭТАП 3: Результат сделки (TP или SL).
+    """
+    tag = signal.get('tag_emoji') or '🔥'
+    symbol = signal.get('symbol', '')
+    direction = signal.get('direction', 'LONG')
+    order_type = (signal.get('order_type') or 'BUY_LIMIT').replace('_', ' ')
+    dir_emoji = "🟢" if direction == "LONG" else "🔴"
+    entry = format_price(signal.get('entry_price'), symbol)
+    close_str = format_price(close_price, symbol)
+    rr = signal.get('risk_reward') or 2.5
+
+    if status in ('TP1_HIT', 'TP2_HIT'):
+        target_name = "TAKE PROFIT 1" if status == 'TP1_HIT' else "TAKE PROFIT 2"
+        text = (
+            f"🎉 РЕЗУЛЬТАТ СДЕЛКИ [ Маркер: {tag} ]\n"
+            f"{'━' * 28}\n"
+            f"📊 Пара: {symbol} | {dir_emoji} {order_type}\n"
+            f"🏆 ИТОГ: {target_name} ДОСТИГНУТ! 🎯\n\n"
+            f"📍 Вход: {entry}\n"
+            f"🎯 Фиксация: {close_str}\n"
+            f"💰 Чистая прибыль: +{abs(pnl_pips):.1f} пипсов\n"
+            f"📐 Итоговый R:R: 1:{rr:.1f} ✅\n\n"
+            f"{'━' * 28}\n"
+            f"💸 Зафиксируйте прибыль или переведите стоп в безубыток!"
+        )
+    elif status == 'SL_HIT':
+        text = (
+            f"🛑 РЕЗУЛЬТАТ СДЕЛКИ [ Маркер: {tag} ]\n"
+            f"{'━' * 28}\n"
+            f"📊 Пара: {symbol} | {dir_emoji} {order_type}\n"
+            f"⚠️ ИТОГ: Сработал Stop Loss ❌\n\n"
+            f"📍 Вход: {entry}\n"
+            f"🛑 Выход: {close_str}\n"
+            f"📉 Результат: -{abs(pnl_pips):.1f} пипсов\n\n"
+            f"{'━' * 28}\n"
+            f"💡 Убыток строго под контролем (1%). Дисциплина — залог профита. Ждем следующий сигнал!"
+        )
+    else:  # EXPIRED / CANCELLED
+        text = (
+            f"⏰ ОРДЕР ОТМЕНЕН [ Маркер: {tag} ]\n"
+            f"{'━' * 28}\n"
+            f"📊 Пара: {symbol} | {dir_emoji} {order_type}\n"
+            f"⏳ Срок ожидания точки входа истек (ордер не был активирован).\n\n"
+            f"{'━' * 28}\n"
+            f"💡 Удалите отложенный ордер из торгового терминала."
+        )
+    return text
+
+
 def format_signals_summary(results: list[MultiTFResult]) -> str:
-    """Summary across all 28 pairs (only show pairs with signals >=4 stars)."""
+    """Summary across pairs (only show pairs with signals >=4 stars)."""
     strong_signals = [r for r in results if r.overall_stars >= 4 and r.overall_direction != 'NEUTRAL']
     
     if not strong_signals:
-        return "Нет сильных сигналов (⭐⭐⭐⭐ или ⭐⭐⭐⭐⭐) на данный момент."
+        return "Нет сильных институциональных сигналов (R:R >= 1:2.5) на данный момент."
         
-    text = "📋 Сводка Сильных Сигналов\n\n"
+    text = "📋 Сводка Сигналов ICT / SMC\n\n"
     
     for r in strong_signals:
         emoji = "🟢" if r.overall_direction == "LONG" else "🔴"
+        tag = r.tag_emoji or "🔥"
         stars = "⭐" * r.overall_stars
-        entry = f"{r.entry:.5f}" if r.entry else "—"
-        text += f"🔹 {r.symbol} | {emoji} {r.overall_direction} | {stars} | Вход: {entry}\n"
+        entry = format_price(r.entry, r.symbol)
+        text += f"{tag} {r.symbol} | {emoji} {r.order_type.replace('_', ' ')} | {stars} | Вход: {entry}\n"
         
     return text
+
 
 def format_news_alert(event: EconomicEvent) -> str:
     """News warning."""
@@ -191,174 +290,143 @@ def format_news_alert(event: EconomicEvent) -> str:
     
     return text
 
-def format_welcome() -> str:
-    """Short welcome (guide handles the rest)."""
-    text = "👋 Добро пожаловать в Smart Trader Bot!\n"
-    text += "Я ваш личный аналитический помощник."
-    return text
-
-def format_help() -> str:
-    """Updated help with all commands including /news."""
-    text = "📖 Справка по Smart Trader Bot\n\n"
-    text += "📈 Команды:\n"
-    text += "/start - Перезапуск бота и показ гайда\n"
-    text += "/analyze [Символ] - Комплексный анализ мульти-таймфрейм\n"
-    text += "/indicators [Символ] [ТФ] - Подробная сводка технических индикаторов\n"
-    text += "/signals - Просмотр текущих сильных сигналов по всем парам\n"
-    text += "/sessions - Текущие торговые сессии\n"
-    text += "/news - Экономический календарь и новости\n"
-    text += "/stats - Статистика сигналов и win-rate\n"
-    text += "/history - История последних закрытых и открытых сигналов\n\n"
-    text += "🧠 Используемые стратегии:\n"
-    text += "• ICT / SMC (Smart Money Concepts) - поиск ликвидности, FVG, Market Structure Shift.\n"
-    text += "• Supply & Demand - поиск сильных зон спроса и предложения.\n"
-    text += "• Wyckoff - анализ фаз аккумуляции/дистрибуции.\n"
-    text += "• Breakout + Retest - торговля пробоев уровней с подтверждением.\n"
-    text += "• Scalping - краткосрочные импульсные входы.\n"
-    text += "• Volume Analysis - анализ распределения объемов и VWAP.\n"
-    return text
-
-def format_full_analysis(result: FullAnalysisResult) -> str:
-    """Полный комплексный анализ по всем стратегиям и индикаторам."""
-    direction_emoji = {
-        "LONG": "🟢",
-        "SHORT": "🔴",
-        "NEUTRAL": "⚪",
-    }
-    emoji = direction_emoji.get(result.overall_direction, "⚪")
-    
-    text = f"🔎 Комплексный Анализ: {result.symbol} ({result.timeframe})\n\n"
-    
-    text += f"━━━ 📊 Индикаторы ━━━\n"
-    if result.indicators:
-        text += f"Тренд: {result.indicators.trend}\n"
-        text += f"RSI: {result.indicators.rsi:.2f} ({result.indicators.rsi_state})\n"
-        text += f"Объем: {result.indicators.volume_state}\n"
-    else:
-        text += "Нет данных по индикаторам.\n"
-        
-    text += f"\n━━━ 🧠 Стратегии ━━━\n"
-    for st in result.strategies:
-        text += format_strategy(st) + "\n"
-        
-    text += f"━━━ 🎯 Общий Вердикт ━━━\n"
-    text += f"Направление: {emoji} {result.overall_direction}\n"
-    text += f"Согласие стратегий: {result.strategies_agreeing} из {result.total_strategies}\n"
-    
-    confidence_stars = "⭐" * result.overall_confidence if result.overall_confidence > 0 else "—"
-    text += f"Уверенность: {confidence_stars}\n"
-    
-    if result.overall_direction != "NEUTRAL":
-        text += f"\n💡 Торговая Идея:\n"
-        if result.entry_suggestion is not None:
-            text += f"Вход: {result.entry_suggestion:.5f}\n"
-        if result.stop_suggestion is not None:
-            text += f"Stop-Loss: {result.stop_suggestion:.5f}\n"
-        if result.tp1_suggestion is not None:
-            text += f"Take-Profit 1: {result.tp1_suggestion:.5f}\n"
-        if result.tp2_suggestion is not None:
-            text += f"Take-Profit 2: {result.tp2_suggestion:.5f}\n"
-        if result.rr_suggestion is not None:
-            text += f"Risk/Reward: {result.rr_suggestion:.2f}\n"
-            
-    if result.session_text:
-        text += f"\n🕒 Сессия: {result.session_text}\n"
-        
-    return text
 
 def format_stats(stats: dict) -> str:
+    """Форматирует статистику сигналов."""
     if not stats or stats.get("total", 0) == 0:
-        return "Нет данных для статистики."
+        return (
+            "📊 СТАТИСТИКА СИГНАЛОВ\n"
+            f"{'━' * 28}\n\n"
+            "Пока нет зарегистрированных сигналов.\n"
+            "Бот мониторит рынок 24/7."
+        )
 
     total = stats.get("total", 0)
-    open_count = stats.get("open", 0)
+    open_cnt = stats.get("open", 0)
     closed = stats.get("closed", 0)
-    win_rate = stats.get("win_rate", 0.0)
     wins = stats.get("wins", 0)
     losses = stats.get("losses", 0)
     expired = stats.get("expired", 0)
+    win_rate = stats.get("win_rate", 0.0)
     total_pips = stats.get("total_pips", 0.0)
     avg_rr = stats.get("avg_rr", 0.0)
-    by_direction = stats.get("by_direction", {})
-    by_symbol = stats.get("by_symbol", {})
 
-    text = "📊 СТАТИСТИКА СИГНАЛОВ\n"
-    text += "━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-    text += f"📈 Всего сигналов: {total}\n"
-    text += f"🟢 Открытые: {open_count}\n"
-    text += f"✅ Закрытые: {closed}\n\n"
-    text += f"🏆 Win Rate: {win_rate:.1f}%\n"
-    text += "━━━━━━━━━━━━━━━━━━━━━━━━\n"
-    text += f"✅ Победы (TP): {wins}\n"
-    text += f"❌ Проигрыши (SL): {losses}\n"
-    text += f"⏰ Истекшие: {expired}\n\n"
-    
-    pips_sign = "+" if total_pips > 0 else ""
-    text += f"💰 Общий PnL: {pips_sign}{total_pips:.1f} пипсов\n"
-    text += f"📐 Средний R:R: 1:{avg_rr:.1f}\n\n"
-    
-    if by_direction:
-        text += "📊 По направлениям:\n"
-        long_stats = by_direction.get("LONG", {"total": 0, "wins": 0})
-        long_win_rate = (long_stats["wins"] / long_stats["total"] * 100) if long_stats["total"] > 0 else 0
-        text += f"   🟢 LONG:  {long_stats['total']} сигналов ({long_win_rate:.0f}% win)\n"
-        
-        short_stats = by_direction.get("SHORT", {"total": 0, "wins": 0})
-        short_win_rate = (short_stats["wins"] / short_stats["total"] * 100) if short_stats["total"] > 0 else 0
-        text += f"   🔴 SHORT: {short_stats['total']} сигналов ({short_win_rate:.0f}% win)\n\n"
-        
-    if by_symbol:
-        text += "🏅 Топ пары:\n"
-        for sym, d in by_symbol.items():
-            sym_total = d["total"]
-            sym_wins = d["wins"]
-            sym_win_rate = (sym_wins / sym_total * 100) if sym_total > 0 else 0
-            text += f"   {sym}:  {sym_total} сигналов ({sym_win_rate:.0f}% win)\n"
-            
-    text += "━━━━━━━━━━━━━━━━━━━━━━━━\n"
-    text += "💡 Торгуй с умом. Качество > Количество."
+    pips_sign = "+" if total_pips >= 0 else ""
+    pips_emoji = "📈" if total_pips >= 0 else "📉"
+    wr_emoji = "🏆" if win_rate >= 60 else ("📊" if win_rate >= 40 else "⚠️")
+
+    text = (
+        f"📊 СТАТИСТИКА СИГНАЛОВ\n"
+        f"{'━' * 28}\n\n"
+        f"📈 Всего сигналов: {total}\n"
+        f"🔵 В работе: {open_cnt}\n"
+        f"✅ Закрытые: {closed}\n\n"
+        f"{wr_emoji} Win Rate: {win_rate:.1f}%\n"
+        f"{'━' * 28}\n"
+        f"✅ Тейк-профит (TP): {wins}\n"
+        f"❌ Стоп-лосс (SL): {losses}\n"
+        f"⏰ Отменены/Истекли: {expired}\n\n"
+        f"{pips_emoji} Общий PnL: {pips_sign}{total_pips:.1f} пипсов\n"
+        f"📐 Средний R:R: 1:{avg_rr:.1f}\n"
+    )
+
+    by_dir = stats.get("by_direction", {})
+    if by_dir:
+        text += f"\n📊 По направлениям:\n"
+        for d, data in by_dir.items():
+            d_em = "🟢" if d == "LONG" else "🔴"
+            t = data.get("total", 0)
+            w = data.get("wins", 0)
+            wr = (w / t * 100) if t > 0 else 0.0
+            text += f"   {d_em} {d}: {t} сигн. ({wr:.0f}% win)\n"
+
+    by_sym = stats.get("by_symbol", {})
+    if by_sym:
+        text += f"\n🏅 Топ пары:\n"
+        for sym, data in by_sym.items():
+            t = data.get("total", 0)
+            w = data.get("wins", 0)
+            wr = (w / t * 100) if t > 0 else 0.0
+            text += f"   {sym}: {t} сигн. ({wr:.0f}% win)\n"
+
+    text += (
+        f"\n{'━' * 28}\n"
+        f"💡 Торгуй с умом. Качество > Количество."
+    )
     return text
 
+
 def format_history(signals: list[dict]) -> str:
+    """Форматирует историю последних сигналов."""
     if not signals:
-        return "Нет данных по истории."
-        
-    text = f"📜 ИСТОРИЯ СИГНАЛОВ (последние {len(signals)})\n"
-    text += "━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-    
-    for sig in signals:
-        symbol = sig.get('symbol', 'UNKNOWN')
-        direction = sig.get('direction', 'NEUTRAL')
-        stars = sig.get('stars', 0)
-        status = sig.get('status', 'OPEN')
-        pnl = sig.get('pnl_pips', 0.0)
-        
-        dir_emoji = "🟢 LONG" if direction == "LONG" else "🔴 SHORT"
-        star_str = "⭐" * stars
-        
-        pnl_str = ""
-        if status in ['TP1_HIT', 'TP2_HIT']:
-            status_em = "✅"
-            pnl_str = f" +{pnl:.1f} пипс"
-        elif status == 'SL_HIT':
-            status_em = "❌"
-            pnl_str = f" {pnl:.1f} пипс"
-        elif status == 'EXPIRED':
-            status_em = "⏰"
-            pips_sign = "+" if pnl > 0 else ""
-            pnl_str = f" {pips_sign}{pnl:.1f} пипс"
+        return (
+            "📜 ИСТОРИЯ СИГНАЛОВ\n"
+            f"{'━' * 28}\n\n"
+            "История пока пуста. Ожидайте новых сигналов."
+        )
+
+    text = (
+        f"📜 ИСТОРИЯ СИГНАЛОВ (последние {len(signals)})\n"
+        f"{'━' * 28}\n\n"
+    )
+
+    for s in signals:
+        status = s.get("status", "PENDING")
+        symbol = s.get("symbol", "???")
+        direction = s.get("direction", "LONG")
+        order_type = (s.get("order_type") or "LIMIT").replace('_', ' ')
+        tag = s.get("tag_emoji") or "🔥"
+        pnl = s.get("pnl_pips", 0.0)
+        pnl_sign = "+" if pnl > 0 else ""
+
+        if status in ("TP1_HIT", "TP2_HIT"):
+            st_icon = "✅"
+            res_text = f"TP HIT {pnl_sign}{pnl:.1f} п."
+        elif status == "SL_HIT":
+            st_icon = "❌"
+            res_text = f"SL HIT {pnl:.1f} п."
+        elif status == "ACTIVE":
+            st_icon = "🚀"
+            res_text = "В РЫНКЕ"
+        elif status == "PENDING":
+            st_icon = "⏳"
+            res_text = "ОЖИДАЕТ ВХОДА"
         else:
-            status_em = "🔵"
-            
-        status_text = {
-            'OPEN': 'ОТКРЫТ',
-            'TP1_HIT': 'TP1 HIT',
-            'TP2_HIT': 'TP2 HIT',
-            'SL_HIT': 'SL HIT',
-            'EXPIRED': 'ИСТЁК'
-        }.get(status, status)
-            
-        text += f"{status_em} {symbol} | {dir_emoji} | {star_str} | {status_text}{pnl_str}\n"
-        
-    text += "━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            st_icon = "⏰"
+            res_text = "ИСТЁК"
+
+        d_em = "🟢" if direction == "LONG" else "🔴"
+        entry_s = format_price(s.get('entry_price'), symbol)
+        text += f"{st_icon} {tag} {symbol} | {d_em} {order_type} @ {entry_s} | {res_text}\n"
+
+    text += f"\n{'━' * 28}\n"
+    return text
+
+
+format_full_analysis = format_multi_tf_analysis
+
+def format_welcome() -> str:
+    """Short welcome (guide handles the rest)."""
+    text = "👋 Добро пожаловать в Smart Trader Bot!\n"
+    text += "Я ваш институциональный ИИ-аналитик по методологии ICT / SMC."
+    return text
+
+
+def format_help() -> str:
+    """Updated help with all commands."""
+    text = "📖 Справка по Smart Trader Bot (ICT / SMC Edition)\n\n"
+    text += "📈 Команды:\n"
+    text += "/start - Перезапуск бота и показ гайда\n"
+    text += "/analyze [Символ] - Анализ структуры и сетапа ICT/SMC\n"
+    text += "/signals - Просмотр текущих активных сигналов\n"
+    text += "/stats - Статистика отработки и Win-Rate\n"
+    text += "/history - История последних сигналов\n"
+    text += "/sessions - Текущие торговые сессии\n"
+    text += "/news - Экономический календарь и новости\n"
+    text += "/request - Подать заявку на доступ к сигналам\n\n"
+    text += "🧠 Торговая методология:\n"
+    text += "• Институциональный ICT / Smart Money Concepts.\n"
+    text += "• Входы только лимитными ордерами в зонах OTE (0.618-0.705) и Order Block.\n"
+    text += "• Строгий фильтр соотношения Risk/Reward: минимум 1:2.5 (цели 1:3 - 1:5).\n"
+    text += "• 3-этапное ведение сделки (Сигнал ➡️ Активация ➡️ Результат) с уникальными маркерами."
     return text
