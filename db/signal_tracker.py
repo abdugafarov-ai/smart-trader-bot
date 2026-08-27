@@ -1,8 +1,8 @@
 """
 Smart Trader Bot — Signal Tracker.
 Фоновая задача:
-1. ЭТАП 2: Проверяет PENDING сигналы — если цена коснулась входа, АКТИВИРУЕТ и уведомляет в Telegram!
-2. ЭТАП 3: Проверяет ACTIVE сигналы — если цена коснулась TP или SL, ФИКСИРУЕТ результат и уведомляет в Telegram!
+1. ЭТАП 2: Проверяет PENDING сигналы — если цена коснулась входа ПОСЛЕ создания сигнала, АКТИВИРУЕТ и уведомляет.
+2. ЭТАП 3: Проверяет ACTIVE сигналы — если цена коснулась TP или SL ПОСЛЕ активации, ФИКСИРУЕТ результат и уведомляет.
 Все уведомления сопровождаются исходным уникальным эмодзи-маркером сделки.
 """
 
@@ -10,6 +10,7 @@ import asyncio
 import logging
 from datetime import datetime, timezone
 from typing import Optional
+import pandas as pd
 from aiogram import Bot
 
 from market.data_fetcher import DataFetcher
@@ -97,7 +98,9 @@ class SignalTracker:
         created = datetime.fromisoformat(sig['created_at'])
         if created.tzinfo is None:
             created = created.replace(tzinfo=timezone.utc)
-        hours_pending = (datetime.now(timezone.utc) - created).total_seconds() / 3600
+        
+        now = datetime.now(timezone.utc)
+        hours_pending = (now - created).total_seconds() / 3600
 
         if hours_pending > self.PENDING_EXPIRE_HOURS:
             await update_signal_status(
@@ -111,35 +114,47 @@ class SignalTracker:
             logger.info("Signal #%d expired waiting for entry.", signal_id)
             return
 
-        # Получаем последние 5 свечей M15/H1 для точной фиксации касания
+        # Получаем свечи M15
         df = await self.fetcher.fetch_ohlcv(symbol, "M15", limit=10)
         if df is None or df.empty:
             return
 
-        recent_high = float(df['high'].max())
-        recent_low = float(df['low'].min())
+        # КРИТИЧЕСКИ ВАЖНО: Фильтруем свечи ТОЛЬКО после создания сигнала!
+        # Старая история не должна активировать новый ордер задним числом.
+        if 'timestamp' in df.columns:
+            created_naive = created.replace(tzinfo=None)
+            df_recent = df[df['timestamp'] >= created_naive]
+            if df_recent.empty:
+                # Если новая свеча еще не закрылась, берем последнюю текущую свечу
+                df_recent = df.iloc[-1:]
+        else:
+            df_recent = df.iloc[-1:]
+
+        recent_high = float(df_recent['high'].max())
+        recent_low = float(df_recent['low'].min())
 
         is_triggered = False
 
         # Условия активации ордеров:
         if "LIMIT" in order_type:
-            # BUY LIMIT активируется, когда цена опускается до entry
+            # BUY LIMIT: цена опустилась до entry или ниже
             if direction == "LONG" and recent_low <= entry:
                 is_triggered = True
-            # SELL LIMIT активируется, когда цена поднимается до entry
+            # SELL LIMIT: цена поднялась до entry или выше
             elif direction == "SHORT" and recent_high >= entry:
                 is_triggered = True
         else:  # STOP ордера
-            # BUY STOP активируется, когда цена пробивает entry вверх
+            # BUY STOP: цена пробила entry вверх
             if direction == "LONG" and recent_high >= entry:
                 is_triggered = True
-            # SELL STOP активируется, когда цена пробивает entry вниз
+            # SELL STOP: цена пробила entry вниз
             elif direction == "SHORT" and recent_low <= entry:
                 is_triggered = True
 
         if is_triggered:
             await activate_signal(signal_id)
             sig['status'] = 'ACTIVE'
+            sig['activated_at'] = now.isoformat()
             # Отправляем уведомление ЭТАПА 2
             msg = format_order_activated(sig)
             await self._send_to_all(msg)
@@ -169,22 +184,41 @@ class SignalTracker:
         if not entry or not sl or not tp1:
             return
 
-        # Проверка на таймаут удержания позиции
-        created = datetime.fromisoformat(sig.get('activated_at') or sig['created_at'])
-        if created.tzinfo is None:
-            created = created.replace(tzinfo=timezone.utc)
-        hours_active = (datetime.now(timezone.utc) - created).total_seconds() / 3600
+        # Время активации
+        act_raw = sig.get('activated_at') or sig['created_at']
+        activated = datetime.fromisoformat(act_raw)
+        if activated.tzinfo is None:
+            activated = activated.replace(tzinfo=timezone.utc)
+        
+        now = datetime.now(timezone.utc)
+        seconds_active = (now - activated).total_seconds()
+        hours_active = seconds_active / 3600
+
+        # КРИТИЧЕСКИ ВАЖНО: Защита от мгновенного ложного срабатывания в ту же секунду активации
+        # Даем сделке минимум 60 секунд на развитие в рынке
+        if seconds_active < 60:
+            return
 
         df = await self.fetcher.fetch_ohlcv(symbol, "M15", limit=12)
         if df is None or df.empty:
             return
 
-        recent_high = float(df['high'].max())
-        recent_low = float(df['low'].min())
-        current_close = float(df['close'].iloc[-1])
+        # Фильтруем свечи ТОЛЬКО ПОСЛЕ момента активации сделки!
+        if 'timestamp' in df.columns:
+            activated_naive = activated.replace(tzinfo=None)
+            df_recent = df[df['timestamp'] >= activated_naive]
+            if df_recent.empty:
+                df_recent = df.iloc[-1:]
+        else:
+            df_recent = df.iloc[-1:]
+
+        recent_high = float(df_recent['high'].max())
+        recent_low = float(df_recent['low'].min())
+        current_close = float(df_recent['close'].iloc[-1])
 
         mult = self._get_pip_mult(symbol)
 
+        # Проверка на таймаут удержания позиции (48 часов)
         if hours_active > self.ACTIVE_EXPIRE_HOURS:
             pnl = (current_close - entry) * mult if direction == "LONG" else (entry - current_close) * mult
             await update_signal_status(
@@ -198,7 +232,7 @@ class SignalTracker:
             logger.info("Signal #%d closed by timeout.", signal_id)
             return
 
-        # ── Фиксация TP / SL ──
+        # ── Фиксация TP / SL строго по свечам после активации ──
         if direction == "LONG":
             # 1. Сначала проверяем Stop Loss
             if recent_low <= sl:
