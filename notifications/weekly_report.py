@@ -1,16 +1,16 @@
 """
 Smart Trader Bot — Еженедельный отчёт.
-Отправляет в субботу сводку за неделю.
+Стиль: 🏛 «Wall Street / Bloomberg Terminal».
+Отправляет в субботу сводку за неделю в HTML формате.
 """
 
 import asyncio
 import logging
 from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
-
+from pathlib import Path
 import aiosqlite
 from aiogram import Bot
-from pathlib import Path
 
 import config
 from db.users import get_approved_user_ids
@@ -39,13 +39,10 @@ class WeeklyReporter:
         while self.is_running:
             try:
                 now = datetime.now(self.tz)
-                # Проверяем: суббота и нужный час
                 if now.weekday() == self.report_day and now.hour == self.report_hour:
                     await self._generate_and_send()
-                    # Ждём 2 часа чтобы не отправить дважды
                     await asyncio.sleep(7200)
                 else:
-                    # Проверяем каждые 30 минут
                     await asyncio.sleep(1800)
             except Exception as e:
                 logger.error("WeeklyReporter error: %s", e, exc_info=True)
@@ -60,15 +57,13 @@ class WeeklyReporter:
         if not report:
             return
 
-        # Отправляем всем одобренным пользователям
         user_ids = await get_approved_user_ids()
-        # Также отправляем админу
         if config.ADMIN_ID and config.ADMIN_ID not in user_ids:
             user_ids.append(config.ADMIN_ID)
 
         for uid in user_ids:
             try:
-                await self.bot.send_message(uid, report)
+                await self.bot.send_message(uid, report, parse_mode="HTML")
             except Exception as e:
                 logger.error("Failed to send weekly report to %d: %s", uid, e)
 
@@ -80,7 +75,6 @@ class WeeklyReporter:
 
         try:
             async with aiosqlite.connect(str(DB_PATH)) as db:
-                # Всего сигналов за неделю
                 cursor = await db.execute(
                     "SELECT COUNT(*) FROM signals WHERE created_at >= ?",
                     (week_ago,),
@@ -89,67 +83,58 @@ class WeeklyReporter:
 
                 if total == 0:
                     return (
-                        "📊 ЕЖЕНЕДЕЛЬНЫЙ ОТЧЁТ\n"
-                        f"{'━' * 28}\n\n"
-                        "На этой неделе сигналов не было.\n"
-                        f"Бот продолжает мониторинг {len(config.ALL_PAIRS)} пар Forex и Золота.\n\n"
-                        "💡 Качество > Количество!"
+                        "📊 <b>WALL STREET TERMINAL | WEEKLY REPORT</b>\n"
+                        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                        "<i>На этой неделе сетапов не зафиксировано.\n"
+                        f"Терминал продолжает мониторинг {len(config.ALL_PAIRS)} активов.</i>\n\n"
+                        "💡 <i>Качество &gt; Количество!</i>"
                     )
 
-                # TP попадания
                 cursor = await db.execute(
                     "SELECT COUNT(*) FROM signals WHERE created_at >= ? AND status IN ('TP1_HIT', 'TP2_HIT')",
                     (week_ago,),
                 )
                 tp_hits = (await cursor.fetchone())[0]
 
-                # SL попадания
                 cursor = await db.execute(
                     "SELECT COUNT(*) FROM signals WHERE created_at >= ? AND status = 'SL_HIT'",
                     (week_ago,),
                 )
                 sl_hits = (await cursor.fetchone())[0]
 
-                # Истёкшие
                 cursor = await db.execute(
                     "SELECT COUNT(*) FROM signals WHERE created_at >= ? AND status = 'EXPIRED'",
                     (week_ago,),
                 )
                 expired = (await cursor.fetchone())[0]
 
-                # Ещё открытые
                 cursor = await db.execute(
-                    "SELECT COUNT(*) FROM signals WHERE created_at >= ? AND status = 'OPEN'",
+                    "SELECT COUNT(*) FROM signals WHERE created_at >= ? AND status IN ('PENDING', 'ACTIVE', 'OPEN')",
                     (week_ago,),
                 )
                 still_open = (await cursor.fetchone())[0]
 
-                # Общие пипсы
                 cursor = await db.execute(
-                    "SELECT COALESCE(SUM(pnl_pips), 0) FROM signals WHERE created_at >= ? AND status != 'OPEN'",
+                    "SELECT COALESCE(SUM(pnl_pips), 0) FROM signals WHERE created_at >= ? AND status NOT IN ('PENDING', 'ACTIVE', 'OPEN')",
                     (week_ago,),
                 )
                 total_pips = (await cursor.fetchone())[0]
 
-                # Пипсы TP
                 cursor = await db.execute(
                     "SELECT COALESCE(SUM(pnl_pips), 0) FROM signals WHERE created_at >= ? AND status IN ('TP1_HIT', 'TP2_HIT')",
                     (week_ago,),
                 )
                 tp_pips = (await cursor.fetchone())[0]
 
-                # Пипсы SL
                 cursor = await db.execute(
                     "SELECT COALESCE(SUM(pnl_pips), 0) FROM signals WHERE created_at >= ? AND status = 'SL_HIT'",
                     (week_ago,),
                 )
                 sl_pips = (await cursor.fetchone())[0]
 
-                # Win rate
                 closed = tp_hits + sl_hits + expired
                 win_rate = (tp_hits / closed * 100) if closed > 0 else 0.0
 
-                # Лучший сигнал
                 cursor = await db.execute(
                     "SELECT symbol, direction, pnl_pips FROM signals "
                     "WHERE created_at >= ? AND status IN ('TP1_HIT', 'TP2_HIT') "
@@ -158,7 +143,6 @@ class WeeklyReporter:
                 )
                 best = await cursor.fetchone()
 
-                # Худший сигнал
                 cursor = await db.execute(
                     "SELECT symbol, direction, pnl_pips FROM signals "
                     "WHERE created_at >= ? AND status = 'SL_HIT' "
@@ -167,7 +151,6 @@ class WeeklyReporter:
                 )
                 worst = await cursor.fetchone()
 
-                # По парам
                 cursor = await db.execute(
                     "SELECT symbol, COUNT(*) as cnt, "
                     "SUM(CASE WHEN status IN ('TP1_HIT','TP2_HIT') THEN 1 ELSE 0 END) as w, "
@@ -178,7 +161,6 @@ class WeeklyReporter:
                 )
                 pair_rows = await cursor.fetchall()
 
-                # По направлениям
                 cursor = await db.execute(
                     "SELECT direction, COUNT(*), "
                     "SUM(CASE WHEN status IN ('TP1_HIT','TP2_HIT') THEN 1 ELSE 0 END) "
@@ -187,7 +169,6 @@ class WeeklyReporter:
                 )
                 dir_rows = await cursor.fetchall()
 
-                # Средний R:R
                 cursor = await db.execute(
                     "SELECT AVG(risk_reward) FROM signals "
                     "WHERE created_at >= ? AND risk_reward > 0",
@@ -199,61 +180,63 @@ class WeeklyReporter:
             logger.error("Weekly report query error: %s", e)
             return ""
 
-        # Форматируем отчёт
         now = datetime.now(self.tz)
         week_start = (now - timedelta(days=7)).strftime("%d.%m")
         week_end = now.strftime("%d.%m.%Y")
 
-        pips_emoji = "📈" if total_pips >= 0 else "📉"
         pips_sign = "+" if total_pips >= 0 else ""
-        wr_emoji = "🏆" if win_rate >= 60 else ("📊" if win_rate >= 40 else "⚠️")
+        wr_bar_filled = int(win_rate // 10)
+        wr_bar = "■" * wr_bar_filled + "□" * (10 - wr_bar_filled)
 
         lines = [
-            f"📊 ЕЖЕНЕДЕЛЬНЫЙ ОТЧЁТ",
-            f"📅 {week_start} — {week_end}",
-            f"{'━' * 28}",
+            "📊 <b>WALL STREET TERMINAL | WEEKLY REPORT</b>",
+            f"📅 <code>{week_start} — {week_end}</code>",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
             "",
-            f"📋 Всего сигналов: {total}",
-            f"   ✅ Тейк-профит (TP): {tp_hits}",
-            f"   ❌ Стоп-лосс (SL): {sl_hits}",
-            f"   ⏰ Истекли: {expired}",
-            f"   🔵 Ещё открыты: {still_open}",
+            "┌── <b>ПОРТФЕЛЬ ЗА 7 ДНЕЙ</b> ───────────",
+            f"│ 📋 <b>Всего сетапов:</b>  <code>{total}</code>",
+            f"│ ✅ <b>Тейк-профит (TP):</b> <code>{tp_hits}</code>",
+            f"│ ❌ <b>Стоп-лосс (SL):</b>   <code>{sl_hits}</code>",
+            f"│ ⏰ <b>Истекло (24h):</b>    <code>{expired}</code>",
+            f"│ 🔵 <b>В рынке:</b>          <code>{still_open}</code>",
+            "└──────────────────────────────────────",
             "",
-            f"{wr_emoji} Win Rate: {win_rate:.1f}%",
-            f"{'━' * 28}",
+            f"🏆 <b>WIN RATE:</b> <code>{win_rate:.1f}%</code>",
+            f"<code>[{wr_bar}]</code>",
             "",
-            f"{pips_emoji} Итого пипсов: {pips_sign}{total_pips:.1f}",
-            f"   ✅ Прибыль (TP): +{tp_pips:.1f} пипсов",
-            f"   ❌ Убыток (SL): {sl_pips:.1f} пипсов",
-            f"   📐 Средний R:R: 1:{avg_rr:.1f}",
+            "┌── <b>ФИНАНСОВЫЙ РЕЗУЛЬТАТ</b> ─────────",
+            f"│ 💰 <b>Общий PnL:</b>       <code>{pips_sign}{total_pips:.1f} pips</code>",
+            f"│ 📈 <b>Прибыль (TP):</b>    <code>+{tp_pips:.1f} pips</code>",
+            f"│ 📉 <b>Убыток (SL):</b>     <code>{sl_pips:.1f} pips</code>",
+            f"│ 📐 <b>Средний R:R:</b>     <code>1:{avg_rr:.1f}</code>",
+            "└──────────────────────────────────────",
         ]
 
         if best:
             d_emoji = "🟢" if best[1] == "LONG" else "🔴"
-            lines.extend(["", f"🥇 Лучший сигнал: {best[0]} {d_emoji} {best[1]} (+{best[2]:.1f} пипсов)"])
+            lines.extend(["", f"🥇 <b>Лучший трейд:</b> <code>{best[0]}</code> {d_emoji} (<code>+{best[2]:.1f} pips</code>)"])
 
         if worst:
             d_emoji = "🟢" if worst[1] == "LONG" else "🔴"
-            lines.extend([f"🥉 Худший сигнал: {worst[0]} {d_emoji} {worst[1]} ({worst[2]:.1f} пипсов)"])
+            lines.extend([f"🥉 <b>Худший трейд:</b> <code>{worst[0]}</code> {d_emoji} (<code>{worst[2]:.1f} pips</code>)"])
 
         if pair_rows:
-            lines.extend(["", f"{'━' * 28}", "🏅 Топ пары:"])
+            lines.extend(["", "🏅 <b>ТОП ИНСТРУМЕНТОВ:</b>"])
             for sym, cnt, w, l in pair_rows:
                 wr = (w / (w + l) * 100) if (w + l) > 0 else 0
-                lines.append(f"   {sym}: {cnt} сиг. ({w}✅ {l}❌) — {wr:.0f}%")
+                lines.append(f"│ <b>{sym:6}</b> ── <code>{cnt:2} сделок</code> ({w}✅ {l}❌) [<code>{wr:.0f}%</code>]")
 
         if dir_rows:
-            lines.extend(["", "📊 По направлениям:"])
+            lines.extend(["", "📊 <b>ПО НАПРАВЛЕНИЯМ:</b>"])
             for d, cnt, w in dir_rows:
                 d_emoji = "🟢" if d == "LONG" else "🔴"
                 wr = (w / cnt * 100) if cnt > 0 else 0
-                lines.append(f"   {d_emoji} {d}: {cnt} сигн. — {wr:.0f}% win")
+                lines.append(f"│ {d_emoji} <b>{d:5}</b> ── <code>{cnt:2} сделок</code> [<code>{wr:.0f}% win</code>]")
 
         lines.extend([
             "",
-            f"{'━' * 28}",
-            "💡 Торгуй с умом. Качество > Количество.",
-            "📊 Риск не более 1-2% депозита на сделку.",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "💼 <i>Wall Street Institutional Risk Engine</i>"
         ])
 
         return "\n".join(lines)

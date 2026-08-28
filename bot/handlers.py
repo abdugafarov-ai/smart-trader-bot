@@ -226,8 +226,8 @@ async def cmd_start(message: Message):
     if user_id == config.ADMIN_ID:
         state = get_user_state(user_id)
         state["guide_step"] = 0
-        await message.answer(format_welcome(), parse_mode=None)
-        await message.answer(get_guide_step(0), reply_markup=guide_keyboard(0), parse_mode=None)
+        await message.answer(format_welcome(), parse_mode="HTML")
+        await message.answer(get_guide_step(0), reply_markup=guide_keyboard(0), parse_mode="HTML")
         return
 
     from db.users import get_user_status
@@ -236,28 +236,28 @@ async def cmd_start(message: Message):
     if status == "approved":
         state = get_user_state(user_id)
         state["guide_step"] = 0
-        await message.answer(format_welcome(), parse_mode=None)
-        await message.answer(get_guide_step(0), reply_markup=guide_keyboard(0), parse_mode=None)
+        await message.answer(format_welcome(), parse_mode="HTML")
+        await message.answer(get_guide_step(0), reply_markup=guide_keyboard(0), parse_mode="HTML")
     elif status == "pending":
         await message.answer(
-            "⏳ Ваша заявка на рассмотрении.\n"
-            "Администратор скоро её проверит.\n\n"
+            "⏳ <b>Ваша заявка на рассмотрении.</b>\n"
+            "Администратор скоро проверит доступ.\n\n"
             "Ожидайте уведомления! 🔔",
-            parse_mode=None
+            parse_mode="HTML"
         )
     elif status == "rejected":
         await message.answer(
-            "❌ Ваша заявка была отклонена.\n"
+            "❌ <b>Ваша заявка была отклонена.</b>\n"
             "Свяжитесь с администратором.",
-            parse_mode=None
+            parse_mode="HTML"
         )
     else:
         await message.answer(
-            "🤖 Добро пожаловать в Smart Trader Bot!\n\n"
-            "🔒 Доступ к боту ограничен.\n"
-            "Отправьте /request чтобы подать заявку на доступ.\n\n"
-            "Администратор рассмотрит вашу заявку.",
-            parse_mode=None
+            "🏛 <b>ДОБРО ПОЖАЛОВАТЬ В SMART TRADER TERMINAL</b>\n\n"
+            "🔒 <b>Доступ к институциональному терминалу закрыт.</b>\n"
+            "Отправьте команду <code>/request</code>, чтобы подать заявку на доступ.\n\n"
+            "Администратор рассмотрит вашу кандидатуру.",
+            parse_mode="HTML"
         )
 
 @router.message(Command("analyze"))
@@ -268,13 +268,13 @@ async def cmd_analyze(message: Message):
         res = await run_multi_tf_analysis(symbol)
         text = format_multi_tf_analysis(res)
         for i in range(0, len(text), 4000):
-            await message.answer(text[i:i+4000], reply_markup=back_keyboard(), parse_mode=None)
+            await message.answer(text[i:i+4000], reply_markup=back_keyboard(), parse_mode="HTML")
     else:
-        await message.answer("Выберите категорию для анализа:", reply_markup=symbols_keyboard())
+        await message.answer("📊 <b>Выберите категорию активов для анализа:</b>", reply_markup=symbols_keyboard(), parse_mode="HTML")
 
 @router.message(Command("indicators"))
 async def cmd_indicators(message: Message):
-    await message.answer("Выберите категорию для индикаторов:", reply_markup=symbols_keyboard())
+    await message.answer("📈 <b>Выберите категорию для технического анализа:</b>", reply_markup=symbols_keyboard(), parse_mode="HTML")
 
 @router.message(Command("sessions"))
 async def cmd_sessions(message: Message):
@@ -283,7 +283,7 @@ async def cmd_sessions(message: Message):
 
 @router.message(Command("signals"))
 async def cmd_signals(message: Message):
-    await message.answer(f"🔍 Анализирую {len(config.ALL_PAIRS)} пар Forex и Золото...", parse_mode=None)
+    await message.answer(f"🔍 <i>Сканирую радар {len(config.ALL_PAIRS)} активов...</i>", parse_mode="HTML")
     results = []
     for sym in config.ALL_PAIRS:
         res = await run_multi_tf_analysis(sym)
@@ -291,7 +291,7 @@ async def cmd_signals(message: Message):
             results.append(res)
     if results:
         summary = format_signals_summary(results)
-        await message.answer(summary, reply_markup=back_keyboard(), parse_mode=None)
+        await message.answer(summary, reply_markup=back_keyboard(), parse_mode="HTML")
 
 @router.message(Command("news"))
 async def cmd_news(message: Message):
@@ -300,39 +300,39 @@ async def cmd_news(message: Message):
         calendar = EconomicCalendar(config.TIMEZONE)
         events = await calendar.get_events_for_display()
         if not events:
-            await message.answer("📰 Нет предстоящих важных новостей в ближайшие 48 часов.", reply_markup=back_keyboard(), parse_mode=None)
+            await message.answer("📰 <i>Нет предстоящих важных новостей в ближайшие 48 часов.</i>", reply_markup=back_keyboard(), parse_mode="HTML")
             return
-        header = f"📰 Экономический календарь (важные новости):\n{'━' * 30}\n\n"
+        header = "📰 <b>ЭКОНОМИЧЕСКИЙ КАЛЕНДАРЬ | ВАЖНЫЕ РЕЛИЗЫ:</b>\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
         texts = [header]
         for e in events:
             texts.append(calendar.format_event(e) + "\n")
         full_text = "\n".join(texts)
         for i in range(0, len(full_text), 4000):
-            await message.answer(full_text[i:i+4000], reply_markup=back_keyboard(), parse_mode=None)
+            await message.answer(full_text[i:i+4000], reply_markup=back_keyboard(), parse_mode="HTML")
     except Exception as e:
-        await message.answer(f"Ошибка загрузки новостей: {e}", reply_markup=back_keyboard(), parse_mode=None)
+        await message.answer(f"⚠️ Ошибка загрузки календаря: {e}", reply_markup=back_keyboard(), parse_mode="HTML")
 
 @router.message(Command("help"))
 async def cmd_help(message: Message):
-    await message.answer(format_help(), reply_markup=back_keyboard(), parse_mode=None)
+    await message.answer(format_help(), reply_markup=back_keyboard(), parse_mode="HTML")
 
 @router.message(Command("stats"))
 async def cmd_stats(message: Message):
     from db.database import get_stats
     stats = await get_stats()
     text = format_stats(stats)
-    await message.answer(text, reply_markup=back_keyboard(), parse_mode=None)
+    await message.answer(text, reply_markup=back_keyboard(), parse_mode="HTML")
 
 @router.message(Command("history"))
 async def cmd_history(message: Message):
     from db.database import get_recent_signals
     signals = await get_recent_signals(limit=15)
     text = format_history(signals)
-    await message.answer(text, reply_markup=back_keyboard(), parse_mode=None)
+    await message.answer(text, reply_markup=back_keyboard(), parse_mode="HTML")
 
 @router.callback_query(F.data == "menu")
 async def cb_menu(callback: CallbackQuery):
-    await callback.message.edit_text("Главное меню:", reply_markup=main_menu_keyboard(), parse_mode=None)
+    await callback.message.edit_text("🏛 <b>ГЛАВНОЕ МЕНЮ ТЕРМИНАЛА:</b>", reply_markup=main_menu_keyboard(), parse_mode="HTML")
 
 @router.callback_query(F.data.startswith("guide:"))
 async def cb_guide(callback: CallbackQuery):
@@ -343,87 +343,87 @@ async def cb_guide(callback: CallbackQuery):
         state["guide_step"] += 1
         step = state["guide_step"]
         if step < get_total_steps():
-            await callback.message.edit_text(get_guide_step(step), reply_markup=guide_keyboard(step), parse_mode=None)
+            await callback.message.edit_text(get_guide_step(step), reply_markup=guide_keyboard(step), parse_mode="HTML")
         else:
-            await callback.message.edit_text("Главное меню:", reply_markup=main_menu_keyboard(), parse_mode=None)
+            await callback.message.edit_text("🏛 <b>ГЛАВНОЕ МЕНЮ ТЕРМИНАЛА:</b>", reply_markup=main_menu_keyboard(), parse_mode="HTML")
     elif action == "skip":
-        await callback.message.edit_text("Главное меню:", reply_markup=main_menu_keyboard(), parse_mode=None)
+        await callback.message.edit_text("🏛 <b>ГЛАВНОЕ МЕНЮ ТЕРМИНАЛА:</b>", reply_markup=main_menu_keyboard(), parse_mode="HTML")
 
 @router.callback_query(F.data.startswith("menu:"))
 async def cb_menu_actions(callback: CallbackQuery):
     action = callback.data.split(":")[1]
     if action == "analyze":
-        await callback.message.edit_text("Выберите категорию:", reply_markup=symbols_keyboard())
+        await callback.message.edit_text("📊 <b>Выберите категорию активов для анализа:</b>", reply_markup=symbols_keyboard(), parse_mode="HTML")
     elif action == "indicators":
-        await callback.message.edit_text("Выберите категорию:", reply_markup=symbols_keyboard())
+        await callback.message.edit_text("📈 <b>Выберите категорию для технического анализа:</b>", reply_markup=symbols_keyboard(), parse_mode="HTML")
     elif action == "strategy":
-        await callback.message.edit_text("Выберите стратегию:", reply_markup=strategies_keyboard())
+        await callback.message.edit_text("🧠 <b>Выберите аналитическую модель:</b>", reply_markup=strategies_keyboard(), parse_mode="HTML")
     elif action == "sessions":
         text = sessions.format_sessions_text()
         await callback.message.edit_text(text, reply_markup=back_keyboard(), parse_mode="HTML")
     elif action == "signals":
-        await callback.message.edit_text("Сбор сигналов по всем парам...", parse_mode=None)
+        await callback.message.edit_text("📡 <i>Сканирую радар 17 активов...</i>", parse_mode="HTML")
         results = []
         for sym in config.ALL_PAIRS:
             res = await run_multi_tf_analysis(sym)
             if res:
                 results.append(res)
         summary = format_signals_summary(results) if results else "Нет данных"
-        await callback.message.edit_text(summary, reply_markup=back_keyboard(), parse_mode=None)
+        await callback.message.edit_text(summary, reply_markup=back_keyboard(), parse_mode="HTML")
     elif action == "news":
         try:
             from news.economic_calendar import EconomicCalendar
             calendar = EconomicCalendar(config.TIMEZONE)
             events = await calendar.get_events_for_display()
             if not events:
-                await callback.message.edit_text("📰 Нет предстоящих важных новостей в ближайшие 48 часов.", reply_markup=back_keyboard(), parse_mode=None)
+                await callback.message.edit_text("📰 <i>Нет предстоящих важных новостей в ближайшие 48 часов.</i>", reply_markup=back_keyboard(), parse_mode="HTML")
                 return
-            header = f"📰 Экономический календарь:\n{'━' * 30}\n\n"
+            header = "📰 <b>ЭКОНОМИЧЕСКИЙ КАЛЕНДАРЬ | ВАЖНЫЕ РЕЛИЗЫ:</b>\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
             texts = [header]
             for e in events:
                 texts.append(calendar.format_event(e) + "\n")
             full_text = "\n".join(texts)
             for i in range(0, len(full_text), 4000):
                 if i == 0:
-                    await callback.message.edit_text(full_text[i:i+4000], reply_markup=back_keyboard(), parse_mode=None)
+                    await callback.message.edit_text(full_text[i:i+4000], reply_markup=back_keyboard(), parse_mode="HTML")
                 else:
-                    await callback.message.answer(full_text[i:i+4000], parse_mode=None)
+                    await callback.message.answer(full_text[i:i+4000], parse_mode="HTML")
         except Exception as e:
-            await callback.message.edit_text(f"Ошибка загрузки новостей: {e}", reply_markup=back_keyboard(), parse_mode=None)
+            await callback.message.edit_text(f"⚠️ Ошибка загрузки календаря: {e}", reply_markup=back_keyboard(), parse_mode="HTML")
     elif action == "stats":
         from db.database import get_stats
         stats = await get_stats()
         text = format_stats(stats)
-        await callback.message.edit_text(text, reply_markup=back_keyboard(), parse_mode=None)
+        await callback.message.edit_text(text, reply_markup=back_keyboard(), parse_mode="HTML")
     elif action == "history":
         from db.database import get_recent_signals
         signals = await get_recent_signals(limit=15)
         text = format_history(signals)
-        await callback.message.edit_text(text, reply_markup=back_keyboard(), parse_mode=None)
+        await callback.message.edit_text(text, reply_markup=back_keyboard(), parse_mode="HTML")
     elif action == "help":
-        await callback.message.edit_text(format_help(), reply_markup=back_keyboard(), parse_mode=None)
+        await callback.message.edit_text(format_help(), reply_markup=back_keyboard(), parse_mode="HTML")
 
 @router.callback_query(F.data.startswith("cat:"))
 async def cb_category(callback: CallbackQuery):
     category = callback.data.split(":")[1]
-    await callback.message.edit_text("Выберите пару:", reply_markup=category_pairs_keyboard(category))
+    await callback.message.edit_text("📊 <b>Выберите торговый инструмент:</b>", reply_markup=category_pairs_keyboard(category), parse_mode="HTML")
 
 @router.callback_query(F.data.startswith("sym:"))
 async def cb_symbol(callback: CallbackQuery):
     symbol = callback.data.split(":")[1]
     state = get_user_state(callback.from_user.id)
     state["symbol"] = symbol
-    await callback.message.edit_text(f"Анализ {symbol}...", parse_mode=None)
+    await callback.message.edit_text(f"🏛 <i>Глубокий анализ {symbol} по модели ICT/SMC...</i>", parse_mode="HTML")
     res = await run_multi_tf_analysis(symbol)
     if res:
         text = format_multi_tf_analysis(res)
         for i in range(0, len(text), 4000):
             if i == 0:
-                await callback.message.edit_text(text[i:i+4000], reply_markup=back_keyboard(), parse_mode=None)
+                await callback.message.edit_text(text[i:i+4000], reply_markup=back_keyboard(), parse_mode="HTML")
             else:
-                await callback.message.answer(text[i:i+4000], parse_mode=None)
+                await callback.message.answer(text[i:i+4000], parse_mode="HTML")
     else:
-        await callback.message.edit_text("Ошибка получения данных.", reply_markup=back_keyboard())
+        await callback.message.edit_text("⚠️ Ошибка получения котировок.", reply_markup=back_keyboard(), parse_mode="HTML")
 
 @router.callback_query(F.data.startswith("tf:"))
 async def cb_timeframe(callback: CallbackQuery):

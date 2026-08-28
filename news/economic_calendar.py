@@ -144,27 +144,27 @@ class EconomicCalendar:
         }
         country_name = country_name_map.get(event.country, event.country)
         flag = config.CURRENCY_COUNTRY.get(event.country, "")
-        country_display = f"🏳️ {flag} {country_name}".strip()
+        country_display = f"{flag} {country_name}".strip()
 
         if event.minutes_until < 0:
-            time_str = "уже прошло"
+            time_str = "<i>уже состоялось</i>"
         else:
-            time_str = f"через {event.minutes_until} мин"
+            time_str = f"<b>через {event.minutes_until} мин</b>"
             
         now_dt = datetime.now(self.timezone)
         utc_offset_sec = now_dt.utcoffset().total_seconds() if now_dt.utcoffset() else 0
         utc_offset = int(utc_offset_sec / 3600)
         utc_str = f"UTC+{utc_offset}" if utc_offset >= 0 else f"UTC{utc_offset}"
             
-        pairs_str = ", ".join(event.affected_pairs) if event.affected_pairs else "Нет данных"
+        pairs_str = f"<code>{', '.join(event.affected_pairs)}</code>" if event.affected_pairs else "Все мажоры"
+        impact_icon = "🔴" if event.impact.lower() == "high" else "🟠"
 
         return (
-            f"📰 {event.title}\n"
-            f"🕐 {event.time_str} ({utc_str}) | {time_str}\n"
-            f"{country_display}\n"
-            f"💥 Импакт: 🔴 ВЫСОКИЙ\n"
-            f"📊 Прогноз: {event.forecast} | Предыдущее: {event.previous}\n"
-            f"🔗 Пары: {pairs_str}"
+            f"📰 <b>{event.title}</b>\n"
+            f"┌ 🕒 <b>Время:</b> <code>{event.time_str} ({utc_str})</code> | {time_str}\n"
+            f"├ 🏳️ <b>Регион:</b> <code>{country_display}</code> | {impact_icon} <b>{event.impact.upper()}</b>\n"
+            f"├ 📊 <b>Прогноз:</b> <code>{event.forecast or '—'}</code> | <b>Пред.:</b> <code>{event.previous or '—'}</code>\n"
+            f"└ 🔗 <b>Инструменты:</b> {pairs_str}\n"
         )
 
     def format_warning(self, event: EconomicEvent) -> str:
@@ -175,24 +175,27 @@ class EconomicCalendar:
         }
         country_name = country_name_map.get(event.country, event.country)
         flag = config.CURRENCY_COUNTRY.get(event.country, "")
-        country_display = f"🏳️ {flag} {country_name}".strip()
+        country_display = f"{flag} {country_name}".strip()
 
         now_dt = datetime.now(self.timezone)
         utc_offset_sec = now_dt.utcoffset().total_seconds() if now_dt.utcoffset() else 0
         utc_offset = int(utc_offset_sec / 3600)
         utc_str = f"UTC+{utc_offset}" if utc_offset >= 0 else f"UTC{utc_offset}"
         
-        pairs_str = ", ".join(event.affected_pairs) if event.affected_pairs else "Нет данных"
+        pairs_str = f"<code>{', '.join(event.affected_pairs)}</code>" if event.affected_pairs else "Все валютные пары"
 
         return (
-            f"⚠️ ВАЖНАЯ НОВОСТЬ через {event.minutes_until} минут!\n\n"
-            f"📰 {event.title}\n"
-            f"🕐 Время: {event.time_str} ({utc_str})\n"
-            f"{country_display}\n"
-            f"💥 Импакт: 🔴 ВЫСОКИЙ\n\n"
-            f"Затронутые пары: {pairs_str}\n\n"
-            f"⚡ Рекомендации:\n"
-            f"• Рассмотрите закрытие открытых позиций\n"
-            f"• Не открывайте новые сделки до выхода новости\n"
-            f"• Ожидайте повышенную волатильность 15-30 мин после"
+            f"⚠️ <b>MACRO ALERT: ВАЖНАЯ НОВОСТЬ ЧЕРЕЗ {event.minutes_until} МИН</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"📰 <b>СОБЫТИЕ:</b> <b>{event.title}</b>\n"
+            f"🕐 <b>ВРЕМЯ:</b>    <code>{event.time_str} ({utc_str})</code>\n"
+            f"🏳️ <b>РЕГИОН:</b>   <code>{country_display}</code>\n"
+            f"💥 <b>ИМПАКТ:</b>   🔴 <b>HIGH IMPACT RELEASE</b>\n\n"
+            f"<b>ЗАТРОНУТЫЕ АКТИВЫ:</b>\n{pairs_str}\n\n"
+            f"┌── <b>ПРАВИЛА ИНСТИТУЦИОНАЛЬНОГО РИСКА</b> ─\n"
+            f"│ • Не открывать новые позиции за 30 мин до релиза\n"
+            f"│ • Защитить открытые ордера безубытком (BE)\n"
+            f"│ • Ожидать повышенную волатильность и спайки\n"
+            f"└──────────────────────────────────────\n"
+            f"💼 <i>Wall Street Macro Risk Controller</i>"
         )

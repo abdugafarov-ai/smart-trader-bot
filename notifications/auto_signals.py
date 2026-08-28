@@ -127,8 +127,10 @@ class AutoSignalScanner:
                     )
                     
                     # Отправляем ЭТАП 1 (Сигнал на выставление отложенного ордера)
+                    from bot.keyboards import signal_inline_keyboard
                     msg = format_notification(result)
-                    await self._send_to_all(msg)
+                    kb = signal_inline_keyboard(symbol)
+                    await self._send_to_all(msg, reply_markup=kb)
                     
                     self.last_signals[symbol] = (
                         result.overall_direction, result.overall_stars
@@ -161,11 +163,11 @@ class AutoSignalScanner:
         except Exception as e:
             logger.error("News check error: %s", e, exc_info=True)
 
-    async def _send_to_all(self, text: str):
-        """Отправляет всем одобренным пользователям."""
+    async def _send_to_all(self, text: str, reply_markup=None):
+        """Отправляет всем одобренным пользователям с поддержкой HTML и кнопок."""
         recipients = await self._get_notification_recipients()
         for uid in recipients:
             try:
-                await self.bot.send_message(uid, text)
+                await self.bot.send_message(uid, text, parse_mode="HTML", reply_markup=reply_markup)
             except Exception as e:
                 logger.error("Failed to send to %d: %s", uid, e)
