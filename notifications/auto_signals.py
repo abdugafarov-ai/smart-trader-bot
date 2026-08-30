@@ -1,12 +1,14 @@
 """
 Smart Trader Bot — AutoSignalScanner.
-Сканирует 17 пар Форекс и Золото, фильтрует по институциональным критериям ICT/SMC (R:R >= 1:2.5),
-блокирует сигналы перед важными новостями, отправляет 1-й ЭТАП сделки с уникальным эмодзи-маркером.
+Сканирует все торговые пары, фильтрует по институциональным критериям ICT/SMC (R:R >= 1:2.5),
+блокирует сигналы перед важными новостями, отправляет сигнал с графиком и разметкой уровней.
 """
 
 import asyncio
 import logging
+import io
 from aiogram import Bot
+from aiogram.types import BufferedInputFile
 import config
 from db.database import save_signal, check_signal_exists
 
@@ -18,13 +20,14 @@ class AutoSignalScanner:
                  symbols: list[str], timeframe: str = 'H4'):
         self.bot = bot
         self.interval_minutes = interval_minutes
-        self.user_ids = user_ids  # Fallback list
+        self.user_ids = user_ids
         self.symbols = symbols
         self.timeframe = timeframe
         self.is_running = False
         self.last_signals: dict[str, tuple[str, int]] = {}
         self._news_warned: set[str] = set()
         self.signals_skipped_by_news: int = 0
+        self.chart_theme: str = "dark"  # "dark" или "light" — настройка пользователя
 
     async def start(self):
         self.is_running = True
@@ -75,7 +78,6 @@ class AutoSignalScanner:
 
         is_weekend = DataFetcher.is_weekend()
 
-        # На выходных рынки Форекс и металлов закрыты
         if is_weekend:
             logger.info("Weekend: Forex and Gold markets are closed. Scanner paused.")
             return
@@ -92,7 +94,6 @@ class AutoSignalScanner:
                     self.signals_skipped_by_news += 1
                     continue
 
-                # Проверяем, нет ли уже активной/ожидающей сделки по этой паре (1 пара = 1 сделка!)
                 if await check_signal_exists(symbol, "ANY"):
                     continue
 
@@ -126,20 +127,76 @@ class AutoSignalScanner:
                         timeframes_agreed=timeframes_str,
                     )
                     
-                    # Отправляем ЭТАП 1 (Сигнал на выставление отложенного ордера)
+                    # ── Генерируем график с разметкой уровней ──
+                    chart_bytes = await self._generate_chart(
+                        symbol=symbol,
+                        direction=result.overall_direction,
+                        entry=result.entry,
+                        stop_loss=result.stop_loss,
+                        tp1=result.take_profit_1,
+                        tp2=result.take_profit_2,
+                        current_price=result.current_price,
+                        order_type=result.order_type,
+                        stars=result.overall_stars,
+                    )
+                    
+                    # Отправляем ЭТАП 1 (Сигнал с графиком)
                     from bot.keyboards import signal_inline_keyboard
                     msg = format_notification(result)
                     kb = signal_inline_keyboard(symbol)
-                    await self._send_to_all(msg, reply_markup=kb)
+                    
+                    if chart_bytes:
+                        await self._send_chart_to_all(chart_bytes, msg, symbol, reply_markup=kb)
+                    else:
+                        await self._send_to_all(msg, reply_markup=kb)
                     
                     self.last_signals[symbol] = (
                         result.overall_direction, result.overall_stars
                     )
-                    logger.info("Signal sent: %s %s [%s] ⭐%d (tag %s)",
+                    logger.info("Signal sent: %s %s [%s] ⭐%d (tag %s) with chart=%s",
                                 symbol, result.order_type, result.overall_direction,
-                                result.overall_stars, result.tag_emoji)
+                                result.overall_stars, result.tag_emoji,
+                                "YES" if chart_bytes else "NO")
             except Exception as e:
                 logger.error("Error scanning %s: %s", symbol, e, exc_info=True)
+
+    async def _generate_chart(self, symbol: str, direction: str, entry: float,
+                               stop_loss: float, tp1: float, tp2: float = None,
+                               current_price: float = None, order_type: str = "BUY_LIMIT",
+                               stars: int = 4) -> bytes | None:
+        """Генерирует свечной график с разметкой сигнала."""
+        try:
+            from market.data_fetcher import DataFetcher
+            from utils.chart_generator import generate_signal_chart
+            
+            fetcher = DataFetcher()
+            # Берём H1 данные для красивого графика (60 свечей = ~2.5 дня)
+            df = await fetcher.fetch_ohlcv(symbol, "H1", limit=80)
+            if df is None or df.empty or len(df) < 20:
+                # Fallback на M15
+                df = await fetcher.fetch_ohlcv(symbol, "M15", limit=80)
+            
+            if df is None or df.empty or len(df) < 15:
+                return None
+                
+            chart_bytes = generate_signal_chart(
+                df=df,
+                symbol=symbol,
+                direction=direction,
+                entry=entry,
+                stop_loss=stop_loss,
+                tp1=tp1,
+                tp2=tp2,
+                current_price=current_price,
+                order_type=order_type,
+                stars=stars,
+                theme=self.chart_theme,
+                last_n_candles=60,
+            )
+            return chart_bytes
+        except Exception as e:
+            logger.error("Chart generation failed for %s: %s", symbol, e, exc_info=True)
+            return None
 
     async def check_news(self):
         """Проверяет предстоящие важные новости и предупреждает."""
@@ -163,8 +220,30 @@ class AutoSignalScanner:
         except Exception as e:
             logger.error("News check error: %s", e, exc_info=True)
 
+    async def _send_chart_to_all(self, chart_bytes: bytes, caption: str, symbol: str, reply_markup=None):
+        """Отправляет график + подпись всем одобренным пользователям."""
+        recipients = await self._get_notification_recipients()
+        photo = BufferedInputFile(chart_bytes, filename=f"signal_{symbol}.png")
+        
+        for uid in recipients:
+            try:
+                await self.bot.send_photo(
+                    uid,
+                    photo=photo,
+                    caption=caption,
+                    parse_mode="HTML",
+                    reply_markup=reply_markup,
+                )
+            except Exception as e:
+                logger.error("Failed to send chart to %d: %s", uid, e)
+                # Fallback: отправляем текст без графика
+                try:
+                    await self.bot.send_message(uid, caption, parse_mode="HTML", reply_markup=reply_markup)
+                except Exception as e2:
+                    logger.error("Failed to send text fallback to %d: %s", uid, e2)
+
     async def _send_to_all(self, text: str, reply_markup=None):
-        """Отправляет всем одобренным пользователям с поддержкой HTML и кнопок."""
+        """Отправляет текст всем одобренным пользователям."""
         recipients = await self._get_notification_recipients()
         for uid in recipients:
             try:

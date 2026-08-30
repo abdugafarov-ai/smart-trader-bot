@@ -271,8 +271,44 @@ async def cmd_analyze(message: Message):
     parts = message.text.split()
     if len(parts) > 1:
         symbol = parts[1].upper()
+        await message.answer(f"🏛 <i>Институциональный анализ {symbol}...</i>", parse_mode="HTML")
         res = await run_multi_tf_analysis(symbol)
         text = format_multi_tf_analysis(res)
+        
+        # Генерируем график если есть уровни
+        if res and res.overall_direction != "NEUTRAL" and res.entry and res.stop_loss:
+            try:
+                from utils.chart_generator import generate_signal_chart
+                from aiogram.types import BufferedInputFile
+                
+                state = get_user_state(message.from_user.id)
+                chart_theme = state.get("chart_theme", "dark")
+                
+                df_chart = await fetcher.fetch_ohlcv(symbol, "H1", limit=80)
+                if df_chart is not None and not df_chart.empty and len(df_chart) >= 20:
+                    chart_bytes = generate_signal_chart(
+                        df=df_chart, symbol=symbol,
+                        direction=res.overall_direction,
+                        entry=res.entry, stop_loss=res.stop_loss,
+                        tp1=res.take_profit_1, tp2=res.take_profit_2,
+                        current_price=res.current_price,
+                        order_type=res.order_type,
+                        stars=res.overall_stars,
+                        theme=chart_theme,
+                    )
+                    if chart_bytes:
+                        photo = BufferedInputFile(chart_bytes, filename=f"analysis_{symbol}.png")
+                        # Telegram caption limit = 1024 chars, text may be longer
+                        if len(text) <= 1024:
+                            await message.answer_photo(photo=photo, caption=text, parse_mode="HTML", reply_markup=back_keyboard())
+                        else:
+                            await message.answer_photo(photo=photo, caption=f"📊 <b>{symbol}</b> | {res.overall_direction} | {'★' * res.overall_stars}", parse_mode="HTML")
+                            for i in range(0, len(text), 4000):
+                                await message.answer(text[i:i+4000], reply_markup=back_keyboard(), parse_mode="HTML")
+                        return
+            except Exception as e:
+                logging.getLogger(__name__).error("Chart generation error: %s", e)
+        
         for i in range(0, len(text), 4000):
             await message.answer(text[i:i+4000], reply_markup=back_keyboard(), parse_mode="HTML")
     else:
@@ -441,10 +477,13 @@ async def cb_timeframe(callback: CallbackQuery):
 @router.callback_query(F.data == "settings")
 async def cb_settings(callback: CallbackQuery):
     state = get_user_state(callback.from_user.id)
+    chart_theme = state.get("chart_theme", "dark")
+    theme_label = "🌙 Тёмная" if chart_theme == "dark" else "☀️ Светлая"
     text = (
         f"⚙️ Текущие настройки:\n\n"
         f"📊 Пара: {state['symbol']}\n"
         f"⏱ Таймфрейм: {state['timeframe']}\n"
+        f"🎨 Тема графиков: {theme_label}\n"
     )
     await callback.message.edit_text(text, reply_markup=settings_keyboard())
 
@@ -455,6 +494,18 @@ async def cb_settings_action(callback: CallbackQuery):
         await callback.message.edit_text("Выберите категорию:", reply_markup=symbols_keyboard())
     elif action == "tf":
         await callback.message.edit_text("Выберите таймфрейм:", reply_markup=timeframes_keyboard())
+    elif action == "chart_theme":
+        state = get_user_state(callback.from_user.id)
+        current = state.get("chart_theme", "dark")
+        new_theme = "light" if current == "dark" else "dark"
+        state["chart_theme"] = new_theme
+        theme_label = "🌙 Тёмная (Wall Street)" if new_theme == "dark" else "☀️ Светлая (Classic)"
+        await callback.message.edit_text(
+            f"🎨 <b>Тема графиков изменена:</b> {theme_label}\n\n"
+            f"Все новые графики будут генерироваться в выбранной теме.",
+            reply_markup=back_keyboard(),
+            parse_mode="HTML",
+        )
     elif action == "notif":
         await callback.message.edit_text(
             "🔔 Для настройки уведомлений добавьте свой Telegram ID "

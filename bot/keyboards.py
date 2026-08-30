@@ -119,7 +119,8 @@ def settings_keyboard() -> InlineKeyboardMarkup:
         InlineKeyboardButton(text="⏱ Таймфрейм по умолч.", callback_data="settings:tf")
     )
     builder.row(
-        InlineKeyboardButton(text="🔔 Уведомления ВКЛ/ВЫКЛ", callback_data="settings:notif")
+        InlineKeyboardButton(text="🎨 Тема Графиков", callback_data="settings:chart_theme"),
+        InlineKeyboardButton(text="🔔 Уведомления", callback_data="settings:notif")
     )
     builder.row(InlineKeyboardButton(text="◀️ Меню", callback_data="menu"))
     return builder.as_markup()
