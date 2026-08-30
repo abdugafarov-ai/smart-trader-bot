@@ -87,14 +87,22 @@ async def run_multi_tf_analysis(symbol: str) -> MultiTFResult:
         overall_dir = 'NEUTRAL'
         tf_agree = 0
     
-    # Выбираем лучший TF в направлении тренда (приоритет H1 / H4)
-    matching_tfs = [t for t in tf_analyses if t.direction == overall_dir]
-    if matching_tfs:
-        best_tf = max(matching_tfs, key=lambda t: t.confidence)
-    else:
-        best_tf = tf_analyses[0]
+    # Институциональная Top-Down модель:
+    # Тренд определяется старшими TF, а вход (Entry/SL/TP) берется с рабочего таймфрейма (H1 -> M15 -> H4)
+    best_tf = None
+    for target_tf in ["H1", "M15", "H4", "D1"]:
+        cand = next((t for t in tf_analyses if t.timeframe == target_tf and t.direction == overall_dir), None)
+        if cand:
+            ict_cand = next((s for s in cand.strategies if s.name == 'ICT / Smart Money Concepts'), None)
+            if ict_cand and ict_cand.signal.direction == overall_dir and ict_cand.signal.entry:
+                best_tf = cand
+                break
+                
+    if not best_tf:
+        matching_tfs = [t for t in tf_analyses if t.direction == overall_dir]
+        best_tf = max(matching_tfs, key=lambda t: t.confidence) if matching_tfs else tf_analyses[0]
     
-    # Берем чистые параметры ICT/SMC из лучшего таймфрейма
+    # Берем институциональные параметры ICT/SMC из рабочего таймфрейма
     best_ict = next((s for s in best_tf.strategies if s.name == 'ICT / Smart Money Concepts'), None)
     
     if best_ict and best_ict.signal.direction == overall_dir and overall_dir != 'NEUTRAL':
@@ -102,7 +110,7 @@ async def run_multi_tf_analysis(symbol: str) -> MultiTFResult:
         sl = best_ict.signal.stop_loss
         tp1 = best_ict.signal.take_profit_1
         tp2 = best_ict.signal.take_profit_2
-        rr1 = best_ict.signal.risk_reward
+        rr1 = round(best_ict.signal.risk_reward, 1) if best_ict.signal.risk_reward else None
         current_price = best_ict.signal.current_price
         order_type = best_ict.signal.order_type
     else:
@@ -111,18 +119,16 @@ async def run_multi_tf_analysis(symbol: str) -> MultiTFResult:
 
     # Рассчитываем rr2
     if entry and sl and tp2 and abs(entry - sl) > 0:
-        rr2 = abs(tp2 - entry) / abs(entry - sl)
+        rr2 = round(abs(tp2 - entry) / abs(entry - sl), 1)
     else:
         rr2 = None
     
     # Пипсы
-    pip_mult = 100 if ('JPY' in symbol or 'XAU' in symbol) else 10000
-    if 'XAU' in symbol:
-        pip_mult = 10  # 1 пункт по золоту = 0.1$
+    pip_mult = 100.0 if 'JPY' in symbol else (10.0 if 'XAU' in symbol else 10000.0)
 
-    pips_sl = abs(entry - sl) * pip_mult if entry and sl else None
-    pips_tp1 = abs(tp1 - entry) * pip_mult if entry and tp1 else None
-    pips_tp2 = abs(tp2 - entry) * pip_mult if entry and tp2 else None
+    pips_sl = round(abs(entry - sl) * pip_mult, 1) if entry and sl else None
+    pips_tp1 = round(abs(tp1 - entry) * pip_mult, 1) if entry and tp1 else None
+    pips_tp2 = round(abs(tp2 - entry) * pip_mult, 1) if entry and tp2 else None
     
     # Звезды уверенности (только при R:R >= 2.4)
     if overall_dir != 'NEUTRAL' and rr1 and rr1 >= 2.4 and tf_agree >= 2:

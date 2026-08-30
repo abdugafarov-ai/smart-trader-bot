@@ -128,7 +128,7 @@ def format_multi_tf_analysis(result: MultiTFResult) -> str:
         text += "⚪ <i>Институциональный сетап отсутствует (R:R &lt; 1:2.5). Ожидаем формирования OTE.</i>\n\n"
         
     if result.session_text:
-        text += f"🕒 <b>Торговая сессия:</b> {escape_html(result.session_text)}\n"
+        text += f"{result.session_text}\n"
         
     text += (
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"

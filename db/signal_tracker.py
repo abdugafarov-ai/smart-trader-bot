@@ -1,51 +1,47 @@
 """
-Smart Trader Bot — Signal Tracker.
-Фоновая задача:
-1. ЭТАП 2: Проверяет PENDING сигналы — если цена коснулась входа ПОСЛЕ создания сигнала, АКТИВИРУЕТ и уведомляет.
-2. ЭТАП 3: Проверяет ACTIVE сигналы — если цена коснулась TP или SL ПОСЛЕ активации, ФИКСИРУЕТ результат и уведомляет.
-Все уведомления сопровождаются исходным уникальным эмодзи-маркером сделки.
+Real-time Signal Tracker & Multi-Stage Lifecycle Manager.
+Отслеживает жизненный цикл ордеров:
+- ЭТАП 1: Выставлен отложенный ордер (PENDING)
+- ЭТАП 2: Цена коснулась входа в реальном времени (PENDING -> ACTIVE)
+- ЭТАП 3: Фиксация Take Profit / Stop Loss (ACTIVE -> TP/SL/EXPIRED)
+
+Строго фильтрует свечи по реальному времени, исключая ложные ретроспективные срабатывания.
 """
 
 import asyncio
 import logging
 from datetime import datetime, timezone
-from typing import Optional
 import pandas as pd
-from aiogram import Bot
 
+import config
 from market.data_fetcher import DataFetcher
 from db.database import (
-    get_pending_signals, get_active_signals, activate_signal,
-    update_signal_status, init_db
+    get_pending_signals, get_active_signals, activate_signal, update_signal_status
 )
 from db.users import get_approved_user_ids
 from utils.formatters import format_order_activated, format_signal_result
-import config
 
 logger = logging.getLogger(__name__)
 
 
 class SignalTracker:
-    """Отслеживает жизненный цикл сигналов (Ожидание -> Активация -> TP / SL)."""
+    """Фоновый трекер сигналов в реальном времени."""
 
-    PENDING_EXPIRE_HOURS = 24  # Лимитка отменяется, если не активировалась за 24 часа
-    ACTIVE_EXPIRE_HOURS = 48   # Сделка в рынке закрывается по таймауту через 48 часов
-
-    def __init__(self, bot: Optional[Bot] = None, check_interval_minutes: int = 5):
+    def __init__(self, bot=None, check_interval_minutes: int = 5):
         self.bot = bot
         self.check_interval = check_interval_minutes
         self.fetcher = DataFetcher()
         self.is_running = False
+        self.PENDING_EXPIRE_HOURS = 24.0  # Отложенный ордер истекает через 24 часа
+        self.ACTIVE_EXPIRE_HOURS = 48.0   # Позиция в рынке удерживается до 48 часов
 
     async def start(self):
-        """Запускает фоновый цикл проверки сигналов."""
-        await init_db()
+        """Запускает непрерывный мониторинг рынка."""
         self.is_running = True
         logger.info("SignalTracker started with Live Alerts. Checking every %d min.", self.check_interval)
 
         while self.is_running:
             try:
-                # В выходные дни рынки закрыты — проверять нет смысла
                 if not DataFetcher.is_weekend():
                     await self.process_pending_signals()
                     await self.process_active_signals()
@@ -57,7 +53,7 @@ class SignalTracker:
         self.is_running = False
 
     async def _send_to_all(self, text: str):
-        """Рассылает уведомление всем одобренным пользователям."""
+        """Рассылает уведомление всем одобренным пользователям в HTML режиме."""
         if not self.bot:
             return
         try:
@@ -94,7 +90,7 @@ class SignalTracker:
         if not entry:
             return
 
-        # Проверка на истечение срока ожидания активации
+        # Проверка на истечение срока ожидания активации (24 часа)
         created = datetime.fromisoformat(sig['created_at'])
         if created.tzinfo is None:
             created = created.replace(tzinfo=timezone.utc)
@@ -107,7 +103,7 @@ class SignalTracker:
                 signal_id, "EXPIRED",
                 close_price=entry,
                 pnl_pips=0.0,
-                result="Истек срок ожидания входа"
+                result="Истек срок ожидания входа (24ч)"
             )
             msg = format_signal_result(sig, "EXPIRED", entry, 0.0)
             await self._send_to_all(msg)
@@ -119,19 +115,10 @@ class SignalTracker:
         if df is None or df.empty:
             return
 
-        # КРИТИЧЕСКИ ВАЖНО: Фильтруем свечи ТОЛЬКО после создания сигнала!
-        # Старая история не должна активировать новый ордер задним числом.
-        if 'timestamp' in df.columns:
-            created_naive = created.replace(tzinfo=None)
-            df_recent = df[df['timestamp'] >= created_naive]
-            if df_recent.empty:
-                # Если новая свеча еще не закрылась, берем последнюю текущую свечу
-                df_recent = df.iloc[-1:]
-        else:
-            df_recent = df.iloc[-1:]
-
-        recent_high = float(df_recent['high'].max())
-        recent_low = float(df_recent['low'].min())
+        created_naive = created.replace(tzinfo=None)
+        
+        # Получаем цены СТРОГО после времени создания сигнала
+        recent_high, recent_low, current_close = self._get_post_event_prices(df, created_naive)
 
         is_triggered = False
 
@@ -155,7 +142,6 @@ class SignalTracker:
             await activate_signal(signal_id)
             sig['status'] = 'ACTIVE'
             sig['activated_at'] = now.isoformat()
-            # Отправляем уведомление ЭТАПА 2
             msg = format_order_activated(sig)
             await self._send_to_all(msg)
             logger.info("Signal #%d ACTIVATED at %.5f! Sent alert with tag %s", signal_id, entry, sig.get('tag_emoji'))
@@ -184,7 +170,6 @@ class SignalTracker:
         if not entry or not sl or not tp1:
             return
 
-        # Время активации
         act_raw = sig.get('activated_at') or sig['created_at']
         activated = datetime.fromisoformat(act_raw)
         if activated.tzinfo is None:
@@ -194,8 +179,7 @@ class SignalTracker:
         seconds_active = (now - activated).total_seconds()
         hours_active = seconds_active / 3600
 
-        # КРИТИЧЕСКИ ВАЖНО: Защита от мгновенного ложного срабатывания в ту же секунду активации
-        # Даем сделке минимум 60 секунд на развитие в рынке
+        # Защита от мгновенного срабатывания в ту же минуту активации
         if seconds_active < 60:
             return
 
@@ -203,24 +187,16 @@ class SignalTracker:
         if df is None or df.empty:
             return
 
-        # Фильтруем свечи ТОЛЬКО ПОСЛЕ момента активации сделки!
-        if 'timestamp' in df.columns:
-            activated_naive = activated.replace(tzinfo=None)
-            df_recent = df[df['timestamp'] >= activated_naive]
-            if df_recent.empty:
-                df_recent = df.iloc[-1:]
-        else:
-            df_recent = df.iloc[-1:]
-
-        recent_high = float(df_recent['high'].max())
-        recent_low = float(df_recent['low'].min())
-        current_close = float(df_recent['close'].iloc[-1])
-
+        activated_naive = activated.replace(tzinfo=None)
+        
+        # Получаем экстремумы СТРОГО после момента активации
+        recent_high, recent_low, current_close = self._get_post_event_prices(df, activated_naive)
         mult = self._get_pip_mult(symbol)
 
         # Проверка на таймаут удержания позиции (48 часов)
         if hours_active > self.ACTIVE_EXPIRE_HOURS:
             pnl = (current_close - entry) * mult if direction == "LONG" else (entry - current_close) * mult
+            pnl = round(pnl, 1)
             await update_signal_status(
                 signal_id, "EXPIRED",
                 close_price=current_close,
@@ -232,25 +208,25 @@ class SignalTracker:
             logger.info("Signal #%d closed by timeout.", signal_id)
             return
 
-        # ── Фиксация TP / SL строго по свечам после активации ──
+        # ── Фиксация TP / SL строго по свечам после момента активации ──
         if direction == "LONG":
-            # 1. Сначала проверяем Stop Loss
+            # 1. Проверяем Stop Loss
             if recent_low <= sl:
-                pnl = -(abs(entry - sl) * mult)
+                pnl = -round(abs(entry - sl) * mult, 1)
                 await update_signal_status(signal_id, "SL_HIT", close_price=sl, pnl_pips=pnl, result="Stop Loss")
                 msg = format_signal_result(sig, "SL_HIT", sl, pnl)
                 await self._send_to_all(msg)
                 logger.info("Signal #%d SL_HIT: %.1f pips (tag %s)", signal_id, pnl, sig.get('tag_emoji'))
             # 2. Проверяем Take Profit 2
             elif tp2 and recent_high >= tp2:
-                pnl = abs(tp2 - entry) * mult
+                pnl = round(abs(tp2 - entry) * mult, 1)
                 await update_signal_status(signal_id, "TP2_HIT", close_price=tp2, pnl_pips=pnl, result="Take Profit 2")
                 msg = format_signal_result(sig, "TP2_HIT", tp2, pnl)
                 await self._send_to_all(msg)
                 logger.info("Signal #%d TP2_HIT: +%.1f pips (tag %s)", signal_id, pnl, sig.get('tag_emoji'))
             # 3. Проверяем Take Profit 1
             elif recent_high >= tp1:
-                pnl = abs(tp1 - entry) * mult
+                pnl = round(abs(tp1 - entry) * mult, 1)
                 await update_signal_status(signal_id, "TP1_HIT", close_price=tp1, pnl_pips=pnl, result="Take Profit 1")
                 msg = format_signal_result(sig, "TP1_HIT", tp1, pnl)
                 await self._send_to_all(msg)
@@ -259,25 +235,49 @@ class SignalTracker:
         elif direction == "SHORT":
             # 1. Stop Loss
             if recent_high >= sl:
-                pnl = -(abs(sl - entry) * mult)
+                pnl = -round(abs(sl - entry) * mult, 1)
                 await update_signal_status(signal_id, "SL_HIT", close_price=sl, pnl_pips=pnl, result="Stop Loss")
                 msg = format_signal_result(sig, "SL_HIT", sl, pnl)
                 await self._send_to_all(msg)
                 logger.info("Signal #%d SL_HIT: %.1f pips (tag %s)", signal_id, pnl, sig.get('tag_emoji'))
             # 2. Take Profit 2
             elif tp2 and recent_low <= tp2:
-                pnl = abs(entry - tp2) * mult
+                pnl = round(abs(entry - tp2) * mult, 1)
                 await update_signal_status(signal_id, "TP2_HIT", close_price=tp2, pnl_pips=pnl, result="Take Profit 2")
                 msg = format_signal_result(sig, "TP2_HIT", tp2, pnl)
                 await self._send_to_all(msg)
                 logger.info("Signal #%d TP2_HIT: +%.1f pips (tag %s)", signal_id, pnl, sig.get('tag_emoji'))
             # 3. Take Profit 1
             elif recent_low <= tp1:
-                pnl = abs(entry - tp1) * mult
+                pnl = round(abs(entry - tp1) * mult, 1)
                 await update_signal_status(signal_id, "TP1_HIT", close_price=tp1, pnl_pips=pnl, result="Take Profit 1")
                 msg = format_signal_result(sig, "TP1_HIT", tp1, pnl)
                 await self._send_to_all(msg)
                 logger.info("Signal #%d TP1_HIT: +%.1f pips (tag %s)", signal_id, pnl, sig.get('tag_emoji'))
+
+    @staticmethod
+    def _get_post_event_prices(df: pd.DataFrame, event_time_naive: datetime) -> tuple[float, float, float]:
+        """
+        Извлекает истинные high, low и close строго ПОСЛЕ времени события.
+        Исключает пре-маркетные исторические тени из текущей незавершенной свечи.
+        """
+        current_close = float(df['close'].iloc[-1])
+        
+        if 'timestamp' not in df.columns:
+            return current_close, current_close, current_close
+
+        # Свечи, которые открылись СТРОГО после времени события
+        df_future = df[df['timestamp'] > event_time_naive]
+        
+        if not df_future.empty:
+            recent_high = max(float(df_future['high'].max()), current_close)
+            recent_low = min(float(df_future['low'].min()), current_close)
+        else:
+            # Новых закрытых свечей пока нет, опираемся на текущую живую цену
+            recent_high = current_close
+            recent_low = current_close
+            
+        return recent_high, recent_low, current_close
 
     @staticmethod
     def _get_pip_mult(symbol: str) -> float:
