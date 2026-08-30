@@ -136,16 +136,16 @@ class ICTSMCStrategy(BaseStrategy):
         if not bos_found and not choch_found:
             if strong_bull:
                 direction = "LONG"
-                details.append("Структура: Сильный восходящий тренд")
+                details.append("Структура: Сильный восходящий тренд (без BOS/CHoCH)")
             elif strong_bear:
                 direction = "SHORT"
-                details.append("Структура: Сильный нисходящий тренд")
+                details.append("Структура: Сильный нисходящий тренд (без BOS/CHoCH)")
             else:
-                mid_point = (hh1 + hl1) / 2
-                if current_price > mid_point:
-                    direction = "LONG"
-                else:
-                    direction = "SHORT"
+                # НЕТ mid_point fallback — нет чёткой структуры = нет сигнала
+                return self._make_result(
+                    StrategySignal(direction="NEUTRAL", confidence=0, details=["Нет BOS/CHoCH и нет выраженного тренда"]),
+                    ["Неопределённая структура рынка — пропуск"]
+                )
 
         if direction == "NEUTRAL":
             return self._make_result(StrategySignal(direction="NEUTRAL"), details)
@@ -225,14 +225,14 @@ class ICTSMCStrategy(BaseStrategy):
         if direction == "LONG":
             fib_0618 = impulse_high - 0.618 * diff
             fib_0705 = impulse_high - 0.705 * diff
-            if current_price >= fib_0705:
+            if fib_0705 <= current_price <= fib_0618:
                 sub_signals += 1
                 ote_entry = fib_0618
                 details.append(f"Зона OTE (0.618-0.705): {self._format_price(fib_0705, symbol)} — {self._format_price(fib_0618, symbol)}")
         else:
             fib_0618 = impulse_low + 0.618 * diff
             fib_0705 = impulse_low + 0.705 * diff
-            if current_price <= fib_0705:
+            if fib_0618 <= current_price <= fib_0705:
                 sub_signals += 1
                 ote_entry = fib_0618
                 details.append(f"Зона OTE (0.618-0.705): {self._format_price(fib_0618, symbol)} — {self._format_price(fib_0705, symbol)}")
@@ -259,10 +259,13 @@ class ICTSMCStrategy(BaseStrategy):
             if fvg_zone and fvg_zone[1] < current_price:
                 candidates.append(fvg_zone[1])
 
-            if candidates:
-                entry = max(candidates)
-            else:
-                entry = current_price - 0.4 * atr
+            if not candidates:
+                # Нет зоны = нет входа. Не выдумываем entry из воздуха
+                return self._make_result(
+                    StrategySignal(direction="NEUTRAL", confidence=0, details=details + ["Нет OB/FVG/OTE зоны для входа"]),
+                    details + ["Отсутствует институциональная зона входа"]
+                )
+            entry = max(candidates)
 
             base_sl = ob_zone[1] if ob_zone else impulse_low
             sl = min(base_sl - 0.25 * atr, entry - min_sl_dist) # BUG 2 FIX
@@ -295,10 +298,12 @@ class ICTSMCStrategy(BaseStrategy):
             if fvg_zone and fvg_zone[0] > current_price:
                 candidates.append(fvg_zone[0])
 
-            if candidates:
-                entry = min(candidates)
-            else:
-                entry = current_price + 0.4 * atr
+            if not candidates:
+                return self._make_result(
+                    StrategySignal(direction="NEUTRAL", confidence=0, details=details + ["Нет OB/FVG/OTE зоны для входа"]),
+                    details + ["Отсутствует институциональная зона входа"]
+                )
+            entry = min(candidates)
 
             base_sl = ob_zone[0] if ob_zone else impulse_high
             sl = max(base_sl + 0.25 * atr, entry + min_sl_dist) # BUG 2 FIX

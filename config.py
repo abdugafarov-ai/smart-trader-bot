@@ -138,6 +138,82 @@ def get_yf_symbol(symbol: str) -> str:
     return YFINANCE_SYMBOL_MAP.get(symbol.upper(), f"{symbol.upper()}=X")
 
 
+# ── ICT Kill Zones (UTC hours) ────────────────────────────
+# London Kill Zone: 07:00-10:00 UTC (02:00-05:00 ET)
+# NY Kill Zone: 12:00-15:00 UTC (07:00-10:00 ET)
+KILL_ZONES_UTC = {
+    "london": {"start": 7, "end": 10, "name": "London Open KZ"},
+    "ny": {"start": 12, "end": 15, "name": "New York Open KZ"},
+}
+
+# ── Session Filter: какие пары активны в какие сессии (UTC часы) ──
+# Пара торгуется ТОЛЬКО когда хотя бы одна её сессия активна
+PAIR_ACTIVE_SESSIONS = {
+    # EUR pairs — London + NY (07:00-20:00 UTC)
+    "EURUSD": [(7, 20)], "EURGBP": [(7, 16)], "EURJPY": [(0, 9), (7, 16)],
+    "EURAUD": [(0, 9), (7, 16)], "EURCHF": [(7, 16)],
+    # GBP pairs — London + NY (07:00-20:00 UTC)
+    "GBPUSD": [(7, 20)], "GBPJPY": [(0, 9), (7, 16)], "GBPAUD": [(0, 9), (7, 16)],
+    # USD pairs — NY session primary (12:00-20:00), London secondary
+    "USDJPY": [(0, 9), (12, 20)], "USDCHF": [(7, 20)], "USDCAD": [(12, 20)],
+    # AUD/NZD pairs — Sydney/Tokyo + London open
+    "AUDUSD": [(0, 9), (7, 16)], "NZDUSD": [(0, 9), (7, 16)],
+    "AUDCAD": [(0, 9), (12, 20)], "AUDNZD": [(0, 6)],
+    # JPY crosses — Tokyo + London
+    "CADJPY": [(0, 9), (12, 20)],
+    # Gold — London + NY only
+    "XAUUSD": [(7, 20)],
+}
+
+# ── Correlation Groups (для ограничения одновременных ордеров) ──
+CORRELATION_GROUPS = {
+    "USD_LONG": ["EURUSD", "GBPUSD", "AUDUSD", "NZDUSD"],   # SHORT USD = LONG these
+    "USD_SHORT": ["USDJPY", "USDCHF", "USDCAD"],              # LONG USD = LONG these
+    "JPY_PAIRS": ["EURJPY", "GBPJPY", "CADJPY", "USDJPY"],
+    "AUD_PAIRS": ["AUDUSD", "EURAUD", "GBPAUD", "AUDCAD", "AUDNZD"],
+}
+MAX_CORRELATED_SIGNALS = 2  # Max simultaneous signals in one correlation group
+
+# ── Daily Limits ──────────────────────────────────────────
+MAX_SIGNALS_PER_DAY = 3
+SIGNAL_COOLDOWN_HOURS = 2  # Минимум 2 часа между сигналами на одну пару
+
+def is_pair_in_active_session(symbol: str) -> bool:
+    """Проверяет, торгуется ли пара в текущую сессию."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    current_hour = datetime.now(ZoneInfo('UTC')).hour
+    sessions = PAIR_ACTIVE_SESSIONS.get(symbol, [(0, 24)])  # default: always active
+    for start_h, end_h in sessions:
+        if start_h <= end_h:
+            if start_h <= current_hour < end_h:
+                return True
+        else:  # overnight session (e.g. 22-6)
+            if current_hour >= start_h or current_hour < end_h:
+                return True
+    return False
+
+def is_in_kill_zone() -> bool:
+    """Проверяет, находимся ли мы в ICT Kill Zone (London/NY Open)."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    current_hour = datetime.now(ZoneInfo('UTC')).hour
+    for kz in KILL_ZONES_UTC.values():
+        if kz['start'] <= current_hour < kz['end']:
+            return True
+    return False
+
+def get_current_kill_zone() -> str | None:
+    """Возвращает название текущей Kill Zone или None."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    current_hour = datetime.now(ZoneInfo('UTC')).hour
+    for key, kz in KILL_ZONES_UTC.items():
+        if kz['start'] <= current_hour < kz['end']:
+            return kz['name']
+    return None
+
+
 def get_affected_pairs(currency: str) -> list[str]:
     """Возвращает список пар, которые затрагивает валюта."""
     currency = currency.upper()

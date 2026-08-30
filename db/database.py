@@ -57,6 +57,8 @@ async def init_db():
             await db.execute("ALTER TABLE signals ADD COLUMN current_price REAL")
         if "activated_at" not in columns:
             await db.execute("ALTER TABLE signals ADD COLUMN activated_at TEXT")
+        if "breakeven_applied" not in columns:
+            await db.execute("ALTER TABLE signals ADD COLUMN breakeven_applied INTEGER DEFAULT 0")
 
         await db.execute("""
             CREATE TABLE IF NOT EXISTS daily_stats (
@@ -156,6 +158,25 @@ async def update_signal_status(
             await db.commit()
     except Exception as e:
         logger.error("update_signal_status error: %s", e)
+
+
+async def update_signal_sl(signal_id: int, new_sl: float, breakeven: bool = False):
+    """Переносит стоп-лосс на новый уровень (breakeven / trailing)."""
+    try:
+        async with aiosqlite.connect(str(DB_PATH)) as db:
+            if breakeven:
+                await db.execute(
+                    """UPDATE signals SET stop_loss = ?, breakeven_applied = 1 WHERE id = ?""",
+                    (new_sl, signal_id),
+                )
+            else:
+                await db.execute(
+                    """UPDATE signals SET stop_loss = ? WHERE id = ?""",
+                    (new_sl, signal_id),
+                )
+            await db.commit()
+    except Exception as e:
+        logger.error("update_signal_sl error: %s", e)
 
 
 async def has_open_signal_for_pair(symbol: str) -> bool:
