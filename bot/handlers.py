@@ -138,7 +138,16 @@ async def run_multi_tf_analysis(symbol: str) -> MultiTFResult:
     else:
         overall_stars = 0
         overall_dir = "NEUTRAL"
-    
+
+    # Институциональный Daily Bias (D1) фильтр:
+    # Запрещено открывать позицию против сильного дневного уклона (D1 confidence >= 3)
+    d1_cand = next((t for t in tf_analyses if t.timeframe == "D1"), None)
+    if d1_cand and d1_cand.direction != "NEUTRAL" and d1_cand.direction != overall_dir:
+        if d1_cand.confidence >= 3:
+            overall_dir = "NEUTRAL"
+            overall_stars = 0
+            entry = sl = tp1 = tp2 = rr1 = None
+
     verdicts = []
     for s in best_tf.strategies:
         if s.signal.direction == overall_dir and s.signal.direction != 'NEUTRAL':

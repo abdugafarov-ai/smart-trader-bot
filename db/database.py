@@ -328,3 +328,25 @@ async def get_stats() -> dict:
 async def check_signal_exists(symbol: str, direction: str, hours: int = 6) -> bool:
     """Проверяет наличие активного сигнала по паре."""
     return await has_open_signal_for_pair(symbol)
+
+
+async def get_consecutive_sl_count() -> int:
+    """Считает количество последовательных Stop Loss среди последних закрытых сигналов."""
+    try:
+        async with aiosqlite.connect(str(DB_PATH)) as db:
+            cursor = await db.execute(
+                """SELECT status FROM signals 
+                   WHERE status IN ('TP1_HIT', 'TP2_HIT', 'SL_HIT') 
+                   ORDER BY closed_at DESC LIMIT 10"""
+            )
+            rows = await cursor.fetchall()
+            sl_count = 0
+            for (status,) in rows:
+                if status == 'SL_HIT':
+                    sl_count += 1
+                else:
+                    break
+            return sl_count
+    except Exception as e:
+        logger.error("get_consecutive_sl_count error: %s", e)
+        return 0

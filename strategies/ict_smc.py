@@ -161,6 +161,26 @@ class ICTSMCStrategy(BaseStrategy):
                 sub_signals += 1
                 details.append("Высокий объем подтверждает движение")
 
+        # 4. Liquidity Sweep Detection (Снятие ликвидности / Judas Swing)
+        lookback_sweep = min(8, len(df))
+        recent_candles = df.iloc[-lookback_sweep:]
+        if direction == "LONG":
+            for idx in range(len(recent_candles)):
+                c_low = float(recent_candles['low'].iloc[idx])
+                c_close = float(recent_candles['close'].iloc[idx])
+                if c_low < hl1 and c_close > hl1:
+                    sub_signals += 1
+                    details.append(f"⚡ Снятие ликвидности (Liquidity Sweep): ложный прокол {self._format_price(hl1, symbol)} с резким возвратом")
+                    break
+        elif direction == "SHORT":
+            for idx in range(len(recent_candles)):
+                c_high = float(recent_candles['high'].iloc[idx])
+                c_close = float(recent_candles['close'].iloc[idx])
+                if c_high > hh1 and c_close < hh1:
+                    sub_signals += 1
+                    details.append(f"⚡ Снятие ликвидности (Liquidity Sweep): ложный прокол {self._format_price(hh1, symbol)} с резким возвратом")
+                    break
+
         # 6. Order Block (OB)
         ob_zone: Optional[Tuple[float, float]] = None
         lookback_ob = min(30, len(df)-2)
