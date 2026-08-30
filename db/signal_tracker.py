@@ -1,10 +1,12 @@
 """
-Real-time Signal Tracker v3 & Multi-Stage Lifecycle Manager.
-Отслеживает жизненный цикл ордеров:
+Real-time Signal Tracker v4 & Institutional Lifecycle Manager.
+Отслеживает полный жизненный цикл ордеров:
 - ЭТАП 1: Выставлен отложенный ордер (PENDING)
 - ЭТАП 2: Цена коснулась входа (PENDING -> ACTIVE)
 - ЭТАП 3: Breakeven (SL -> Entry при достижении 1:1)
-- ЭТАП 4: Фиксация Take Profit / Stop Loss (ACTIVE -> TP/SL/EXPIRED)
+- ЭТАП 4: Partial Close (50% фиксация на TP1 + перевод остатка на TP2 с SL=Entry)
+- ЭТАП 5: Фиксация Take Profit 2 / Stop Loss (TP2_HIT / SL_HIT / EXPIRED)
+- ЭТАП 6: Drawdown Alert (Срочное оповещение при 3 SL подряд)
 
 Строго фильтрует свечи по реальному времени, исключая ложные ретроспективные срабатывания.
 """
@@ -18,7 +20,7 @@ import config
 from market.data_fetcher import DataFetcher
 from db.database import (
     get_pending_signals, get_active_signals, activate_signal,
-    update_signal_status, update_signal_sl
+    update_signal_status, update_signal_sl, get_consecutive_sl_count
 )
 from db.users import get_approved_user_ids
 from utils.formatters import format_order_activated, format_signal_result
@@ -36,15 +38,17 @@ class SignalTracker:
         self.is_running = False
         self.PENDING_EXPIRE_HOURS = 24.0
         self.ACTIVE_EXPIRE_HOURS = 48.0
+        self._last_drawdown_warn_count: int = 0
 
     async def start(self):
         self.is_running = True
-        logger.info("SignalTracker v3 started. Breakeven at 1:1 enabled. Checking every %d min.", self.check_interval)
+        logger.info("SignalTracker v4 started. Breakeven 1:1 + Partial Close TP1 enabled. Checking every %d min.", self.check_interval)
         while self.is_running:
             try:
                 if not DataFetcher.is_weekend():
                     await self.process_pending_signals()
                     await self.process_active_signals()
+                    await self.check_drawdown_alert()
             except Exception as e:
                 logger.error("SignalTracker loop error: %s", e, exc_info=True)
             await asyncio.sleep(self.check_interval * 60)
@@ -66,6 +70,26 @@ class SignalTracker:
                     logger.error("Failed to send tracker alert to %d: %s", uid, err)
         except Exception as e:
             logger.error("Error broadcasting tracker alert: %s", e)
+
+    async def check_drawdown_alert(self):
+        """Проверяет просадку и шлет срочный Drawdown Alert при 3 SL подряд."""
+        try:
+            sl_count = await get_consecutive_sl_count()
+            if sl_count >= 3 and sl_count != self._last_drawdown_warn_count:
+                self._last_drawdown_warn_count = sl_count
+                alert_msg = (
+                    "⚠️ <b>DRAWDOWN ALERT | СИСТЕМА ЗАЩИТЫ КАПИТАЛА</b>\n"
+                    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"🛑 <b>Зафиксировано {sl_count} Stop Loss подряд.</b>\n\n"
+                    "🔒 <b>Действие:</b> Авто-сканер сигналов временно приостановлен на 24 часа для защиты депозита.\n"
+                    "💼 <i>Рынок находится в аномальной фазе волатильности / смены тренда. Соблюдайте мани-менеджмент!</i>"
+                )
+                await self._send_to_all(alert_msg)
+                logger.warning("Drawdown Alert broadcasted for %d consecutive SL hits.", sl_count)
+            elif sl_count < 3:
+                self._last_drawdown_warn_count = 0
+        except Exception as e:
+            logger.error("Drawdown alert check error: %s", e)
 
     # ── 1. PENDING -> ACTIVE ──
     async def process_pending_signals(self):
@@ -132,7 +156,7 @@ class SignalTracker:
             await self._send_to_all(msg)
             logger.info("Signal #%d ACTIVATED at %.5f!", signal_id, entry)
 
-    # ── 2. ACTIVE -> BREAKEVEN / TP / SL ──
+    # ── 2. ACTIVE -> BREAKEVEN / PARTIAL / TP / SL ──
     async def process_active_signals(self):
         active = await get_active_signals()
         if not active:
@@ -147,6 +171,7 @@ class SignalTracker:
         signal_id = sig['id']
         symbol = sig['symbol']
         direction = sig['direction']
+        status = sig.get('status', 'ACTIVE')
         entry = sig['entry_price']
         sl = sig['stop_loss']
         tp1 = sig['take_profit_1']
@@ -178,27 +203,33 @@ class SignalTracker:
 
         # Таймаут удержания позиции
         if hours_active > self.ACTIVE_EXPIRE_HOURS:
-            pnl = (current_close - entry) * mult if direction == "LONG" else (entry - current_close) * mult
-            pnl = round(pnl, 1)
+            base_pnl = (current_close - entry) * mult if direction == "LONG" else (entry - current_close) * mult
+            if status == "TP1_PARTIAL":
+                # Первая половина уже зафиксирована на TP1
+                tp1_pips = abs(tp1 - entry) * mult * 0.5
+                rem_pips = base_pnl * 0.5
+                total_pnl = round(tp1_pips + rem_pips, 1)
+            else:
+                total_pnl = round(base_pnl, 1)
+
             await update_signal_status(
                 signal_id, "EXPIRED", close_price=current_close,
-                pnl_pips=pnl, result=f"Закрыт по времени ({self.ACTIVE_EXPIRE_HOURS}ч)"
+                pnl_pips=total_pnl, result=f"Закрыт по времени ({self.ACTIVE_EXPIRE_HOURS}ч)"
             )
-            msg = format_signal_result(sig, "EXPIRED", current_close, pnl)
+            msg = format_signal_result(sig, "EXPIRED", current_close, total_pnl)
             await self._send_to_all(msg)
             logger.info("Signal #%d closed by timeout.", signal_id)
             return
 
-        # ── BREAKEVEN CHECK (1:1 risk = reward reached) ──
+        # ── 1. BREAKEVEN CHECK (1:1 risk = reward reached) ──
         risk = abs(entry - sl)
-        if not breakeven_applied and risk > 0:
+        if not breakeven_applied and risk > 0 and status != "TP1_PARTIAL":
             if direction == "LONG":
-                breakeven_target = entry + risk  # 1:1 уровень
+                breakeven_target = entry + risk
                 if recent_high >= breakeven_target:
-                    # Переносим SL на Entry (безубыток)
                     new_sl = entry
                     await update_signal_sl(signal_id, new_sl, breakeven=True)
-                    sl = new_sl  # Обновляем для дальнейшей проверки
+                    sl = new_sl
                     breakeven_applied = True
                     pips_protected = round(risk * mult, 1)
                     msg = (
@@ -213,7 +244,7 @@ class SignalTracker:
                         f"💼 <i>Прибыль достигла 1:1 — риск снят.</i>"
                     )
                     await self._send_to_all(msg)
-                    logger.info("Signal #%d BREAKEVEN applied. SL moved to entry %.5f", signal_id, new_sl)
+                    logger.info("Signal #%d BREAKEVEN applied at %.5f", signal_id, new_sl)
 
             elif direction == "SHORT":
                 breakeven_target = entry - risk
@@ -235,62 +266,149 @@ class SignalTracker:
                         f"💼 <i>Прибыль достигла 1:1 — риск снят.</i>"
                     )
                     await self._send_to_all(msg)
-                    logger.info("Signal #%d BREAKEVEN applied. SL moved to entry %.5f", signal_id, new_sl)
+                    logger.info("Signal #%d BREAKEVEN applied at %.5f", signal_id, new_sl)
 
-        # ── TP / SL фиксация ──
+        # ── 2. LONG ПОЗИЦИИ ──
         if direction == "LONG":
+            # Проверка SL
             if recent_low <= sl:
-                if breakeven_applied:
-                    pnl = 0.0  # Безубыток
-                    status = "BREAKEVEN"
-                    result_text = "Безубыток (SL=Entry)"
+                if status == "TP1_PARTIAL":
+                    # Выбит в безубыток по остатку (50% уже в кармане)
+                    pnl_tp1_half = round((abs(tp1 - entry) * mult) * 0.5, 1)
+                    await update_signal_status(signal_id, "TP1_HIT", close_price=sl, pnl_pips=pnl_tp1_half, result="TP1 50% + Breakeven")
+                    msg = (
+                        f"🛡 <b>ПОЗИЦИЯ ЗАКРЫТА ПО БЕЗУБЫТКУ</b>\n"
+                        f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                        f"📊 <b>{symbol}</b> | LONG\n"
+                        f"┌ 🎯 TP1 (50%): <code>+{pnl_tp1_half}</code> pips (зафиксировано)\n"
+                        f"├ 🛡 Остаток (50%): <code>0.0</code> pips (закрыт на Entry)\n"
+                        f"└ 💰 <b>Итоговая прибыль:</b> <code>+{pnl_tp1_half}</code> pips\n"
+                        f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                        f"💼 <i>Институциональный Partial Close защитил прибыль!</i>"
+                    )
+                    await self._send_to_all(msg)
+                elif breakeven_applied:
+                    await update_signal_status(signal_id, "BREAKEVEN", close_price=sl, pnl_pips=0.0, result="Безубыток (SL=Entry)")
+                    msg = format_signal_result(sig, "BREAKEVEN", sl, 0.0)
+                    await self._send_to_all(msg)
                 else:
                     pnl = -round(abs(entry - sl) * mult, 1)
-                    status = "SL_HIT"
-                    result_text = "Stop Loss"
-                await update_signal_status(signal_id, status, close_price=sl, pnl_pips=pnl, result=result_text)
-                msg = format_signal_result(sig, status, sl, pnl)
-                await self._send_to_all(msg)
-                logger.info("Signal #%d %s: %.1f pips", signal_id, status, pnl)
-            elif tp2 and recent_high >= tp2:
-                pnl = round(abs(tp2 - entry) * mult, 1)
-                await update_signal_status(signal_id, "TP2_HIT", close_price=tp2, pnl_pips=pnl, result="Take Profit 2")
-                msg = format_signal_result(sig, "TP2_HIT", tp2, pnl)
-                await self._send_to_all(msg)
-                logger.info("Signal #%d TP2_HIT: +%.1f pips", signal_id, pnl)
-            elif recent_high >= tp1:
-                pnl = round(abs(tp1 - entry) * mult, 1)
-                await update_signal_status(signal_id, "TP1_HIT", close_price=tp1, pnl_pips=pnl, result="Take Profit 1")
-                msg = format_signal_result(sig, "TP1_HIT", tp1, pnl)
-                await self._send_to_all(msg)
-                logger.info("Signal #%d TP1_HIT: +%.1f pips", signal_id, pnl)
+                    await update_signal_status(signal_id, "SL_HIT", close_price=sl, pnl_pips=pnl, result="Stop Loss")
+                    msg = format_signal_result(sig, "SL_HIT", sl, pnl)
+                    await self._send_to_all(msg)
+                return
 
+            # Проверка TP2
+            if tp2 and recent_high >= tp2:
+                if status == "TP1_PARTIAL":
+                    tp1_half = (abs(tp1 - entry) * mult) * 0.5
+                    tp2_half = (abs(tp2 - entry) * mult) * 0.5
+                    total_pnl = round(tp1_half + tp2_half, 1)
+                else:
+                    total_pnl = round(abs(tp2 - entry) * mult, 1)
+
+                await update_signal_status(signal_id, "TP2_HIT", close_price=tp2, pnl_pips=total_pnl, result="Take Profit 2 (FULL)")
+                msg = format_signal_result(sig, "TP2_HIT", tp2, total_pnl)
+                await self._send_to_all(msg)
+                logger.info("Signal #%d TP2_HIT: +%.1f pips", signal_id, total_pnl)
+                return
+
+            # Проверка TP1 (Partial Close)
+            if recent_high >= tp1 and status != "TP1_PARTIAL":
+                pnl_tp1_full = round(abs(tp1 - entry) * mult, 1)
+                pnl_tp1_half = round(pnl_tp1_full * 0.5, 1)
+                
+                if tp2:
+                    # Частичное закрытие 50%, перенос SL на Entry
+                    await update_signal_status(signal_id, "TP1_PARTIAL", close_price=tp1, pnl_pips=pnl_tp1_half, result="TP1 50% Partial Hit")
+                    await update_signal_sl(signal_id, entry, breakeven=True)
+                    msg = (
+                        f"🎯 <b>TAKE PROFIT 1 HIT (50% PARTIAL)</b>\n"
+                        f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                        f"📊 <b>{symbol}</b> | LONG\n"
+                        f"┌ 🎯 Уровень TP1: <code>{tp1:.5f}</code> (+{pnl_tp1_full} pips)\n"
+                        f"├ 💰 <b>Зафиксировано:</b> <code>+{pnl_tp1_half}</code> pips (50% позиции)\n"
+                        f"├ 🛡 <b>SL перенесён:</b> <code>{entry:.5f}</code> (Безубыток)\n"
+                        f"└ 🚀 <b>Остаток 50%:</b> удерживается к TP2 (<code>{tp2:.5f}</code>)\n"
+                        f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                        f"💼 <i>Сделка без риска! 50% прибыли уже в кармане.</i>"
+                    )
+                    await self._send_to_all(msg)
+                else:
+                    await update_signal_status(signal_id, "TP1_HIT", close_price=tp1, pnl_pips=pnl_tp1_full, result="Take Profit 1")
+                    msg = format_signal_result(sig, "TP1_HIT", tp1, pnl_tp1_full)
+                    await self._send_to_all(msg)
+                return
+
+        # ── 3. SHORT ПОЗИЦИИ ──
         elif direction == "SHORT":
+            # Проверка SL
             if recent_high >= sl:
-                if breakeven_applied:
-                    pnl = 0.0
-                    status = "BREAKEVEN"
-                    result_text = "Безубыток (SL=Entry)"
+                if status == "TP1_PARTIAL":
+                    pnl_tp1_half = round((abs(entry - tp1) * mult) * 0.5, 1)
+                    await update_signal_status(signal_id, "TP1_HIT", close_price=sl, pnl_pips=pnl_tp1_half, result="TP1 50% + Breakeven")
+                    msg = (
+                        f"🛡 <b>ПОЗИЦИЯ ЗАКРЫТА ПО БЕЗУБЫТКУ</b>\n"
+                        f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                        f"📊 <b>{symbol}</b> | SHORT\n"
+                        f"┌ 🎯 TP1 (50%): <code>+{pnl_tp1_half}</code> pips (зафиксировано)\n"
+                        f"├ 🛡 Остаток (50%): <code>0.0</code> pips (закрыт на Entry)\n"
+                        f"└ 💰 <b>Итоговая прибыль:</b> <code>+{pnl_tp1_half}</code> pips\n"
+                        f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                        f"💼 <i>Институциональный Partial Close защитил прибыль!</i>"
+                    )
+                    await self._send_to_all(msg)
+                elif breakeven_applied:
+                    await update_signal_status(signal_id, "BREAKEVEN", close_price=sl, pnl_pips=0.0, result="Безубыток (SL=Entry)")
+                    msg = format_signal_result(sig, "BREAKEVEN", sl, 0.0)
+                    await self._send_to_all(msg)
                 else:
                     pnl = -round(abs(sl - entry) * mult, 1)
-                    status = "SL_HIT"
-                    result_text = "Stop Loss"
-                await update_signal_status(signal_id, status, close_price=sl, pnl_pips=pnl, result=result_text)
-                msg = format_signal_result(sig, status, sl, pnl)
+                    await update_signal_status(signal_id, "SL_HIT", close_price=sl, pnl_pips=pnl, result="Stop Loss")
+                    msg = format_signal_result(sig, "SL_HIT", sl, pnl)
+                    await self._send_to_all(msg)
+                return
+
+            # Проверка TP2
+            if tp2 and recent_low <= tp2:
+                if status == "TP1_PARTIAL":
+                    tp1_half = (abs(entry - tp1) * mult) * 0.5
+                    tp2_half = (abs(entry - tp2) * mult) * 0.5
+                    total_pnl = round(tp1_half + tp2_half, 1)
+                else:
+                    total_pnl = round(abs(entry - tp2) * mult, 1)
+
+                await update_signal_status(signal_id, "TP2_HIT", close_price=tp2, pnl_pips=total_pnl, result="Take Profit 2 (FULL)")
+                msg = format_signal_result(sig, "TP2_HIT", tp2, total_pnl)
                 await self._send_to_all(msg)
-                logger.info("Signal #%d %s: %.1f pips", signal_id, status, pnl)
-            elif tp2 and recent_low <= tp2:
-                pnl = round(abs(entry - tp2) * mult, 1)
-                await update_signal_status(signal_id, "TP2_HIT", close_price=tp2, pnl_pips=pnl, result="Take Profit 2")
-                msg = format_signal_result(sig, "TP2_HIT", tp2, pnl)
-                await self._send_to_all(msg)
-                logger.info("Signal #%d TP2_HIT: +%.1f pips", signal_id, pnl)
-            elif recent_low <= tp1:
-                pnl = round(abs(entry - tp1) * mult, 1)
-                await update_signal_status(signal_id, "TP1_HIT", close_price=tp1, pnl_pips=pnl, result="Take Profit 1")
-                msg = format_signal_result(sig, "TP1_HIT", tp1, pnl)
-                await self._send_to_all(msg)
-                logger.info("Signal #%d TP1_HIT: +%.1f pips", signal_id, pnl)
+                logger.info("Signal #%d TP2_HIT: +%.1f pips", signal_id, total_pnl)
+                return
+
+            # Проверка TP1 (Partial Close)
+            if recent_low <= tp1 and status != "TP1_PARTIAL":
+                pnl_tp1_full = round(abs(entry - tp1) * mult, 1)
+                pnl_tp1_half = round(pnl_tp1_full * 0.5, 1)
+                
+                if tp2:
+                    await update_signal_status(signal_id, "TP1_PARTIAL", close_price=tp1, pnl_pips=pnl_tp1_half, result="TP1 50% Partial Hit")
+                    await update_signal_sl(signal_id, entry, breakeven=True)
+                    msg = (
+                        f"🎯 <b>TAKE PROFIT 1 HIT (50% PARTIAL)</b>\n"
+                        f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                        f"📊 <b>{symbol}</b> | SHORT\n"
+                        f"┌ 🎯 Уровень TP1: <code>{tp1:.5f}</code> (+{pnl_tp1_full} pips)\n"
+                        f"├ 💰 <b>Зафиксировано:</b> <code>+{pnl_tp1_half}</code> pips (50% позиции)\n"
+                        f"├ 🛡 <b>SL перенесён:</b> <code>{entry:.5f}</code> (Безубыток)\n"
+                        f"└ 🚀 <b>Остаток 50%:</b> удерживается к TP2 (<code>{tp2:.5f}</code>)\n"
+                        f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                        f"💼 <i>Сделка без риска! 50% прибыли уже в кармане.</i>"
+                    )
+                    await self._send_to_all(msg)
+                else:
+                    await update_signal_status(signal_id, "TP1_HIT", close_price=tp1, pnl_pips=pnl_tp1_full, result="Take Profit 1")
+                    msg = format_signal_result(sig, "TP1_HIT", tp1, pnl_tp1_full)
+                    await self._send_to_all(msg)
+                return
 
     @staticmethod
     def _get_post_event_prices(df: pd.DataFrame, event_time_naive: datetime) -> tuple[float, float, float]:

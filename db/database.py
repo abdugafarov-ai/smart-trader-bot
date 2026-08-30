@@ -185,7 +185,7 @@ async def has_open_signal_for_pair(symbol: str) -> bool:
         async with aiosqlite.connect(str(DB_PATH)) as db:
             cursor = await db.execute(
                 """SELECT COUNT(*) FROM signals
-                   WHERE symbol = ? AND status IN ('PENDING', 'ACTIVE', 'OPEN')""",
+                   WHERE symbol = ? AND status IN ('PENDING', 'ACTIVE', 'OPEN', 'TP1_PARTIAL')""",
                 (symbol,),
             )
             count = (await cursor.fetchone())[0]
@@ -216,7 +216,7 @@ async def get_active_signals() -> list[dict]:
         async with aiosqlite.connect(str(DB_PATH)) as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute(
-                "SELECT * FROM signals WHERE status IN ('ACTIVE', 'OPEN') ORDER BY created_at ASC"
+                "SELECT * FROM signals WHERE status IN ('ACTIVE', 'OPEN', 'TP1_PARTIAL') ORDER BY created_at ASC"
             )
             rows = await cursor.fetchall()
             return [dict(r) for r in rows]
@@ -249,14 +249,14 @@ async def get_stats() -> dict:
             total = (await cursor.fetchone())[0]
 
             cursor = await db.execute(
-                "SELECT COUNT(*) FROM signals WHERE status IN ('PENDING', 'ACTIVE', 'OPEN')"
+                "SELECT COUNT(*) FROM signals WHERE status IN ('PENDING', 'ACTIVE', 'OPEN', 'TP1_PARTIAL')"
             )
             open_count = (await cursor.fetchone())[0]
 
             closed = total - open_count
 
             cursor = await db.execute(
-                "SELECT COUNT(*) FROM signals WHERE status IN ('TP1_HIT', 'TP2_HIT')"
+                "SELECT COUNT(*) FROM signals WHERE status IN ('TP1_HIT', 'TP2_HIT', 'TP1_PARTIAL')"
             )
             wins = (await cursor.fetchone())[0]
 

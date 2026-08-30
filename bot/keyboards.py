@@ -28,6 +28,10 @@ def main_menu_keyboard() -> InlineKeyboardMarkup:
         InlineKeyboardButton(text="📜 Журнал Сделок", callback_data="menu:history")
     )
     builder.row(
+        InlineKeyboardButton(text="🔬 Бэктест ICT (300 баров)", callback_data="sym_backtest:EURUSD"),
+        InlineKeyboardButton(text="📈 Кривая PnL", callback_data="menu:equity")
+    )
+    builder.row(
         InlineKeyboardButton(text="⚙️ Параметры", callback_data="settings"),
         InlineKeyboardButton(text="📖 Справочник", callback_data="menu:help")
     )

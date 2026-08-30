@@ -451,8 +451,97 @@ async def cb_menu_actions(callback: CallbackQuery):
         signals = await get_recent_signals(limit=15)
         text = format_history(signals)
         await callback.message.edit_text(text, reply_markup=back_keyboard(), parse_mode="HTML")
+    elif action == "equity":
+        try:
+            from db.database import get_recent_signals, get_stats
+            from backtest.equity_chart import generate_equity_curve_chart
+            from aiogram.types import BufferedInputFile
+
+            signals = await get_recent_signals(limit=50)
+            closed_signals = [s for s in reversed(signals) if s.get('status') in ['TP1_HIT', 'TP2_HIT', 'SL_HIT', 'BREAKEVEN', 'EXPIRED']]
+
+            if len(closed_signals) < 2:
+                await callback.message.edit_text("📊 Пока недостаточно закрытых сделок для графика кривой капитала (нужно минимум 2).", reply_markup=back_keyboard(), parse_mode="HTML")
+                return
+
+            equity = [0.0]
+            curr = 0.0
+            for s in closed_signals:
+                curr += (s.get('pnl_pips') or 0.0)
+                equity.append(round(curr, 1))
+
+            stats = await get_stats()
+            chart_bytes = generate_equity_curve_chart(
+                equity_points=equity,
+                title="LIVE PORTFOLIO EQUITY CURVE",
+                symbol="REAL SIGNALS",
+                total_pnl=stats.get('total_pips', 0.0),
+                win_rate=stats.get('win_rate', 0.0),
+                profit_factor=1.5,
+                max_dd=0.0
+            )
+
+            photo = BufferedInputFile(chart_bytes, filename="live_equity.png")
+            cap = (
+                f"📈 <b>LIVE EQUITY CURVE | КРИВАЯ КАПИТАЛА</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"💰 <b>Общий PnL:</b> <code>{stats.get('total_pips', 0.0):+.1f} pips</code>\n"
+                f"🏆 <b>Win Rate:</b> <code>{stats.get('win_rate', 0.0):.1f}%</code>\n"
+                f"📊 <b>Всего закрыто:</b> <code>{stats.get('closed', 0)}</code> сделок\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            )
+            await callback.message.delete()
+            await callback.message.answer_photo(photo, caption=cap, parse_mode="HTML", reply_markup=back_keyboard())
+        except Exception as e:
+            await callback.message.edit_text(f"⚠️ Ошибка построения кривой: {e}", reply_markup=back_keyboard(), parse_mode="HTML")
     elif action == "help":
         await callback.message.edit_text(format_help(), reply_markup=back_keyboard(), parse_mode="HTML")
+
+@router.callback_query(F.data.startswith("sym_backtest:"))
+async def cb_sym_backtest(callback: CallbackQuery):
+    symbol = callback.data.split(":")[1]
+    await callback.message.edit_text(f"⏳ <i>Запуск бэктеста по {symbol} (H1, 300 баров)...</i>", parse_mode="HTML")
+    try:
+        from backtest.backtester import InstitutionalBacktester
+        from backtest.equity_chart import generate_equity_curve_chart
+        from aiogram.types import BufferedInputFile
+
+        tester = InstitutionalBacktester()
+        res = await tester.run_backtest(symbol=symbol, timeframe="H1", limit=300)
+
+        report_text = (
+            f"🔬 <b>WALL STREET | INSTITUTIONAL BACKTEST REPORT</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"📊 <b>Актив:</b> <code>{res.symbol}</code> | <b>ТФ:</b> <code>{res.timeframe}</code>\n"
+            f"┌ 📈 <b>Всего сделок:</b> <code>{res.total_trades}</code>\n"
+            f"├ 🏆 <b>Win Rate:</b> <code>{res.win_rate}%</code>\n"
+            f"├ ✅ <b>Тейк-профиты (TP):</b> <code>{res.wins}</code>\n"
+            f"├ ❌ <b>Стоп-лоссы (SL):</b> <code>{res.losses}</code>\n"
+            f"├ 🛡 <b>Безубытки (BE):</b> <code>{res.breakevens}</code>\n"
+            f"├ 💰 <b>Итоговый PnL:</b> <code>{res.total_pips:+.1f} pips</code>\n"
+            f"├ 📐 <b>Суммарный R:</b> <code>{res.total_r:+.2f}R</code>\n"
+            f"├ ⚡ <b>Profit Factor:</b> <code>{res.profit_factor:.2f}</code>\n"
+            f"└ 📉 <b>Max Drawdown:</b> <code>-{res.max_drawdown_pips:.1f} pips</code>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"💼 <i>Симуляция с Breakeven 1:1 и Partial Close 50%.</i>"
+        )
+
+        chart_bytes = generate_equity_curve_chart(
+            equity_points=res.equity_curve,
+            title="INSTITUTIONAL STRATEGY BACKTEST",
+            symbol=f"{res.symbol} ({res.timeframe})",
+            total_pnl=res.total_pips,
+            win_rate=res.win_rate,
+            profit_factor=res.profit_factor,
+            max_dd=res.max_drawdown_pips
+        )
+
+        await callback.message.delete()
+        photo = BufferedInputFile(chart_bytes, filename=f"backtest_{symbol}.png")
+        await callback.message.answer_photo(photo, caption=report_text, parse_mode="HTML", reply_markup=back_keyboard())
+    except Exception as e:
+        logger.error("cb_sym_backtest error: %s", e, exc_info=True)
+        await callback.message.edit_text(f"❌ Ошибка бэктеста: {e}", reply_markup=back_keyboard(), parse_mode="HTML")
 
 @router.callback_query(F.data.startswith("cat:"))
 async def cb_category(callback: CallbackQuery):
@@ -698,4 +787,113 @@ async def cmd_users(message: Message):
         text += "📋 Нет ожидающих заявок."
 
     await message.answer(text, reply_markup=back_keyboard(), parse_mode=None)
+
+
+@router.message(Command("backtest"))
+async def cmd_backtest(message: Message):
+    """Запуск институционального бэктеста ICT/SMC."""
+    parts = message.text.strip().split()
+    symbol = parts[1].upper() if len(parts) > 1 else "EURUSD"
+    tf = parts[2].upper() if len(parts) > 2 else "H1"
+
+    status_msg = await message.answer(
+        f"⏳ <i>Запуск институционального бэктеста по {symbol} ({tf}) на 300 свечах...</i>",
+        parse_mode="HTML"
+    )
+
+    try:
+        from backtest.backtester import InstitutionalBacktester
+        from backtest.equity_chart import generate_equity_curve_chart
+        from aiogram.types import BufferedInputFile
+
+        tester = InstitutionalBacktester()
+        res = await tester.run_backtest(symbol=symbol, timeframe=tf, limit=300)
+
+        if res.total_trades == 0:
+            await status_msg.edit_text(f"❌ Недостаточно данных для бэктеста {symbol}.", parse_mode=None)
+            return
+
+        report_text = (
+            f"🔬 <b>WALL STREET | INSTITUTIONAL BACKTEST REPORT</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"📊 <b>Актив:</b> <code>{res.symbol}</code> | <b>ТФ:</b> <code>{res.timeframe}</code>\n"
+            f"┌ 📈 <b>Всего сделок:</b> <code>{res.total_trades}</code>\n"
+            f"├ 🏆 <b>Win Rate:</b> <code>{res.win_rate}%</code>\n"
+            f"├ ✅ <b>Тейк-профиты (TP):</b> <code>{res.wins}</code>\n"
+            f"├ ❌ <b>Стоп-лоссы (SL):</b> <code>{res.losses}</code>\n"
+            f"├ 🛡 <b>Безубытки (BE):</b> <code>{res.breakevens}</code>\n"
+            f"├ 💰 <b>Итоговый PnL:</b> <code>{res.total_pips:+.1f} pips</code>\n"
+            f"├ 📐 <b>Суммарный R:</b> <code>{res.total_r:+.2f}R</code>\n"
+            f"├ ⚡ <b>Profit Factor:</b> <code>{res.profit_factor:.2f}</code>\n"
+            f"└ 📉 <b>Max Drawdown:</b> <code>-{res.max_drawdown_pips:.1f} pips</code>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"💼 <i>Симуляция с Breakeven 1:1 и Partial Close 50%.</i>"
+        )
+
+        chart_bytes = generate_equity_curve_chart(
+            equity_points=res.equity_curve,
+            title="INSTITUTIONAL STRATEGY BACKTEST",
+            symbol=f"{res.symbol} ({res.timeframe})",
+            total_pnl=res.total_pips,
+            win_rate=res.win_rate,
+            profit_factor=res.profit_factor,
+            max_dd=res.max_drawdown_pips
+        )
+
+        await status_msg.delete()
+        photo = BufferedInputFile(chart_bytes, filename=f"backtest_{symbol}.png")
+        await message.answer_photo(photo, caption=report_text, parse_mode="HTML", reply_markup=back_keyboard())
+
+    except Exception as e:
+        logger.error("Backtest error: %s", e, exc_info=True)
+        await status_msg.edit_text(f"❌ Ошибка бэктеста: {e}", parse_mode=None)
+
+
+@router.message(Command("equity"))
+async def cmd_equity(message: Message):
+    """График кривой капитала на основе реальных закрытых сигналов."""
+    try:
+        from db.database import get_recent_signals, get_stats
+        from backtest.equity_chart import generate_equity_curve_chart
+        from aiogram.types import BufferedInputFile
+
+        signals = await get_recent_signals(limit=50)
+        closed_signals = [s for s in reversed(signals) if s.get('status') in ['TP1_HIT', 'TP2_HIT', 'SL_HIT', 'BREAKEVEN', 'EXPIRED']]
+
+        if len(closed_signals) < 2:
+            await message.answer("📊 Пока недостаточно закрытых сделок для построения графика кривой капитала (нужно минимум 2 закрытых сделки).", reply_markup=back_keyboard(), parse_mode=None)
+            return
+
+        equity = [0.0]
+        curr = 0.0
+        for s in closed_signals:
+            curr += (s.get('pnl_pips') or 0.0)
+            equity.append(round(curr, 1))
+
+        stats = await get_stats()
+        chart_bytes = generate_equity_curve_chart(
+            equity_points=equity,
+            title="LIVE PORTFOLIO EQUITY CURVE",
+            symbol="REAL SIGNALS",
+            total_pnl=stats.get('total_pips', 0.0),
+            win_rate=stats.get('win_rate', 0.0),
+            profit_factor=1.5,
+            max_dd=0.0
+        )
+
+        photo = BufferedInputFile(chart_bytes, filename="live_equity.png")
+        cap = (
+            f"📈 <b>LIVE EQUITY CURVE | КРИВАЯ КАПИТАЛА</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"💰 <b>Общий PnL:</b> <code>{stats.get('total_pips', 0.0):+.1f} pips</code>\n"
+            f"🏆 <b>Win Rate:</b> <code>{stats.get('win_rate', 0.0):.1f}%</code>\n"
+            f"📊 <b>Всего закрыто:</b> <code>{stats.get('closed', 0)}</code> сделок\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        )
+        await message.answer_photo(photo, caption=cap, parse_mode="HTML", reply_markup=back_keyboard())
+
+    except Exception as e:
+        logger.error("Equity command error: %s", e, exc_info=True)
+        await message.answer(f"❌ Ошибка генерации графика: {e}", parse_mode=None)
+
 
