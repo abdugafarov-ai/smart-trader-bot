@@ -350,3 +350,40 @@ async def get_consecutive_sl_count() -> int:
     except Exception as e:
         logger.error("get_consecutive_sl_count error: %s", e)
         return 0
+
+
+async def get_today_signal_count() -> int:
+    """Считает количество сигналов, созданных сегодня (по UTC). Персистентный счётчик, переживает перезагрузки."""
+    try:
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        async with aiosqlite.connect(str(DB_PATH)) as db:
+            cursor = await db.execute(
+                "SELECT COUNT(*) FROM signals WHERE created_at LIKE ?",
+                (f"{today}%",),
+            )
+            count = (await cursor.fetchone())[0]
+            return count
+    except Exception as e:
+        logger.error("get_today_signal_count error: %s", e)
+        return 0
+
+
+async def get_last_signal_time_for_pair(symbol: str) -> Optional[datetime]:
+    """Возвращает время последнего сигнала по данной паре (для cooldown). Персистентный."""
+    try:
+        async with aiosqlite.connect(str(DB_PATH)) as db:
+            cursor = await db.execute(
+                "SELECT created_at FROM signals WHERE symbol = ? ORDER BY created_at DESC LIMIT 1",
+                (symbol,),
+            )
+            row = await cursor.fetchone()
+            if row and row[0]:
+                dt = datetime.fromisoformat(row[0])
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                return dt
+            return None
+    except Exception as e:
+        logger.error("get_last_signal_time_for_pair error: %s", e)
+        return None
+

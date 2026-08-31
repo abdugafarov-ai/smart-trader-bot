@@ -15,7 +15,10 @@ from datetime import datetime, timezone, timedelta
 from aiogram import Bot
 from aiogram.types import BufferedInputFile
 import config
-from db.database import save_signal, check_signal_exists, get_active_signals, get_pending_signals
+from db.database import (
+    save_signal, check_signal_exists, get_active_signals, get_pending_signals,
+    get_today_signal_count, get_last_signal_time_for_pair
+)
 
 logger = logging.getLogger(__name__)
 
@@ -122,22 +125,18 @@ class AutoSignalScanner:
             logger.error("Correlation check error: %s", e)
             return True  # Allow on error
 
-    # ── Daily Limit ──
-    def _check_daily_limit(self) -> bool:
-        """Проверяет, не превышен ли дневной лимит сигналов."""
-        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        if today != self._daily_reset_date:
-            self._daily_signal_count = 0
-            self._daily_reset_date = today
-
-        if self._daily_signal_count >= config.MAX_SIGNALS_PER_DAY:
+    # ── Daily Limit (persistent via DB) ──
+    async def _check_daily_limit(self) -> bool:
+        """Проверяет, не превышен ли дневной лимит сигналов. Считает из БД (переживает рестарт)."""
+        count = await get_today_signal_count()
+        if count >= config.MAX_SIGNALS_PER_DAY:
             return False
         return True
 
-    # ── Cooldown per pair ──
-    def _check_cooldown(self, symbol: str) -> bool:
-        """Проверяет, прошло ли достаточно времени с последнего сигнала на пару."""
-        last_time = self._last_signal_time.get(symbol)
+    # ── Cooldown per pair (persistent via DB) ──
+    async def _check_cooldown(self, symbol: str) -> bool:
+        """Проверяет, прошло ли достаточно времени с последнего сигнала на пару. Считает из БД."""
+        last_time = await get_last_signal_time_for_pair(symbol)
         if not last_time:
             return True
         elapsed = (datetime.now(timezone.utc) - last_time).total_seconds() / 3600
@@ -158,10 +157,11 @@ class AutoSignalScanner:
         if in_kill_zone:
             logger.info("Active Kill Zone: %s — high priority scanning", kz)
 
-        # Daily limit check
-        if not self._check_daily_limit():
+        # Daily limit check (persistent from DB)
+        if not await self._check_daily_limit():
+            daily_count = await get_today_signal_count()
             logger.info("Daily signal limit reached (%d/%d). Scanner paused until tomorrow.",
-                        self._daily_signal_count, config.MAX_SIGNALS_PER_DAY)
+                        daily_count, config.MAX_SIGNALS_PER_DAY)
             return
 
         # Drawdown Protection: пауза при 3 стопах подряд
@@ -192,11 +192,11 @@ class AutoSignalScanner:
                     continue
 
                 # ── ФИЛЬТР 4: Cooldown ──
-                if not self._check_cooldown(symbol):
+                if not await self._check_cooldown(symbol):
                     continue
 
                 # ── ФИЛЬТР 5: Daily limit ──
-                if not self._check_daily_limit():
+                if not await self._check_daily_limit():
                     break
 
                 result = await run_multi_tf_analysis(symbol)
@@ -238,9 +238,9 @@ class AutoSignalScanner:
                         timeframes_agreed=timeframes_str,
                     )
 
-                    # Обновляем счётчики
-                    self._daily_signal_count += 1
-                    self._last_signal_time[symbol] = datetime.now(timezone.utc)
+                    # Счётчик ведётся персистентно в БД через save_signal()
+                    daily_count = await get_today_signal_count()
+                    logger.info("Signal saved. Daily count: %d/%d", daily_count, config.MAX_SIGNALS_PER_DAY)
 
                     # ── Генерируем график ──
                     chart_bytes = await self._generate_chart(
@@ -267,7 +267,7 @@ class AutoSignalScanner:
 
                     self.last_signals[symbol] = (result.overall_direction, result.overall_stars)
                     logger.info("Signal #%d/%d sent: %s %s [%s] ⭐%d | KZ=%s | chart=%s",
-                                self._daily_signal_count, config.MAX_SIGNALS_PER_DAY,
+                                daily_count, config.MAX_SIGNALS_PER_DAY,
                                 symbol, result.order_type, result.overall_direction,
                                 result.overall_stars, kz or "NO",
                                 "YES" if chart_bytes else "NO")
@@ -276,10 +276,11 @@ class AutoSignalScanner:
                 logger.error("Error scanning %s: %s", symbol, e, exc_info=True)
 
         # Логируем статистику фильтров за этот цикл
+        daily_used = await get_today_signal_count()
         logger.info("Scan cycle stats: session_skip=%d, news_skip=%d, corr_skip=%d, daily_used=%d/%d",
                      self.signals_skipped_by_session, self.signals_skipped_by_news,
                      self.signals_skipped_by_correlation,
-                     self._daily_signal_count, config.MAX_SIGNALS_PER_DAY)
+                     daily_used, config.MAX_SIGNALS_PER_DAY)
 
     async def _generate_chart(self, symbol: str, direction: str, entry: float,
                                stop_loss: float, tp1: float, tp2: float = None,

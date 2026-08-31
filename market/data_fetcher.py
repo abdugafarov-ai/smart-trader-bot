@@ -18,8 +18,23 @@ class DataFetcher:
 
     @staticmethod
     def is_weekend() -> bool:
-        """Проверяет, сейчас ли выходные (суббота/воскресенье) по UTC."""
-        return datetime.now(ZoneInfo("UTC")).weekday() >= 5
+        """
+        Проверяет, закрыт ли Forex рынок.
+        Рынок закрыт: с пятницы 22:00 UTC до воскресенья 22:00 UTC.
+        """
+        now = datetime.now(ZoneInfo("UTC"))
+        wd = now.weekday()  # 0=Mon, 4=Fri, 5=Sat, 6=Sun
+        hour = now.hour
+        # Суббота — всегда закрыто
+        if wd == 5:
+            return True
+        # Пятница после 22:00 UTC — закрыто
+        if wd == 4 and hour >= 22:
+            return True
+        # Воскресенье до 22:00 UTC — закрыто
+        if wd == 6 and hour < 22:
+            return True
+        return False
 
     @staticmethod
     def get_weekend_note() -> str:
