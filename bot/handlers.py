@@ -130,14 +130,13 @@ async def run_multi_tf_analysis(symbol: str) -> MultiTFResult:
     pips_tp1 = round(abs(tp1 - entry) * pip_mult, 1) if entry and tp1 else None
     pips_tp2 = round(abs(tp2 - entry) * pip_mult, 1) if entry and tp2 else None
     
-    # Звезды уверенности (только при R:R >= 2.4)
+    # Звезды уверенности: ТРЕБУЕТСЯ сонаправленность минимум 2 таймфреймов (tf_agree >= 2) и R:R >= 2.4
     if overall_dir != 'NEUTRAL' and rr1 and rr1 >= 2.4 and tf_agree >= 2:
         overall_stars = 5 if tf_agree >= 3 else 4
-    elif overall_dir != 'NEUTRAL' and rr1 and rr1 >= 2.4:
-        overall_stars = 4
     else:
         overall_stars = 0
         overall_dir = "NEUTRAL"
+        entry = sl = tp1 = tp2 = rr1 = None
 
     # Институциональный Daily Bias (D1) фильтр:
     # Запрещено открывать позицию против сильного дневного уклона (D1 confidence >= 3)

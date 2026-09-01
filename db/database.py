@@ -72,8 +72,17 @@ async def init_db():
             )
         """)
 
+        # Автоматическая очистка старых зависших PENDING ордеров старше 24ч при старте
+        from datetime import timedelta
+        cutoff_iso = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+        await db.execute("""
+            UPDATE signals
+            SET status = 'EXPIRED', closed_at = ?, result = 'Истек срок ожидания (авто-очистка)'
+            WHERE status = 'PENDING' AND created_at < ?
+        """, (datetime.now(timezone.utc).isoformat(), cutoff_iso))
+
         await db.commit()
-    logger.info("Database initialized with full schema at %s", DB_PATH)
+    logger.info("Database initialized with full schema and stale pending orders cleaned up at %s", DB_PATH)
 
 
 async def save_signal(

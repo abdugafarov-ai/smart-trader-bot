@@ -23,7 +23,7 @@ from db.database import (
     update_signal_status, update_signal_sl, get_consecutive_sl_count
 )
 from db.users import get_approved_user_ids
-from utils.formatters import format_order_activated, format_signal_result
+from utils.formatters import format_order_activated, format_signal_result, format_price
 
 logger = logging.getLogger(__name__)
 
@@ -124,9 +124,15 @@ class SignalTracker:
                 signal_id, "EXPIRED", close_price=entry, pnl_pips=0.0,
                 result="Истек срок ожидания входа (24ч)"
             )
-            msg = format_signal_result(sig, "EXPIRED", entry, 0.0)
-            await self._send_to_all(msg)
-            logger.info("Signal #%d expired waiting for entry.", signal_id)
+            # Проверяем, есть ли уже активная позиция по этой паре
+            active_signals = await get_active_signals()
+            has_active_for_pair = any(s.get('symbol') == symbol for s in active_signals)
+            
+            # Не шлем пугающий EXPIRED алерт, если по паре уже идет активный трейд
+            if not has_active_for_pair:
+                msg = format_signal_result(sig, "EXPIRED", entry, 0.0)
+                await self._send_to_all(msg)
+            logger.info("Signal #%d (%s) expired waiting for entry. Alert sent: %s", signal_id, symbol, not has_active_for_pair)
             return
 
         df = await self.fetcher.fetch_ohlcv(symbol, "M15", limit=10)
@@ -231,20 +237,23 @@ class SignalTracker:
                     await update_signal_sl(signal_id, new_sl, breakeven=True)
                     sl = new_sl
                     breakeven_applied = True
+                    entry_s = format_price(entry, symbol)
+                    new_sl_s = format_price(new_sl, symbol)
+                    tp1_s = format_price(tp1, symbol)
                     pips_protected = round(risk * mult, 1)
                     msg = (
                         f"🛡 <b>БЕЗУБЫТОК АКТИВИРОВАН</b>\n"
                         f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
                         f"📊 <b>{symbol}</b> | LONG\n"
-                        f"┌ 📍 Вход: <code>{entry:.5f}</code>\n"
-                        f"├ 🛡 SL перенесён: <code>{new_sl:.5f}</code> (=Entry)\n"
-                        f"├ 🎯 TP1: <code>{tp1:.5f}</code>\n"
+                        f"┌ 📍 Вход: <code>{entry_s}</code>\n"
+                        f"├ 🛡 SL перенесён: <code>{new_sl_s}</code> (=Entry)\n"
+                        f"├ 🎯 TP1: <code>{tp1_s}</code>\n"
                         f"└ ⚡ Защищено: <code>+{pips_protected}</code> pips риска\n"
                         f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
                         f"💼 <i>Прибыль достигла 1:1 — риск снят.</i>"
                     )
                     await self._send_to_all(msg)
-                    logger.info("Signal #%d BREAKEVEN applied at %.5f", signal_id, new_sl)
+                    logger.info("Signal #%d BREAKEVEN applied at %s", signal_id, new_sl_s)
 
             elif direction == "SHORT":
                 breakeven_target = entry - risk
@@ -253,20 +262,23 @@ class SignalTracker:
                     await update_signal_sl(signal_id, new_sl, breakeven=True)
                     sl = new_sl
                     breakeven_applied = True
+                    entry_s = format_price(entry, symbol)
+                    new_sl_s = format_price(new_sl, symbol)
+                    tp1_s = format_price(tp1, symbol)
                     pips_protected = round(risk * mult, 1)
                     msg = (
                         f"🛡 <b>БЕЗУБЫТОК АКТИВИРОВАН</b>\n"
                         f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
                         f"📊 <b>{symbol}</b> | SHORT\n"
-                        f"┌ 📍 Вход: <code>{entry:.5f}</code>\n"
-                        f"├ 🛡 SL перенесён: <code>{new_sl:.5f}</code> (=Entry)\n"
-                        f"├ 🎯 TP1: <code>{tp1:.5f}</code>\n"
+                        f"┌ 📍 Вход: <code>{entry_s}</code>\n"
+                        f"├ 🛡 SL перенесён: <code>{new_sl_s}</code> (=Entry)\n"
+                        f"├ 🎯 TP1: <code>{tp1_s}</code>\n"
                         f"└ ⚡ Защищено: <code>+{pips_protected}</code> pips риска\n"
                         f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
                         f"💼 <i>Прибыль достигла 1:1 — риск снят.</i>"
                     )
                     await self._send_to_all(msg)
-                    logger.info("Signal #%d BREAKEVEN applied at %.5f", signal_id, new_sl)
+                    logger.info("Signal #%d BREAKEVEN applied at %s", signal_id, new_sl_s)
 
         # ── 2. LONG ПОЗИЦИИ ──
         if direction == "LONG":
@@ -317,6 +329,9 @@ class SignalTracker:
             if recent_high >= tp1 and status != "TP1_PARTIAL":
                 pnl_tp1_full = round(abs(tp1 - entry) * mult, 1)
                 pnl_tp1_half = round(pnl_tp1_full * 0.5, 1)
+                tp1_s = format_price(tp1, symbol)
+                entry_s = format_price(entry, symbol)
+                tp2_s = format_price(tp2, symbol) if tp2 else "—"
                 
                 if tp2:
                     # Частичное закрытие 50%, перенос SL на Entry
@@ -326,10 +341,10 @@ class SignalTracker:
                         f"🎯 <b>TAKE PROFIT 1 HIT (50% PARTIAL)</b>\n"
                         f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
                         f"📊 <b>{symbol}</b> | LONG\n"
-                        f"┌ 🎯 Уровень TP1: <code>{tp1:.5f}</code> (+{pnl_tp1_full} pips)\n"
+                        f"┌ 🎯 Уровень TP1: <code>{tp1_s}</code> (+{pnl_tp1_full} pips)\n"
                         f"├ 💰 <b>Зафиксировано:</b> <code>+{pnl_tp1_half}</code> pips (50% позиции)\n"
-                        f"├ 🛡 <b>SL перенесён:</b> <code>{entry:.5f}</code> (Безубыток)\n"
-                        f"└ 🚀 <b>Остаток 50%:</b> удерживается к TP2 (<code>{tp2:.5f}</code>)\n"
+                        f"├ 🛡 <b>SL перенесён:</b> <code>{entry_s}</code> (Безубыток)\n"
+                        f"└ 🚀 <b>Остаток 50%:</b> удерживается к TP2 (<code>{tp2_s}</code>)\n"
                         f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
                         f"💼 <i>Сделка без риска! 50% прибыли уже в кармане.</i>"
                     )
@@ -388,6 +403,9 @@ class SignalTracker:
             if recent_low <= tp1 and status != "TP1_PARTIAL":
                 pnl_tp1_full = round(abs(entry - tp1) * mult, 1)
                 pnl_tp1_half = round(pnl_tp1_full * 0.5, 1)
+                tp1_s = format_price(tp1, symbol)
+                entry_s = format_price(entry, symbol)
+                tp2_s = format_price(tp2, symbol) if tp2 else "—"
                 
                 if tp2:
                     await update_signal_status(signal_id, "TP1_PARTIAL", close_price=tp1, pnl_pips=pnl_tp1_half, result="TP1 50% Partial Hit")
@@ -396,10 +414,10 @@ class SignalTracker:
                         f"🎯 <b>TAKE PROFIT 1 HIT (50% PARTIAL)</b>\n"
                         f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
                         f"📊 <b>{symbol}</b> | SHORT\n"
-                        f"┌ 🎯 Уровень TP1: <code>{tp1:.5f}</code> (+{pnl_tp1_full} pips)\n"
+                        f"┌ 🎯 Уровень TP1: <code>{tp1_s}</code> (+{pnl_tp1_full} pips)\n"
                         f"├ 💰 <b>Зафиксировано:</b> <code>+{pnl_tp1_half}</code> pips (50% позиции)\n"
-                        f"├ 🛡 <b>SL перенесён:</b> <code>{entry:.5f}</code> (Безубыток)\n"
-                        f"└ 🚀 <b>Остаток 50%:</b> удерживается к TP2 (<code>{tp2:.5f}</code>)\n"
+                        f"├ 🛡 <b>SL перенесён:</b> <code>{entry_s}</code> (Безубыток)\n"
+                        f"└ 🚀 <b>Остаток 50%:</b> удерживается к TP2 (<code>{tp2_s}</code>)\n"
                         f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
                         f"💼 <i>Сделка без риска! 50% прибыли уже в кармане.</i>"
                     )

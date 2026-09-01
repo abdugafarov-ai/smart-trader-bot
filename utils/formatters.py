@@ -13,8 +13,10 @@ def format_price(price: float | None, symbol: str) -> str:
     """Форматирует цену в моноширинный формат в зависимости от инструмента."""
     if price is None:
         return "—"
-    if 'XAU' in symbol or 'JPY' in symbol:
+    if 'XAU' in symbol:
         return f"{price:.2f}"
+    if 'JPY' in symbol:
+        return f"{price:.3f}"
     return f"{price:.5f}"
 
 

@@ -23,8 +23,10 @@ class ICTSMCStrategy(BaseStrategy):
     emoji = '🧠'
 
     def _format_price(self, price: float, symbol: str) -> str:
-        if 'XAU' in symbol or 'JPY' in symbol:
+        if 'XAU' in symbol:
             return f"{price:.2f}"
+        elif 'JPY' in symbol:
+            return f"{price:.3f}"
         return f"{price:.5f}"
 
     def _find_swing_points(self, df: pd.DataFrame, lookback: int = 2) -> Tuple[List[Tuple[int, float]], List[Tuple[int, float]]]:
@@ -267,14 +269,23 @@ class ICTSMCStrategy(BaseStrategy):
         
         confidence_stars = min(5, final_confidence)
 
-        # BUG 2 & 3 FIX: Stop Loss, Entry, TP
-        min_sl_dist = 1.0 * atr if str(timeframe).lower() in ['15m', 'm15', '1h', 'h1', '60m'] else 0.7 * atr
+        # BUG FIX: Институциональный минимальный размер стоп-лосса (защита от спреда и шума)
+        # На M15 ATR может быть аномально низким (0.00018 = 1.8 пипса), поэтому задаем жесткий пол:
+        if 'JPY' in symbol:
+            abs_min_sl = 0.15  # минимум 15.0 пипсов для JPY пар
+        elif 'XAU' in symbol:
+            abs_min_sl = 2.00  # минимум $2.00 (20 пипсов) для Золота
+        else:
+            abs_min_sl = 0.0010  # минимум 10.0 пипсов для 5-значных пар (EUR, GBP, AUD, NZD, CAD, CHF)
+
+        atr_sl_mult = 1.2 if str(timeframe).lower() in ['15m', 'm15', '1h', 'h1', '60m'] else 0.9
+        min_sl_dist = max(abs_min_sl, atr_sl_mult * atr)
 
         if direction == "LONG":
             candidates = []
             if ote_entry and ote_entry < current_price:
                 candidates.append(ote_entry)
-            if ob_zone and ob_zone[1] < current_price:  # BUG 3 FIX: ob_low for discount
+            if ob_zone and ob_zone[1] < current_price:  # ob_low for discount
                 candidates.append(ob_zone[1])
             if fvg_zone and fvg_zone[1] < current_price:
                 candidates.append(fvg_zone[1])
@@ -288,7 +299,7 @@ class ICTSMCStrategy(BaseStrategy):
             entry = max(candidates)
 
             base_sl = ob_zone[1] if ob_zone else impulse_low
-            sl = min(base_sl - 0.25 * atr, entry - min_sl_dist) # BUG 2 FIX
+            sl = min(base_sl - 0.25 * atr, entry - min_sl_dist)
 
             risk = entry - sl
             if risk < min_sl_dist:
@@ -296,7 +307,7 @@ class ICTSMCStrategy(BaseStrategy):
                 risk = entry - sl
 
             tp1 = entry + 2.5 * risk
-            tp2 = entry + 4.0 * risk # BUG 2 FIX
+            tp2 = entry + 4.0 * risk
 
             if entry <= current_price - 0.1 * atr:
                 order_type = "BUY_LIMIT"
@@ -313,7 +324,7 @@ class ICTSMCStrategy(BaseStrategy):
             candidates = []
             if ote_entry and ote_entry > current_price:
                 candidates.append(ote_entry)
-            if ob_zone and ob_zone[0] > current_price:  # BUG 3 FIX: ob_high for premium
+            if ob_zone and ob_zone[0] > current_price:  # ob_high for premium
                 candidates.append(ob_zone[0])
             if fvg_zone and fvg_zone[0] > current_price:
                 candidates.append(fvg_zone[0])
@@ -326,7 +337,7 @@ class ICTSMCStrategy(BaseStrategy):
             entry = min(candidates)
 
             base_sl = ob_zone[0] if ob_zone else impulse_high
-            sl = max(base_sl + 0.25 * atr, entry + min_sl_dist) # BUG 2 FIX
+            sl = max(base_sl + 0.25 * atr, entry + min_sl_dist)
 
             risk = sl - entry
             if risk < min_sl_dist:
@@ -334,7 +345,7 @@ class ICTSMCStrategy(BaseStrategy):
                 risk = sl - entry
 
             tp1 = entry - 2.5 * risk
-            tp2 = entry - 4.0 * risk # BUG 2 FIX
+            tp2 = entry - 4.0 * risk
 
             if entry >= current_price + 0.1 * atr:
                 order_type = "SELL_LIMIT"
