@@ -113,6 +113,7 @@ async def bridge_get_orders(request: web.Request) -> web.Response:
         # Берем активные сигналы за последние 3 часа
         active = await get_active_signals()
         orders = []
+        from trading.execution_bridge import bridge_manager
         for sig in (active or []):
             orders.append({
                 "id": sig.get("id"),
@@ -124,14 +125,16 @@ async def bridge_get_orders(request: web.Request) -> web.Response:
                 "tp1": sig.get("take_profit_1"),
                 "tp2": sig.get("take_profit_2"),
                 "breakeven_applied": bool(sig.get("breakeven_applied", 0)),
-                "lot": config.AUTOTRADE_DEFAULT_LOT,
-                "risk_percent": config.AUTOTRADE_DEFAULT_RISK,
+                "lot": bridge_manager.default_lot,
+                "risk_percent": bridge_manager.default_risk,
                 "magic_number": 888001,
             })
 
         return web.json_response({
             "status": "ok",
-            "autotrade_enabled": config.AUTOTRADE_ENABLED,
+            "autotrade_enabled": bridge_manager.enabled,
+            "lot": bridge_manager.default_lot,
+            "risk_percent": bridge_manager.default_risk,
             "orders": orders,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         })

@@ -996,3 +996,145 @@ async def cmd_equity(message: Message):
         await message.answer(f"❌ Ошибка генерации графика: {e}", parse_mode=None)
 
 
+# ═══════════════════════════════════════════════════════════
+# УПРАВЛЕНИЕ АВТО-ТОРГОВЛЕЙ (METATRADER 4/5 BRIDGE)
+# ═══════════════════════════════════════════════════════════
+
+@router.message(Command("autotrade"))
+async def cmd_autotrade(message: Message):
+    """Включение / отключение авто-торговли в MetaTrader."""
+    from trading.execution_bridge import bridge_manager
+    args = message.text.split()[1:] if message.text else []
+    
+    if args:
+        sub = args[0].lower()
+        if sub in ["on", "start", "1", "true", "вкл"]:
+            bridge_manager.set_enabled(True)
+            await message.answer(
+                "🟢 <b>АВТО-ТОРГОВЛЯ ВКЛЮЧЕНА!</b>\n\n"
+                "Советник в MetaTrader 4/5 теперь АВТОМАТИЧЕСКИ открывает все новые сигналы 4-5★.\n"
+                f"• Текущий лот: <code>{bridge_manager.default_lot}</code>\n"
+                f"• Риск на сделку: <code>{bridge_manager.default_risk}%</code>\n\n"
+                "Для паузы отправьте: <code>/autotrade off</code>",
+                parse_mode="HTML",
+                reply_markup=back_keyboard()
+            )
+            return
+        elif sub in ["off", "stop", "0", "false", "выкл", "пауза"]:
+            bridge_manager.set_enabled(False)
+            await message.answer(
+                "🔴 <b>АВТО-ТОРГОВЛЯ ПРИОСТАНОВЛЕНА!</b>\n\n"
+                "Советник в MetaTrader временно НЕ будет открывать новые ордера.\n"
+                "Уже открытые позиции останутся под защитой Stop Loss / Take Profit.\n\n"
+                "Для включения отправьте: <code>/autotrade on</code>",
+                parse_mode="HTML",
+                reply_markup=back_keyboard()
+            )
+            return
+    
+    status_emoji = "🟢 ВКЛЮЧЕНА" if bridge_manager.enabled else "🔴 ВЫКЛЮЧЕНА (ПАУЗА)"
+    text = (
+        f"🤖 <b>УПРАВЛЕНИЕ АВТО-ТОРГОВЛЕЙ (MT5 BRIDGE)</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"<b>Статус:</b> {status_emoji}\n"
+        f"<b>Размер лота:</b> <code>{bridge_manager.default_lot}</code>\n"
+        f"<b>Риск на сделку:</b> <code>{bridge_manager.default_risk}%</code>\n"
+        f"<b>Символов:</b> <code>17 пар (Форекс + Золото)</code>\n"
+        f"<b>Auto-Breakeven:</b> <code>Включён (в безубыток на 50% TP1)</code>\n\n"
+        f"<b>Быстрые команды:</b>\n"
+        f"• <code>/autotrade on</code> — Включить автопилот\n"
+        f"• <code>/autotrade off</code> — Выключить / поставить на паузу\n"
+        f"• <code>/lot 0.02</code> — Изменить рабочий лот\n"
+        f"• <code>/risk 1.5</code> — Изменить риск в % от баланса\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    )
+    await message.answer(text, parse_mode="HTML", reply_markup=back_keyboard())
+
+
+@router.message(Command("lot"))
+async def cmd_lot(message: Message):
+    """Установка фиксированного размера лота."""
+    from trading.execution_bridge import bridge_manager
+    args = message.text.split()[1:] if message.text else []
+    
+    if not args:
+        await message.answer(
+            f"Текущий размер лота: <code>{bridge_manager.default_lot}</code>\n\n"
+            f"Чтобы изменить, укажите значение:\n"
+            f"Например: <code>/lot 0.02</code> или <code>/lot 0.05</code>",
+            parse_mode="HTML"
+        )
+        return
+        
+    try:
+        val = float(args[0].replace(",", "."))
+        if val < 0.01 or val > 10.0:
+            await message.answer("❌ Лот должен быть в диапазоне от 0.01 до 10.0")
+            return
+        bridge_manager.set_lot(val)
+        await message.answer(
+            f"✅ <b>Новый лот установлен:</b> <code>{bridge_manager.default_lot}</code>\n"
+            f"Все последующие сделки в MetaTrader будут открываться этим объемом.",
+            parse_mode="HTML"
+        )
+    except ValueError:
+        await message.answer("❌ Неверный формат. Пример: <code>/lot 0.01</code>", parse_mode="HTML")
+
+
+@router.message(Command("risk"))
+async def cmd_risk(message: Message):
+    """Установка процента риска на сделку."""
+    from trading.execution_bridge import bridge_manager
+    args = message.text.split()[1:] if message.text else []
+    
+    if not args:
+        await message.answer(
+            f"Текущий риск на сделку: <code>{bridge_manager.default_risk}%</code>\n\n"
+            f"Чтобы изменить, укажите процент от депозита:\n"
+            f"Например: <code>/risk 1.0</code> или <code>/risk 2.0</code>",
+            parse_mode="HTML"
+        )
+        return
+        
+    try:
+        val = float(args[0].replace(",", "."))
+        if val < 0.1 or val > 10.0:
+            await message.answer("❌ Риск должен быть в диапазоне от 0.1% до 10.0%")
+            return
+        bridge_manager.set_risk(val)
+        await message.answer(
+            f"✅ <b>Новый риск установлен:</b> <code>{bridge_manager.default_risk}%</code> на сделку.",
+            parse_mode="HTML"
+        )
+    except ValueError:
+        await message.answer("❌ Неверный формат. Пример: <code>/risk 1.5</code>", parse_mode="HTML")
+
+
+@router.message(Command("help"))
+async def cmd_help(message: Message):
+    """Справка по всем командам бота."""
+    text = (
+        "🤖 <b>СПРАВОЧНИК КОМАНД SMART TRADER BOT</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "📊 <b>Анализ и сигналы:</b>\n"
+        "• <code>/analyze EURUSD</code> — Полный мульти-ТФ анализ пары\n"
+        "• <code>/signals</code> — Радар активных сигналов по 17 парам\n"
+        "• <code>/stats</code> — Статистика торговли и винрейт\n"
+        "• <code>/equity</code> — График кривой капитала (PnL Curve)\n"
+        "• <code>/sessions</code> — Часы работы мировых торговых сессий\n"
+        "• <code>/news</code> — Экономический календарь важных событий\n\n"
+        "🌐 <b>Торговый терминал:</b>\n"
+        "• <code>/webapp</code> — Открыть интерактивный TradingView Mini App\n\n"
+        "🤖 <b>Авто-торговля (MetaTrader 4/5):</b>\n"
+        "• <code>/autotrade</code> — Статус автопилота советника\n"
+        "• <code>/autotrade on</code> — Включить автоматическую торговлю\n"
+        "• <code>/autotrade off</code> — Поставить автопилот на паузу\n"
+        "• <code>/lot 0.01</code> — Задать фиксированный лот\n"
+        "• <code>/risk 1.0</code> — Задать риск в % от баланса счета\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    )
+    await message.answer(text, parse_mode="HTML", reply_markup=back_keyboard())
+
+
+
+
