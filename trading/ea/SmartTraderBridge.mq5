@@ -94,10 +94,11 @@ void ParseAndExecuteOrders(string json)
       return; // Автопилот выключен
    }
 
-   // Ищем символы в JSON (EURUSD, GBPUSD, USDJPY, XAUUSD и т.д.)
+   // Все 17 отслеживаемых пар бота
    string common_pairs[] = {
       "EURUSD", "GBPUSD", "USDJPY", "USDCHF", "AUDUSD", "NZDUSD", "USDCAD",
-      "EURGBP", "EURJPY", "GBPJPY", "EURAUD", "GBPAUD", "EURCHF", "CADJPY", "XAUUSD"
+      "EURGBP", "EURJPY", "GBPJPY", "EURAUD", "GBPAUD", "EURCHF", "CADJPY",
+      "AUDCAD", "AUDNZD", "XAUUSD"
    };
 
    for(int i = 0; i < ArraySize(common_pairs); i++)
@@ -105,6 +106,9 @@ void ParseAndExecuteOrders(string json)
       string pair = common_pairs[i];
       int pos = StringFind(json, "\"" + pair + "\"");
       if(pos < 0) continue;
+
+      // Получаем точное имя символа у брокера (с учетом суффиксов .pro, m, _i)
+      string broker_symbol = GetBrokerSymbol(pair);
 
       // Извлекаем фрагмент вокруг пары
       int block_start = StringFind(json, "{", pos - 50);
@@ -119,12 +123,12 @@ void ParseAndExecuteOrders(string json)
       if(!is_long && !is_short) continue;
 
       // Проверяем, открыта ли уже позиция по этой паре с нашим Magic
-      if(HasOpenPosition(pair))
+      if(HasOpenPosition(broker_symbol))
       {
          // Проверяем перенос в безубыток
          if(StringFind(block, "\"breakeven_applied\":true") >= 0 || StringFind(block, "\"breakeven_applied\": true") >= 0)
          {
-            ApplyBreakevenIfEligible(pair);
+            ApplyBreakevenIfEligible(broker_symbol);
          }
          continue;
       }
@@ -138,29 +142,50 @@ void ParseAndExecuteOrders(string json)
       double lot = InpFixedLot;
       if(InpUseAutoRisk)
       {
-         lot = CalculateRiskLot(pair, sl);
+         lot = CalculateRiskLot(broker_symbol, sl);
       }
 
       // Открываем ордер
       if(is_long)
       {
-         double ask = SymbolInfoDouble(pair, SYMBOL_ASK);
-         if(trade.Buy(lot, pair, ask, sl, tp, "SmartTrader Institutional"))
+         double ask = SymbolInfoDouble(broker_symbol, SYMBOL_ASK);
+         if(trade.Buy(lot, broker_symbol, ask, sl, tp, "SmartTrader Institutional"))
          {
-            Print("✅ [SmartTrader] BUY ордер открыт: ", pair, " | Лот: ", lot, " | SL: ", sl, " | TP: ", tp);
+            Print("✅ [SmartTrader] BUY ордер открыт: ", broker_symbol, " | Лот: ", lot, " | SL: ", sl, " | TP: ", tp);
             ReportExecution(pair, "BUY", ask);
          }
       }
       else if(is_short)
       {
-         double bid = SymbolInfoDouble(pair, SYMBOL_BID);
-         if(trade.Sell(lot, pair, bid, sl, tp, "SmartTrader Institutional"))
+         double bid = SymbolInfoDouble(broker_symbol, SYMBOL_BID);
+         if(trade.Sell(lot, broker_symbol, bid, sl, tp, "SmartTrader Institutional"))
          {
-            Print("✅ [SmartTrader] SELL ордер открыт: ", pair, " | Лот: ", lot, " | SL: ", sl, " | TP: ", tp);
+            Print("✅ [SmartTrader] SELL ордер открыт: ", broker_symbol, " | Лот: ", lot, " | SL: ", sl, " | TP: ", tp);
             ReportExecution(pair, "SELL", bid);
          }
       }
    }
+}
+
+//+------------------------------------------------------------------+
+//| Получение символа брокера с учетом возможных суффиксов           |
+//+------------------------------------------------------------------+
+string GetBrokerSymbol(string standard_pair)
+{
+   if(SymbolInfoDouble(standard_pair, SYMBOL_BID) > 0)
+      return standard_pair;
+      
+   int total = SymbolsTotal(false);
+   for(int i = 0; i < total; i++)
+   {
+      string name = SymbolName(i, false);
+      if(StringFind(name, standard_pair) >= 0)
+      {
+         SymbolSelect(name, true);
+         return name;
+      }
+   }
+   return standard_pair;
 }
 
 //+------------------------------------------------------------------+
