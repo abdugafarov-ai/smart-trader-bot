@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Smart Trader Terminal</title>
+    <!-- Telegram WebApp SDK -->
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <link rel="stylesheet" href="/static/style.css">
+    <!-- TradingView Widget Script -->
+    <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
+</head>
+<body>
+    <div id="app">
+        <!-- Верхняя шапка -->
+        <header class="app-header">
+            <div class="logo">
+                <span class="logo-icon">🏛</span>
+                <div class="logo-text">
+                    <h1>SMART TRADER</h1>
+                    <span class="badge">INSTITUTIONAL TERMINAL</span>
+                </div>
+            </div>
+            <div class="header-status">
+                <span class="status-dot live"></span>
+                <span class="status-label">ONLINE</span>
+            </div>
+        </header>
+
+        <!-- Основной контент (Вкладки) -->
+        <main class="app-main">
+            <!-- Вкладка 1: Живой График TradingView -->
+            <section id="tab-chart" class="tab-content active">
+                <div class="chart-controls">
+                    <div class="control-group">
+                        <label for="pair-select">Инструмент:</label>
+                        <select id="pair-select" onchange="changePair(this.value)">
+                            <optgroup label="Мажоры">
+                                <option value="FX:EURUSD" selected>EUR/USD</option>
+                                <option value="FX:GBPUSD">GBP/USD</option>
+                                <option value="FX:USDJPY">USD/JPY</option>
+                                <option value="FX:USDCHF">USD/CHF</option>
+                                <option value="FX:AUDUSD">AUD/USD</option>
+                                <option value="FX:NZDUSD">NZD/USD</option>
+                                <option value="FX:USDCAD">USD/CAD</option>
+                            </optgroup>
+                            <optgroup label="Кроссы">
+                                <option value="FX:EURGBP">EUR/GBP</option>
+                                <option value="FX:EURJPY">EUR/JPY</option>
+                                <option value="FX:GBPJPY">GBP/JPY</option>
+                                <option value="FX:EURAUD">EUR/AUD</option>
+                                <option value="FX:GBPAUD">GBP/AUD</option>
+                                <option value="FX:CADJPY">CAD/JPY</option>
+                            </optgroup>
+                            <optgroup label="Металлы">
+                                <option value="OANDA:XAUUSD">XAU/USD (Золото)</option>
+                            </optgroup>
+                        </select>
+                    </div>
+                    <div class="tf-selector">
+                        <button class="tf-btn" onclick="changeTF('15')">M15</button>
+                        <button class="tf-btn active" onclick="changeTF('60')">1H</button>
+                        <button class="tf-btn" onclick="changeTF('240')">4H</button>
+                        <button class="tf-btn" onclick="changeTF('D')">1D</button>
+                    </div>
+                </div>
+
+                <!-- Контейнер виджета TradingView -->
+                <div class="tv-widget-box" id="tradingview_chart_box">
+                    <div id="tradingview_widget"></div>
+                </div>
+            </section>
+
+            <!-- Вкладка 2: Радар Сигналов -->
+            <section id="tab-signals" class="tab-content">
+                <div class="section-title">
+                    <h2>🎯 АКТИВНЫЕ СИГНАЛЫ В РЕАЛЬНОМ ВРЕМЕНИ</h2>
+                    <button class="refresh-btn" onclick="loadSignals()">🔄 Обновить</button>
+                </div>
+                <div id="signals-container" class="cards-list">
+                    <div class="loader">Загрузка институциональных сетапов...</div>
+                </div>
+            </section>
+
+            <!-- Вкладка 3: Статистика & Win-Rate -->
+            <section id="tab-stats" class="tab-content">
+                <div class="section-title">
+                    <h2>📊 ТОРГОВАЯ СТАТИСТИКА & PnL</h2>
+                </div>
+                <div class="stats-grid">
+                    <div class="stat-card">
+                        <span class="stat-label">WIN RATE</span>
+                        <span class="stat-value highlight" id="stat-winrate">--%</span>
+                    </div>
+                    <div class="stat-card">
+                        <span class="stat-label">ОБЩИЙ PnL</span>
+                        <span class="stat-value positive" id="stat-pnl">+0.0 pips</span>
+                    </div>
+                    <div class="stat-card">
+                        <span class="stat-label">ВСЕГО СДЕЛОК</span>
+                        <span class="stat-value" id="stat-total">0</span>
+                    </div>
+                    <div class="stat-card">
+                        <span class="stat-label">СРЕДНИЙ R:R</span>
+                        <span class="stat-value" id="stat-rr">1:2.5</span>
+                    </div>
+                </div>
+
+                <div class="history-section">
+                    <h3>📜 ИСТОРИЯ ПОСЛЕДНИХ СДЕЛОК</h3>
+                    <div id="history-container" class="history-list"></div>
+                </div>
+            </section>
+
+            <!-- Вкладка 4: Экономический Календарь -->
+            <section id="tab-calendar" class="tab-content">
+                <div class="section-title">
+                    <h2>📰 HIGH-IMPACT НОВОСТИ (FOREX FACTORY)</h2>
+                    <button class="refresh-btn" onclick="loadEvents()">🔄</button>
+                </div>
+                <div id="calendar-container" class="calendar-list">
+                    <div class="loader">Синхронизация календаря...</div>
+                </div>
+            </section>
+
+            <!-- Вкладка 5: Авто-торговля (MetaTrader Bridge) -->
+            <section id="tab-autotrade" class="tab-content">
+                <div class="section-title">
+                    <h2>🤖 АВТОПИЛОТ (METATRADER 4 / 5 BRIDGE)</h2>
+                </div>
+                <div class="bridge-card">
+                    <div class="bridge-header">
+                        <span class="bridge-icon">⚡</span>
+                        <div>
+                            <h3>MetaTrader Execution Bridge</h3>
+                            <p>Автоматическое открытие сделок на счете брокера</p>
+                        </div>
+                    </div>
+                    <div class="bridge-status-row">
+                        <span>Статус автопилота:</span>
+                        <span class="badge active" id="bridge-status-badge">АКТИВЕН</span>
+                    </div>
+                    <div class="bridge-params">
+                        <div class="param-row">
+                            <span>Торговый лот:</span>
+                            <input type="number" id="bridge-lot" value="0.01" step="0.01" min="0.01">
+                        </div>
+                        <div class="param-row">
+                            <span>Риск на сделку:</span>
+                            <span class="param-value">1.0% баланса</span>
+                        </div>
+                        <div class="param-row">
+                            <span>Авто-безубыток:</span>
+                            <span class="param-value text-green">1:1 Risk (ВКЛ)</span>
+                        </div>
+                    </div>
+                    <div class="bridge-guide">
+                        <h4>📥 Как подключить MetaTrader 4/5:</h4>
+                        <ol>
+                            <li>Скопируйте советник <code>SmartTraderBridge.mq5</code> в папку <code>MQL5/Experts</code> вашего терминала.</li>
+                            <li>В настройках MT5 включите <b>«Разрешить WebRequest»</b> и добавьте URL вашего сервера.</li>
+                            <li>Прикрепите советник к любому графику — сделки будут копироваться автоматически!</li>
+                        </ol>
+                    </div>
+                </div>
+            </section>
+        </main>
+
+        <!-- Нижняя навигационная панель (Табы) -->
+        <nav class="bottom-nav">
+            <button class="nav-item active" onclick="switchTab('chart', this)">
+                <span class="nav-icon">📈</span>
+                <span class="nav-text">График</span>
+            </button>
+            <button class="nav-item" onclick="switchTab('signals', this)">
+                <span class="nav-icon">🎯</span>
+                <span class="nav-text">Радар</span>
+            </button>
+            <button class="nav-item" onclick="switchTab('stats', this)">
+                <span class="nav-icon">📊</span>
+                <span class="nav-text">PnL</span>
+            </button>
+            <button class="nav-item" onclick="switchTab('calendar', this)">
+                <span class="nav-icon">📰</span>
+                <span class="nav-text">Новости</span>
+            </button>
+            <button class="nav-item" onclick="switchTab('autotrade', this)">
+                <span class="nav-icon">🤖</span>
+                <span class="nav-text">Мост</span>
+            </button>
+        </nav>
+    </div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>

@@ -100,22 +100,26 @@ async def save_signal(
     strategies_agreed: str = "",
     timeframes_agreed: str = "",
 ) -> int | None:
-    """Сохраняет новый сигнал в БД в статусе PENDING. Возвращает ID."""
+    """Сохраняет новый сигнал в БД (ACTIVE для MARKET ордеров, PENDING для LIMIT). Возвращает ID."""
     try:
+        now_iso = datetime.now(timezone.utc).isoformat()
+        initial_status = "ACTIVE" if "MARKET" in (order_type or "") else "PENDING"
+        activated_at = now_iso if initial_status == "ACTIVE" else None
+
         async with aiosqlite.connect(str(DB_PATH)) as db:
             cursor = await db.execute(
                 """INSERT INTO signals
                    (symbol, direction, order_type, tag_emoji, stars,
                     current_price, entry_price, stop_loss,
                     take_profit_1, take_profit_2, risk_reward,
-                    strategies_agreed, timeframes_agreed, status, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', ?)""",
+                    strategies_agreed, timeframes_agreed, status, created_at, activated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     symbol, direction, order_type, tag_emoji, stars,
                     current_price, entry_price, stop_loss,
                     take_profit_1, take_profit_2, risk_reward,
                     strategies_agreed, timeframes_agreed,
-                    datetime.now(timezone.utc).isoformat(),
+                    initial_status, now_iso, activated_at
                 ),
             )
             await db.commit()

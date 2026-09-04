@@ -304,6 +304,13 @@ class ICTSMCStrategy(BaseStrategy):
             base_sl = ob_zone[1] if ob_zone else impulse_low
             sl = min(base_sl - 0.25 * atr, entry - min_sl_dist)
 
+            # Вариант 1 (Market Execution): Если цена в пределах 0.35*ATR от зоны — вход моментальный ПО РЫНКУ
+            if abs(entry - current_price) <= 0.35 * atr or entry >= current_price:
+                entry = current_price
+                order_type = "BUY_MARKET"
+            else:
+                order_type = "BUY_LIMIT"
+
             risk = entry - sl
             if risk < min_sl_dist:
                 sl = entry - min_sl_dist
@@ -311,17 +318,6 @@ class ICTSMCStrategy(BaseStrategy):
 
             tp1 = entry + 2.5 * risk
             tp2 = entry + 4.0 * risk
-
-            if entry <= current_price - 0.1 * atr:
-                order_type = "BUY_LIMIT"
-            elif entry >= current_price + 0.1 * atr:
-                order_type = "BUY_STOP"
-            else:
-                entry = current_price - 0.25 * atr
-                order_type = "BUY_LIMIT"
-                risk = entry - sl
-                tp1 = entry + 2.5 * risk
-                tp2 = entry + 4.0 * risk
 
         else:  # SHORT
             candidates = []
@@ -342,6 +338,13 @@ class ICTSMCStrategy(BaseStrategy):
             base_sl = ob_zone[0] if ob_zone else impulse_high
             sl = max(base_sl + 0.25 * atr, entry + min_sl_dist)
 
+            # Вариант 1 (Market Execution): Если цена в пределах 0.35*ATR от зоны — вход моментальный ПО РЫНКУ
+            if abs(entry - current_price) <= 0.35 * atr or entry <= current_price:
+                entry = current_price
+                order_type = "SELL_MARKET"
+            else:
+                order_type = "SELL_LIMIT"
+
             risk = sl - entry
             if risk < min_sl_dist:
                 sl = entry + min_sl_dist
@@ -349,17 +352,6 @@ class ICTSMCStrategy(BaseStrategy):
 
             tp1 = entry - 2.5 * risk
             tp2 = entry - 4.0 * risk
-
-            if entry >= current_price + 0.1 * atr:
-                order_type = "SELL_LIMIT"
-            elif entry <= current_price - 0.1 * atr:
-                order_type = "SELL_STOP"
-            else:
-                entry = current_price + 0.25 * atr
-                order_type = "SELL_LIMIT"
-                risk = sl - entry
-                tp1 = entry - 2.5 * risk
-                tp2 = entry - 4.0 * risk
 
         risk = abs(entry - sl)
         reward_1 = abs(tp1 - entry)

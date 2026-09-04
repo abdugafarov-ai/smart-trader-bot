@@ -57,6 +57,16 @@ NOTIFY_USER_IDS: list[int] = [
 ]
 SCAN_INTERVAL_MINUTES: int = int(os.getenv("SCAN_INTERVAL_MINUTES", "30"))
 
+# ── Web App (Mini App) & Execution Bridge ──────────────────
+WEBAPP_HOST: str = os.getenv("WEBAPP_HOST", "0.0.0.0")
+WEBAPP_PORT: int = int(os.getenv("WEBAPP_PORT", "8080"))
+WEBAPP_URL: str = os.getenv("WEBAPP_URL", "")  # URL для Telegram WebApp (например https://mydomain.com или ngrok)
+
+# ── Auto-Trading Bridge (MetaTrader 4/5) ───────────────────
+AUTOTRADE_ENABLED: bool = os.getenv("AUTOTRADE_ENABLED", "true").lower() in ("true", "1", "yes")
+AUTOTRADE_DEFAULT_RISK: float = float(os.getenv("AUTOTRADE_DEFAULT_RISK", "1.0"))
+AUTOTRADE_DEFAULT_LOT: float = float(os.getenv("AUTOTRADE_DEFAULT_LOT", "0.01"))
+
 # ── Минимальные звёзды для уведомления ────────────────────
 MIN_SIGNAL_STARS: int = 4   # Только 4-5 звёзд → уведомление
 

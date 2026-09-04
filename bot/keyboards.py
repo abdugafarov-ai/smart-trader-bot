@@ -3,7 +3,7 @@ Smart Trader Bot — Keyboards.
 Стиль: 🏛 «Wall Street / Bloomberg Terminal».
 """
 
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 import config
 
@@ -11,6 +11,17 @@ import config
 def main_menu_keyboard() -> InlineKeyboardMarkup:
     """Главное меню терминала."""
     builder = InlineKeyboardBuilder()
+    
+    # Кнопка Web App на первом месте
+    if config.WEBAPP_URL:
+        builder.row(
+            InlineKeyboardButton(text="📱 ОТКРЫТЬ WEB APP ТЕРМИНАЛ", web_app=WebAppInfo(url=config.WEBAPP_URL))
+        )
+    else:
+        builder.row(
+            InlineKeyboardButton(text="📱 Терминал Web App", callback_data="menu:webapp_info")
+        )
+
     builder.row(
         InlineKeyboardButton(text="📊 Анализ Актива", callback_data="menu:analyze"),
         InlineKeyboardButton(text="📈 Индикаторы", callback_data="menu:indicators")
@@ -44,10 +55,13 @@ def signal_inline_keyboard(symbol: str) -> InlineKeyboardMarkup:
     tv_symbol = f"FX:{symbol}" if symbol != "XAUUSD" else "TVC:GOLD"
     tv_url = f"https://www.tradingview.com/chart/?symbol={tv_symbol}"
     
-    builder.row(
-        InlineKeyboardButton(text="📈 График TradingView", url=tv_url),
-        InlineKeyboardButton(text="🔍 Глубокий разбор", callback_data=f"sym:{symbol}")
-    )
+    btns = []
+    if config.WEBAPP_URL:
+        btns.append(InlineKeyboardButton(text="📱 Web App", web_app=WebAppInfo(url=config.WEBAPP_URL)))
+    btns.append(InlineKeyboardButton(text="📈 TradingView", url=tv_url))
+    btns.append(InlineKeyboardButton(text="🔍 Разбор", callback_data=f"sym:{symbol}"))
+    
+    builder.row(*btns)
     return builder.as_markup()
 
 

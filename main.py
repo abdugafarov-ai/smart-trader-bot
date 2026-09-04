@@ -37,8 +37,10 @@ async def main():
     
     tracker = SignalTracker(bot=bot, check_interval_minutes=5)
     reporter = WeeklyReporter(bot=bot)
+    webapp_runner = None
     
     async def on_startup():
+        nonlocal webapp_runner
         # Инициализация базы данных
         await init_db()
         await init_users_table()
@@ -46,6 +48,14 @@ async def main():
         logging.info("Database initialized. Admin ID: %d", config.ADMIN_ID)
         logging.info("Bot started. Scanning %d pairs every %d min.",
                       len(config.ALL_PAIRS), config.SCAN_INTERVAL_MINUTES)
+
+        # Запуск WebApp & Bridge HTTP сервера
+        try:
+            from webapp.server import start_webapp_server
+            webapp_runner = await start_webapp_server(config.WEBAPP_HOST, config.WEBAPP_PORT)
+            logging.info("WebApp & Bridge server started on %s:%d", config.WEBAPP_HOST, config.WEBAPP_PORT)
+        except Exception as e:
+            logging.error("Failed to start WebApp server: %s", e)
 
         # Уведомление админа о запуске
         if config.ADMIN_ID:
@@ -58,7 +68,8 @@ async def main():
                     f"🔔 Уведомления: только ⭐⭐⭐⭐ и ⭐⭐⭐⭐⭐\n"
                     f"📰 Предупреждения о новостях: включены\n"
                     f"🔒 Контроль доступа: включён\n"
-                    f"📊 Еженедельный отчёт: суббота 10:00\n\n"
+                    f"📊 Еженедельный отчёт: суббота 10:00\n"
+                    f"🌐 WebApp & Bridge: http://{config.WEBAPP_HOST}:{config.WEBAPP_PORT}\n\n"
                     "Отправь /start для начала работы."
                 )
             except Exception as e:
@@ -74,6 +85,12 @@ async def main():
         await scanner.stop()
         await tracker.stop()
         await reporter.stop()
+        if webapp_runner:
+            try:
+                await webapp_runner.cleanup()
+                logging.info("WebApp server cleaned up.")
+            except Exception as e:
+                logging.error(f"Error cleaning up WebApp server: {e}")
         
     dp.startup.register(on_startup)
     dp.shutdown.register(on_shutdown)

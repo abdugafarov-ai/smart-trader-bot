@@ -380,6 +380,89 @@ async def cmd_history(message: Message):
     text = format_history(signals)
     await message.answer(text, reply_markup=back_keyboard(), parse_mode="HTML")
 
+@router.message(Command("webapp"))
+async def cmd_webapp(message: Message):
+    web_url = config.WEBAPP_URL or f"http://194.87.130.137:{config.WEBAPP_PORT}"
+    text = (
+        "📱 <b>SMART TRADER WEB APP ТЕРМИНАЛ</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "Интерактивный графический терминал внутри Telegram:\n\n"
+        "• 📈 Живые графики TradingView в реальном времени\n"
+        "• 🎯 Интерактивный радар сигналов с расчетом R:R\n"
+        "• 📊 PnL & Win-Rate статистика и эквити\n"
+        "• 📰 Экономический календарь новостей\n"
+        "• 🤖 MetaTrader 4/5 Execution Bridge (Автопилот)\n\n"
+        f"🔗 <b>Открыть в браузере / Web App:</b>\n"
+        f"<code>{web_url}</code>"
+    )
+    from aiogram.utils.keyboard import InlineKeyboardBuilder
+    from aiogram.types import InlineKeyboardButton, WebAppInfo
+    builder = InlineKeyboardBuilder()
+    if config.WEBAPP_URL:
+        builder.row(InlineKeyboardButton(text="📱 Открыть Web App", web_app=WebAppInfo(url=config.WEBAPP_URL)))
+    builder.row(InlineKeyboardButton(text="◀️ Назад в меню", callback_data="menu"))
+    await message.answer(text, reply_markup=builder.as_markup(), parse_mode="HTML")
+
+@router.message(Command("autotrade"))
+async def cmd_autotrade(message: Message):
+    parts = message.text.split()
+    from trading.execution_bridge import bridge_manager
+    if len(parts) > 1:
+        sub = parts[1].lower()
+        if sub in ("on", "1", "start", "enable"):
+            bridge_manager.set_enabled(True)
+            await message.answer("✅ <b>АВТОПИЛОТ ВКЛЮЧЕН!</b>\nВсе подтвержденные сигналы передаются в MetaTrader советник.", parse_mode="HTML")
+            return
+        elif sub in ("off", "0", "stop", "disable"):
+            bridge_manager.set_enabled(False)
+            await message.answer("🛑 <b>АВТОПИЛОТ ВЫКЛЮЧЕН.</b>\nСоветник не будет открывать новые сделки.", parse_mode="HTML")
+            return
+
+    status = bridge_manager.get_status()
+    st_badge = "🟢 ВКЛЮЧЕН" if status["enabled"] else "🔴 ВЫКЛЮЧЕН"
+    text = (
+        f"🤖 <b>СТАТУС МОСТА АВТО-ТОРГОВЛИ (METATRADER BRIDGE):</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"• Статус: <b>{st_badge}</b>\n"
+        f"• Риск на сделку: <code>{status['risk_percent']}%</code>\n"
+        f"• Торговый лот: <code>{status['default_lot']}</code>\n"
+        f"• Подключено терминалов: <code>{status['terminals_connected']}</code>\n\n"
+        f"Управление:\n"
+        f"• <code>/autotrade on</code> — включить автопилот\n"
+        f"• <code>/autotrade off</code> — выключить автопилот\n"
+        f"• <code>/risk 1.5</code> — установить процент риска (от 0.1% до 5.0%)\n"
+        f"• <code>/lot 0.05</code> — установить фиксированный лот"
+    )
+    await message.answer(text, reply_markup=back_keyboard(), parse_mode="HTML")
+
+@router.message(Command("risk"))
+async def cmd_risk(message: Message):
+    parts = message.text.split()
+    if len(parts) > 1:
+        try:
+            val = float(parts[1].replace(',', '.'))
+            from trading.execution_bridge import bridge_manager
+            bridge_manager.set_risk(val)
+            await message.answer(f"✅ Риск на сделку установлен: <b>{bridge_manager.default_risk}%</b>", parse_mode="HTML")
+            return
+        except ValueError:
+            pass
+    await message.answer("Использование: <code>/risk 1.0</code> (процент риска от 0.1% до 5.0%)", parse_mode="HTML")
+
+@router.message(Command("lot"))
+async def cmd_lot(message: Message):
+    parts = message.text.split()
+    if len(parts) > 1:
+        try:
+            val = float(parts[1].replace(',', '.'))
+            from trading.execution_bridge import bridge_manager
+            bridge_manager.set_lot(val)
+            await message.answer(f"✅ Фиксированный лот установлен: <b>{bridge_manager.default_lot}</b>", parse_mode="HTML")
+            return
+        except ValueError:
+            pass
+    await message.answer("Использование: <code>/lot 0.02</code> (размер лота от 0.01 до 10.0)", parse_mode="HTML")
+
 @router.callback_query(F.data == "menu")
 async def cb_menu(callback: CallbackQuery):
     await callback.message.edit_text("🏛 <b>ГЛАВНОЕ МЕНЮ ТЕРМИНАЛА:</b>", reply_markup=main_menu_keyboard(), parse_mode="HTML")
@@ -402,7 +485,24 @@ async def cb_guide(callback: CallbackQuery):
 @router.callback_query(F.data.startswith("menu:"))
 async def cb_menu_actions(callback: CallbackQuery):
     action = callback.data.split(":")[1]
-    if action == "analyze":
+    if action == "webapp_info":
+        web_url = config.WEBAPP_URL or f"http://194.87.130.137:{config.WEBAPP_PORT}"
+        text = (
+            "📱 <b>SMART TRADER WEB APP ТЕРМИНАЛ</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "Интерактивный графический терминал прямо внутри Telegram:\n\n"
+            "• 📈 Живые графики TradingView в реальном времени\n"
+            "• 🎯 Интерактивный радар сигналов с расчетом R:R\n"
+            "• 📊 PnL & Win-Rate статистика и кривая капитала\n"
+            "• 📰 Экономический календарь макроновостей\n"
+            "• 🤖 MetaTrader 4/5 Execution Bridge (Автопилот)\n\n"
+            f"🔗 <b>Прямая ссылка на Web-терминал:</b>\n"
+            f"<code>{web_url}</code>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "💡 <i>Откройте ссылку в браузере или используйте Web App кнопку в меню.</i>"
+        )
+        await callback.message.edit_text(text, reply_markup=back_keyboard(), parse_mode="HTML")
+    elif action == "analyze":
         await callback.message.edit_text("📊 <b>Выберите категорию активов для анализа:</b>", reply_markup=symbols_keyboard(), parse_mode="HTML")
     elif action == "indicators":
         await callback.message.edit_text("📈 <b>Выберите категорию для технического анализа:</b>", reply_markup=symbols_keyboard(), parse_mode="HTML")

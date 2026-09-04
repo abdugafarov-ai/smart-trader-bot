@@ -164,11 +164,17 @@ def format_notification(result: MultiTFResult) -> str:
     rr1_s = f" [1:{result.risk_reward_1:.1f}]" if result.risk_reward_1 else ""
     rr2_s = f" [1:{result.risk_reward_2:.1f}]" if result.risk_reward_2 else ""
     
+    action_hint = (
+        "🚀 <b>ВХОД ПРЯМО СЕЙЧАС ПО РЫНКУ!</b>"
+        if "MARKET" in result.order_type
+        else f"⏳ <i>Установите отложенный ордер {order_type_clean} в терминале.</i>"
+    )
+
     return (
-        f"🏛 <b>SMART TERMINAL</b> | <b>ICT/SMC ORDER</b>\n"
+        f"🏛 <b>SMART TERMINAL</b> | <b>{order_type_clean}</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         f"<b>SYMBOL:</b> <code>{result.symbol}</code> [ Маркер: {tag} ]\n"
-        f"<b>ACTION:</b> {overall_emoji} <b>{order_type_clean}</b> 📥\n"
+        f"<b>ACTION:</b> {overall_emoji} <b>{order_type_clean}</b>\n"
         f"<b>MARKET:</b> <code>{format_price(result.current_price, result.symbol)}</code>\n\n"
         f"┌── <b>ТОРГОВЫЕ УРОВНИ</b> ─────────────────\n"
         f"│ 📍 <b>ENTRY:</b>  <code>{format_price(result.entry, result.symbol)}</code>\n"
@@ -178,7 +184,7 @@ def format_notification(result: MultiTFResult) -> str:
         f"└── <b>R:R:</b>    <code>1:{result.risk_reward_1:.1f} / 1:{result.risk_reward_2:.1f}</code> ────────\n\n"
         f"⏱ <b>СТРУКТУРА ТФ:</b> {tf_summary}\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"⏳ <i>Установите отложенный ордер {order_type_clean} в терминале.</i>\n"
+        f"{action_hint}\n"
         f"💼 <i>Рекомендуемый риск: 1.0% депозита.</i>"
     )
 
