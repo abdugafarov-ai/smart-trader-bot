@@ -281,20 +281,23 @@ class ICTSMCStrategy(BaseStrategy):
         atr_sl_mult = 1.2 if str(timeframe).lower() in ['15m', 'm15', '1h', 'h1', '60m'] else 0.9
         min_sl_dist = max(abs_min_sl, atr_sl_mult * atr)
 
+        # Фильтр дистанции входа: зона должна быть рядом с текущей ценой (не дальше 1.2 * ATR)
+        max_entry_dist = 1.2 * atr
+
         if direction == "LONG":
             candidates = []
-            if ote_entry and ote_entry < current_price:
+            if ote_entry and ote_entry < current_price and (current_price - ote_entry) <= max_entry_dist:
                 candidates.append(ote_entry)
-            if ob_zone and ob_zone[1] < current_price:  # ob_low for discount
+            if ob_zone and ob_zone[1] < current_price and (current_price - ob_zone[1]) <= max_entry_dist:
                 candidates.append(ob_zone[1])
-            if fvg_zone and fvg_zone[1] < current_price:
+            if fvg_zone and fvg_zone[1] < current_price and (current_price - fvg_zone[1]) <= max_entry_dist:
                 candidates.append(fvg_zone[1])
 
             if not candidates:
-                # Нет зоны = нет входа. Не выдумываем entry из воздуха
+                # Если зоны нет или она слишком далеко (поезд уже ушёл)
                 return self._make_result(
-                    StrategySignal(direction="NEUTRAL", confidence=0, details=details + ["Нет OB/FVG/OTE зоны для входа"]),
-                    details + ["Отсутствует институциональная зона входа"]
+                    StrategySignal(direction="NEUTRAL", confidence=0, details=details + ["Зона входа слишком далеко от текущей цены (>1.2 ATR)"]),
+                    details + ["Цена ушла слишком далеко от институциональной зоны — сетап пропущен"]
                 )
             entry = max(candidates)
 
@@ -322,17 +325,17 @@ class ICTSMCStrategy(BaseStrategy):
 
         else:  # SHORT
             candidates = []
-            if ote_entry and ote_entry > current_price:
+            if ote_entry and ote_entry > current_price and (ote_entry - current_price) <= max_entry_dist:
                 candidates.append(ote_entry)
-            if ob_zone and ob_zone[0] > current_price:  # ob_high for premium
+            if ob_zone and ob_zone[0] > current_price and (ob_zone[0] - current_price) <= max_entry_dist:
                 candidates.append(ob_zone[0])
-            if fvg_zone and fvg_zone[0] > current_price:
+            if fvg_zone and fvg_zone[0] > current_price and (fvg_zone[0] - current_price) <= max_entry_dist:
                 candidates.append(fvg_zone[0])
 
             if not candidates:
                 return self._make_result(
-                    StrategySignal(direction="NEUTRAL", confidence=0, details=details + ["Нет OB/FVG/OTE зоны для входа"]),
-                    details + ["Отсутствует институциональная зона входа"]
+                    StrategySignal(direction="NEUTRAL", confidence=0, details=details + ["Зона входа слишком далеко от текущей цены (>1.2 ATR)"]),
+                    details + ["Цена ушла слишком далеко от институциональной зоны — сетап пропущен"]
                 )
             entry = min(candidates)
 
