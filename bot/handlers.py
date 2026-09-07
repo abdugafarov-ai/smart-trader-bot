@@ -40,6 +40,33 @@ def get_user_state(user_id: int) -> dict:
         }
     return user_state[user_id]
 
+async def safe_edit(callback: CallbackQuery, text: str, reply_markup=None, parse_mode="HTML"):
+    """Безопасно отвечает на callback и редактирует сообщение (или заменяет фото на текст)."""
+    try:
+        await callback.answer()
+    except Exception:
+        pass
+
+    msg = callback.message
+    if not msg:
+        return None
+
+    try:
+        if getattr(msg, "photo", None):
+            try:
+                await msg.delete()
+            except Exception:
+                pass
+            return await msg.answer(text, reply_markup=reply_markup, parse_mode=parse_mode)
+        else:
+            return await msg.edit_text(text, reply_markup=reply_markup, parse_mode=parse_mode)
+    except Exception:
+        try:
+            return await msg.answer(text, reply_markup=reply_markup, parse_mode=parse_mode)
+        except Exception as e:
+            logger.error("safe_edit fallback failed: %s", e)
+            return None
+
 from utils.emoji_markers import get_random_marker
 
 async def run_multi_tf_analysis(symbol: str) -> MultiTFResult:
@@ -466,7 +493,7 @@ async def cmd_lot(message: Message):
 
 @router.callback_query(F.data == "menu")
 async def cb_menu(callback: CallbackQuery):
-    await callback.message.edit_text("🏛 <b>ГЛАВНОЕ МЕНЮ ТЕРМИНАЛА:</b>", reply_markup=main_menu_keyboard(), parse_mode="HTML")
+    await safe_edit(callback, "🏛 <b>ГЛАВНОЕ МЕНЮ ТЕРМИНАЛА:</b>", reply_markup=main_menu_keyboard(), parse_mode="HTML")
 
 @router.callback_query(F.data.startswith("guide:"))
 async def cb_guide(callback: CallbackQuery):
@@ -477,11 +504,11 @@ async def cb_guide(callback: CallbackQuery):
         state["guide_step"] += 1
         step = state["guide_step"]
         if step < get_total_steps():
-            await callback.message.edit_text(get_guide_step(step), reply_markup=guide_keyboard(step), parse_mode="HTML")
+            await safe_edit(callback, get_guide_step(step), reply_markup=guide_keyboard(step), parse_mode="HTML")
         else:
-            await callback.message.edit_text("🏛 <b>ГЛАВНОЕ МЕНЮ ТЕРМИНАЛА:</b>", reply_markup=main_menu_keyboard(), parse_mode="HTML")
+            await safe_edit(callback, "🏛 <b>ГЛАВНОЕ МЕНЮ ТЕРМИНАЛА:</b>", reply_markup=main_menu_keyboard(), parse_mode="HTML")
     elif action == "skip":
-        await callback.message.edit_text("🏛 <b>ГЛАВНОЕ МЕНЮ ТЕРМИНАЛА:</b>", reply_markup=main_menu_keyboard(), parse_mode="HTML")
+        await safe_edit(callback, "🏛 <b>ГЛАВНОЕ МЕНЮ ТЕРМИНАЛА:</b>", reply_markup=main_menu_keyboard(), parse_mode="HTML")
 
 @router.callback_query(F.data.startswith("menu:"))
 async def cb_menu_actions(callback: CallbackQuery):
@@ -502,32 +529,32 @@ async def cb_menu_actions(callback: CallbackQuery):
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
             "💡 <i>Откройте ссылку в браузере или используйте Web App кнопку в меню.</i>"
         )
-        await callback.message.edit_text(text, reply_markup=back_keyboard(), parse_mode="HTML")
+        await safe_edit(callback, text, reply_markup=back_keyboard(), parse_mode="HTML")
     elif action == "analyze":
-        await callback.message.edit_text("📊 <b>Выберите категорию активов для анализа:</b>", reply_markup=symbols_keyboard(), parse_mode="HTML")
+        await safe_edit(callback, "📊 <b>Выберите категорию активов для анализа:</b>", reply_markup=symbols_keyboard(), parse_mode="HTML")
     elif action == "indicators":
-        await callback.message.edit_text("📈 <b>Выберите категорию для технического анализа:</b>", reply_markup=symbols_keyboard(), parse_mode="HTML")
+        await safe_edit(callback, "📈 <b>Выберите категорию для технического анализа:</b>", reply_markup=symbols_keyboard(), parse_mode="HTML")
     elif action == "strategy":
-        await callback.message.edit_text("🧠 <b>Выберите аналитическую модель:</b>", reply_markup=strategies_keyboard(), parse_mode="HTML")
+        await safe_edit(callback, "🧠 <b>Выберите аналитическую модель:</b>", reply_markup=strategies_keyboard(), parse_mode="HTML")
     elif action == "sessions":
         text = sessions.format_sessions_text()
-        await callback.message.edit_text(text, reply_markup=back_keyboard(), parse_mode="HTML")
+        await safe_edit(callback, text, reply_markup=back_keyboard(), parse_mode="HTML")
     elif action == "signals":
-        await callback.message.edit_text("📡 <i>Сканирую радар 17 активов...</i>", parse_mode="HTML")
+        await safe_edit(callback, "📡 <i>Сканирую радар 17 активов...</i>", parse_mode="HTML")
         results = []
         for sym in config.ALL_PAIRS:
             res = await run_multi_tf_analysis(sym)
             if res:
                 results.append(res)
         summary = format_signals_summary(results) if results else "Нет данных"
-        await callback.message.edit_text(summary, reply_markup=back_keyboard(), parse_mode="HTML")
+        await safe_edit(callback, summary, reply_markup=back_keyboard(), parse_mode="HTML")
     elif action == "news":
         try:
             from news.economic_calendar import EconomicCalendar
             calendar = EconomicCalendar(config.TIMEZONE)
             events = await calendar.get_events_for_display()
             if not events:
-                await callback.message.edit_text("📰 <i>Нет предстоящих важных новостей в ближайшие 48 часов.</i>", reply_markup=back_keyboard(), parse_mode="HTML")
+                await safe_edit(callback, "📰 <i>Нет предстоящих важных новостей в ближайшие 48 часов.</i>", reply_markup=back_keyboard(), parse_mode="HTML")
                 return
             header = "📰 <b>ЭКОНОМИЧЕСКИЙ КАЛЕНДАРЬ | ВАЖНЫЕ РЕЛИЗЫ:</b>\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
             texts = [header]
@@ -536,21 +563,21 @@ async def cb_menu_actions(callback: CallbackQuery):
             full_text = "\n".join(texts)
             for i in range(0, len(full_text), 4000):
                 if i == 0:
-                    await callback.message.edit_text(full_text[i:i+4000], reply_markup=back_keyboard(), parse_mode="HTML")
+                    await safe_edit(callback, full_text[i:i+4000], reply_markup=back_keyboard(), parse_mode="HTML")
                 else:
                     await callback.message.answer(full_text[i:i+4000], parse_mode="HTML")
         except Exception as e:
-            await callback.message.edit_text(f"⚠️ Ошибка загрузки календаря: {e}", reply_markup=back_keyboard(), parse_mode="HTML")
+            await safe_edit(callback, f"⚠️ Ошибка загрузки календаря: {e}", reply_markup=back_keyboard(), parse_mode="HTML")
     elif action == "stats":
         from db.database import get_stats
         stats = await get_stats()
         text = format_stats(stats)
-        await callback.message.edit_text(text, reply_markup=back_keyboard(), parse_mode="HTML")
+        await safe_edit(callback, text, reply_markup=back_keyboard(), parse_mode="HTML")
     elif action == "history":
         from db.database import get_recent_signals
         signals = await get_recent_signals(limit=15)
         text = format_history(signals)
-        await callback.message.edit_text(text, reply_markup=back_keyboard(), parse_mode="HTML")
+        await safe_edit(callback, text, reply_markup=back_keyboard(), parse_mode="HTML")
     elif action == "equity":
         try:
             from db.database import get_recent_signals, get_stats
@@ -561,7 +588,7 @@ async def cb_menu_actions(callback: CallbackQuery):
             closed_signals = [s for s in reversed(signals) if s.get('status') in ['TP1_HIT', 'TP2_HIT', 'SL_HIT', 'BREAKEVEN', 'EXPIRED']]
 
             if len(closed_signals) < 2:
-                await callback.message.edit_text("📊 Пока недостаточно закрытых сделок для графика кривой капитала (нужно минимум 2).", reply_markup=back_keyboard(), parse_mode="HTML")
+                await safe_edit(callback, "📊 Пока недостаточно закрытых сделок для графика кривой капитала (нужно минимум 2).", reply_markup=back_keyboard(), parse_mode="HTML")
                 return
 
             equity = [0.0]
@@ -590,12 +617,15 @@ async def cb_menu_actions(callback: CallbackQuery):
                 f"📊 <b>Всего закрыто:</b> <code>{stats.get('closed', 0)}</code> сделок\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
             )
-            await callback.message.delete()
+            try:
+                await callback.message.delete()
+            except Exception:
+                pass
             await callback.message.answer_photo(photo, caption=cap, parse_mode="HTML", reply_markup=back_keyboard())
         except Exception as e:
-            await callback.message.edit_text(f"⚠️ Ошибка построения кривой: {e}", reply_markup=back_keyboard(), parse_mode="HTML")
+            await safe_edit(callback, f"⚠️ Ошибка построения кривой: {e}", reply_markup=back_keyboard(), parse_mode="HTML")
     elif action == "help":
-        await callback.message.edit_text(format_help(), reply_markup=back_keyboard(), parse_mode="HTML")
+        await safe_edit(callback, format_help(), reply_markup=back_keyboard(), parse_mode="HTML")
     elif action == "autotrade":
         from trading.execution_bridge import bridge_manager
         from bot.keyboards import autotrade_keyboard
@@ -611,9 +641,9 @@ async def cb_menu_actions(callback: CallbackQuery):
             f"Используйте кнопки ниже для быстрого управления 👇\n"
             f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         )
-        await callback.message.edit_text(text, reply_markup=autotrade_keyboard(), parse_mode="HTML")
+        await safe_edit(callback, text, reply_markup=autotrade_keyboard(), parse_mode="HTML")
     elif action == "main":
-        await callback.message.edit_text(format_welcome(), reply_markup=main_menu_keyboard(), parse_mode="HTML")
+        await safe_edit(callback, format_welcome(), reply_markup=main_menu_keyboard(), parse_mode="HTML")
 
 
 @router.callback_query(F.data.startswith("autotrade:"))
@@ -642,13 +672,13 @@ async def cb_autotrade_actions(callback: CallbackQuery):
         f"Используйте кнопки ниже для быстрого управления 👇\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     )
-    await callback.message.edit_text(text, reply_markup=autotrade_keyboard(), parse_mode="HTML")
+    await safe_edit(callback, text, reply_markup=autotrade_keyboard(), parse_mode="HTML")
 
 
 @router.callback_query(F.data.startswith("sym_backtest:"))
 async def cb_sym_backtest(callback: CallbackQuery):
     symbol = callback.data.split(":")[1]
-    await callback.message.edit_text(f"⏳ <i>Запуск бэктеста по {symbol} (H1, 300 баров)...</i>", parse_mode="HTML")
+    await safe_edit(callback, f"⏳ <i>Запуск бэктеста по {symbol} (H1, 300 баров)...</i>", parse_mode="HTML")
     try:
         from backtest.backtester import InstitutionalBacktester
         from backtest.equity_chart import generate_equity_curve_chart
@@ -684,34 +714,37 @@ async def cb_sym_backtest(callback: CallbackQuery):
             max_dd=res.max_drawdown_pips
         )
 
-        await callback.message.delete()
+        try:
+            await callback.message.delete()
+        except Exception:
+            pass
         photo = BufferedInputFile(chart_bytes, filename=f"backtest_{symbol}.png")
         await callback.message.answer_photo(photo, caption=report_text, parse_mode="HTML", reply_markup=back_keyboard())
     except Exception as e:
         logger.error("cb_sym_backtest error: %s", e, exc_info=True)
-        await callback.message.edit_text(f"❌ Ошибка бэктеста: {e}", reply_markup=back_keyboard(), parse_mode="HTML")
+        await safe_edit(callback, f"❌ Ошибка бэктеста: {e}", reply_markup=back_keyboard(), parse_mode="HTML")
 
 @router.callback_query(F.data.startswith("cat:"))
 async def cb_category(callback: CallbackQuery):
     category = callback.data.split(":")[1]
-    await callback.message.edit_text("📊 <b>Выберите торговый инструмент:</b>", reply_markup=category_pairs_keyboard(category), parse_mode="HTML")
+    await safe_edit(callback, "📊 <b>Выберите торговый инструмент:</b>", reply_markup=category_pairs_keyboard(category), parse_mode="HTML")
 
 @router.callback_query(F.data.startswith("sym:"))
 async def cb_symbol(callback: CallbackQuery):
     symbol = callback.data.split(":")[1]
     state = get_user_state(callback.from_user.id)
     state["symbol"] = symbol
-    await callback.message.edit_text(f"🏛 <i>Глубокий анализ {symbol} по модели ICT/SMC...</i>", parse_mode="HTML")
+    await safe_edit(callback, f"🏛 <i>Глубокий анализ {symbol} по модели ICT/SMC...</i>", parse_mode="HTML")
     res = await run_multi_tf_analysis(symbol)
     if res:
         text = format_multi_tf_analysis(res)
         for i in range(0, len(text), 4000):
             if i == 0:
-                await callback.message.edit_text(text[i:i+4000], reply_markup=back_keyboard(), parse_mode="HTML")
+                await safe_edit(callback, text[i:i+4000], reply_markup=back_keyboard(), parse_mode="HTML")
             else:
                 await callback.message.answer(text[i:i+4000], parse_mode="HTML")
     else:
-        await callback.message.edit_text("⚠️ Ошибка получения котировок.", reply_markup=back_keyboard(), parse_mode="HTML")
+        await safe_edit(callback, "⚠️ Ошибка получения котировок.", reply_markup=back_keyboard(), parse_mode="HTML")
 
 @router.callback_query(F.data.startswith("tf:"))
 async def cb_timeframe(callback: CallbackQuery):

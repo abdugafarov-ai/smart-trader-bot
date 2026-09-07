@@ -240,30 +240,20 @@ class ICTSMCStrategy(BaseStrategy):
             return self._make_result(StrategySignal(direction="NEUTRAL"), details)
 
         # ═══ УЛУЧШЕНИЕ 2: Premium / Discount зоны ═══
-        # LONG только в Discount (нижняя половина диапазона), SHORT только в Premium
         recent_window = min(50, len(df))
         range_high = float(df['high'].iloc[-recent_window:].max())
         range_low = float(df['low'].iloc[-recent_window:].min())
         range_mid = (range_high + range_low) / 2
 
-        if direction == "LONG" and current_price > range_mid:
-            # Покупка в Premium зоне — плохой вход, пропуск
-            return self._make_result(
-                StrategySignal(direction="NEUTRAL", confidence=0,
-                              details=details + [f"Цена в Premium зоне ({self._format_price(current_price, symbol)} > mid {self._format_price(range_mid, symbol)})"]),
-                details + ["Не покупаем в Premium зоне — ждём откат в Discount"]
-            )
-        elif direction == "SHORT" and current_price < range_mid:
-            return self._make_result(
-                StrategySignal(direction="NEUTRAL", confidence=0,
-                              details=details + [f"Цена в Discount зоне ({self._format_price(current_price, symbol)} < mid {self._format_price(range_mid, symbol)})"]),
-                details + ["Не продаём в Discount зоне — ждём рост в Premium"]
-            )
+        in_discount = current_price <= range_mid
+        in_premium = current_price >= range_mid
 
-        if direction == "LONG":
-            details.append(f"✅ Discount зона (цена ниже {self._format_price(range_mid, symbol)})")
-        else:
-            details.append(f"✅ Premium зона (цена выше {self._format_price(range_mid, symbol)})")
+        if direction == "LONG" and in_discount:
+            sub_signals += 1
+            details.append(f"✅ Цена в Discount зоне ({self._format_price(current_price, symbol)} <= {self._format_price(range_mid, symbol)})")
+        elif direction == "SHORT" and in_premium:
+            sub_signals += 1
+            details.append(f"✅ Цена в Premium зоне ({self._format_price(current_price, symbol)} >= {self._format_price(range_mid, symbol)})")
 
         # Volume Confirmation
         vol_penalty = 0
@@ -417,22 +407,33 @@ class ICTSMCStrategy(BaseStrategy):
         atr_sl_mult = 1.2 if str(timeframe).lower() in ['15m', 'm15', '1h', 'h1', '60m'] else 0.9
         min_sl_dist = max(abs_min_sl, atr_sl_mult * atr)
 
-        # Фильтр дистанции входа: зона должна быть рядом с текущей ценой (не дальше 1.2 * ATR)
-        max_entry_dist = 1.2 * atr
+        # Фильтр дистанции входа: зона должна быть в пределах 2.5 * ATR для качественного отката
+        max_entry_dist = 2.5 * atr
 
         if direction == "LONG":
             candidates = []
             if ote_entry and ote_entry < current_price and (current_price - ote_entry) <= max_entry_dist:
                 candidates.append(ote_entry)
-            if ob_zone and ob_zone[1] < current_price and (current_price - ob_zone[1]) <= max_entry_dist:
-                candidates.append(ob_zone[1])
+            if ob_zone:
+                # Вход на вершине бычьего OB (первое касание) или 50%
+                ob_entry = ob_zone[0] if ob_zone[0] < current_price else (ob_zone[0] + ob_zone[1]) / 2
+                if ob_entry < current_price and (current_price - ob_entry) <= max_entry_dist:
+                    candidates.append(ob_entry)
+                elif ob_zone[1] < current_price and (current_price - ob_zone[1]) <= max_entry_dist:
+                    candidates.append(ob_zone[1])
             if fvg_zone and fvg_zone[1] < current_price and (current_price - fvg_zone[1]) <= max_entry_dist:
                 candidates.append(fvg_zone[1])
+
+            # Если цена находится ПРЯМО В ЗОНЕ Order Block или FVG — вход моментальный
+            if not candidates and ob_zone and ob_zone[1] <= current_price <= ob_zone[0] + 0.35 * atr:
+                candidates.append(current_price)
+            if not candidates and fvg_zone and fvg_zone[0] <= current_price <= fvg_zone[1] + 0.35 * atr:
+                candidates.append(current_price)
 
             if not candidates:
                 return self._make_result(
                     StrategySignal(direction="NEUTRAL", confidence=0,
-                                  details=details + ["Зона входа слишком далеко от текущей цены (>1.2 ATR)"]),
+                                  details=details + ["Зона входа слишком далеко от текущей цены (>2.5 ATR)"]),
                     details + ["Цена ушла слишком далеко от институциональной зоны — сетап пропущен"]
                 )
             entry = max(candidates)
@@ -466,15 +467,26 @@ class ICTSMCStrategy(BaseStrategy):
             candidates = []
             if ote_entry and ote_entry > current_price and (ote_entry - current_price) <= max_entry_dist:
                 candidates.append(ote_entry)
-            if ob_zone and ob_zone[0] > current_price and (ob_zone[0] - current_price) <= max_entry_dist:
-                candidates.append(ob_zone[0])
+            if ob_zone:
+                # Вход на нижней границе медвежьего OB (первое касание) или 50%
+                ob_entry = ob_zone[1] if ob_zone[1] > current_price else (ob_zone[0] + ob_zone[1]) / 2
+                if ob_entry > current_price and (ob_entry - current_price) <= max_entry_dist:
+                    candidates.append(ob_entry)
+                elif ob_zone[0] > current_price and (ob_zone[0] - current_price) <= max_entry_dist:
+                    candidates.append(ob_zone[0])
             if fvg_zone and fvg_zone[0] > current_price and (fvg_zone[0] - current_price) <= max_entry_dist:
                 candidates.append(fvg_zone[0])
+
+            # Если цена находится ПРЯМО В ЗОНЕ Order Block или FVG — вход моментальный
+            if not candidates and ob_zone and ob_zone[1] - 0.35 * atr <= current_price <= ob_zone[0]:
+                candidates.append(current_price)
+            if not candidates and fvg_zone and fvg_zone[0] - 0.35 * atr <= current_price <= fvg_zone[1]:
+                candidates.append(current_price)
 
             if not candidates:
                 return self._make_result(
                     StrategySignal(direction="NEUTRAL", confidence=0,
-                                  details=details + ["Зона входа слишком далеко от текущей цены (>1.2 ATR)"]),
+                                  details=details + ["Зона входа слишком далеко от текущей цены (>2.5 ATR)"]),
                     details + ["Цена ушла слишком далеко от институциональной зоны — сетап пропущен"]
                 )
             entry = min(candidates)
