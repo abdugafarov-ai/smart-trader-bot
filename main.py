@@ -12,6 +12,8 @@ from db.signal_tracker import SignalTracker
 from db.database import init_db
 from db.users import init_users_table, auto_approve_admin
 
+_background_tasks = set()
+
 async def main():
     logging.basicConfig(
         level=logging.INFO,
@@ -98,9 +100,11 @@ async def main():
             logging.error("Failed to set bot commands: %s", e)
 
         # Фоновые задачи
-        asyncio.create_task(scanner.start())
-        asyncio.create_task(tracker.start())
-        asyncio.create_task(reporter.start())
+        global _background_tasks
+        for coro in [scanner.start(), tracker.start(), reporter.start()]:
+            task = asyncio.create_task(coro)
+            _background_tasks.add(task)
+            task.add_done_callback(_background_tasks.discard)
         
     async def on_shutdown():
         logging.info("Bot shutting down.")

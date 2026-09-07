@@ -374,6 +374,7 @@ def format_stats(stats: dict) -> str:
         f"┌── <b>ИТОГИ ЗАКРЫТЫХ СДЕЛОК</b> ──────────\n"
         f"│ ✅ <b>Take Profit (TP):</b> <code>{wins}</code>\n"
         f"│ ❌ <b>Stop Loss (SL):</b>   <code>{losses}</code>\n"
+        f"│ 🛡 <b>Безубыток (BE):</b>   <code>{stats.get('breakevens', 0)}</code>\n"
         f"│ ⏰ <b>Истекло (24h):</b>    <code>{expired}</code>\n"
         f"├──────────────────────────────────────\n"
         f"│ 💰 <b>Чистый PnL:</b>       <code>{pips_sign}{total_pips:.1f} pips</code>\n"

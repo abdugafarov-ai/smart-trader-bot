@@ -187,7 +187,12 @@ class SignalTracker:
         if not entry or not sl or not tp1:
             return
 
-        act_raw = sig.get('activated_at') or sig['created_at']
+        # После TP1: проверяем SL только по свежим свечам (не с момента активации)
+        if status == "TP1_PARTIAL" and sig.get('closed_at'):
+            act_raw = sig['closed_at']
+        else:
+            act_raw = sig.get('activated_at') or sig['created_at']
+            
         activated = datetime.fromisoformat(act_raw)
         if activated.tzinfo is None:
             activated = activated.replace(tzinfo=timezone.utc)

@@ -78,10 +78,13 @@ class TechnicalIndicators:
         else:
             res.trend = "NEUTRAL"
             
-        if price > res.ema_200:
-            res.price_vs_ema = "Цена выше EMA 200 (Глобальный восходящий тренд)"
+        if res.ema_200 > 0 and len(df) >= 200:
+            if price > res.ema_200:
+                res.price_vs_ema = "Цена выше EMA 200 (Глобальный восходящий тренд)"
+            else:
+                res.price_vs_ema = "Цена ниже EMA 200 (Глобальный нисходящий тренд)"
         else:
-            res.price_vs_ema = "Цена ниже EMA 200 (Глобальный нисходящий тренд)"
+            res.price_vs_ema = "EMA 200: недостаточно данных для расчета"
             
         # Моментум
         res.rsi = float(last['rsi']) if pd.notna(last['rsi']) else 50.0

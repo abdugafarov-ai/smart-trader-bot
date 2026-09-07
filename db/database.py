@@ -266,8 +266,6 @@ async def get_stats() -> dict:
             )
             open_count = (await cursor.fetchone())[0]
 
-            closed = total - open_count
-
             cursor = await db.execute(
                 "SELECT COUNT(*) FROM signals WHERE status IN ('TP1_HIT', 'TP2_HIT', 'TP1_PARTIAL')"
             )
@@ -282,6 +280,13 @@ async def get_stats() -> dict:
                 "SELECT COUNT(*) FROM signals WHERE status = 'EXPIRED'"
             )
             expired = (await cursor.fetchone())[0]
+            
+            cursor = await db.execute(
+                "SELECT COUNT(*) FROM signals WHERE status = 'BREAKEVEN'"
+            )
+            breakevens = (await cursor.fetchone())[0]
+
+            closed = wins + losses + breakevens
 
             cursor = await db.execute(
                 "SELECT COALESCE(SUM(pnl_pips), 0) FROM signals WHERE status NOT IN ('PENDING', 'ACTIVE', 'OPEN')"
@@ -322,6 +327,7 @@ async def get_stats() -> dict:
                 "wins": wins,
                 "losses": losses,
                 "expired": expired,
+                "breakevens": breakevens,
                 "win_rate": win_rate,
                 "total_pips": total_pips,
                 "avg_rr": avg_rr,
@@ -332,7 +338,7 @@ async def get_stats() -> dict:
         logger.error("get_stats error: %s", e)
         return {
             "total": 0, "open": 0, "closed": 0,
-            "wins": 0, "losses": 0, "expired": 0,
+            "wins": 0, "losses": 0, "expired": 0, "breakevens": 0,
             "win_rate": 0.0, "total_pips": 0.0, "avg_rr": 0.0,
             "by_direction": {}, "by_symbol": {},
         }

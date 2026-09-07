@@ -1,18 +1,22 @@
 """
-ICT / Smart Money Concepts (SMC) Strategy.
+ICT / Smart Money Concepts (SMC) Strategy v2.
 Институциональная стратегия поиска снайперских входов:
 - Фрактальные свинги (Williams / ICT 5-bar pivots, lookback=2)
 - BOS (Break of Structure) и CHoCH (Change of Character)
-- Свежие немитигированные Order Blocks (OB)
-- Fair Value Gaps (FVG / имбалансы)
+- Свежие немитигированные Order Blocks (OB) — поиск с конца (newest first)
+- Fair Value Gaps (FVG / имбалансы) — проверка митигации
 - Золотая OTE зона Фибоначчи (0.618 - 0.705)
-- Корректные типы отложенных ордеров (LIMIT строго с запасом от текущей цены)
+- Premium / Discount зоны (не покупаем дорого, не продаём дёшево)
+- Inducement Detection (ловушки перед разворотом)
+- TP на ближайшей ликвидности (swing high/low) вместо фиксированного множителя
 - Строгий R:R >= 1:2.5 (цели 1:2.5 - 1:5.0)
+- Kill Zone awareness (усиление в London/NY Open)
 """
 
 import pandas as pd
 import numpy as np
 from typing import Tuple, List, Optional
+from datetime import datetime, timezone
 
 from .base import BaseStrategy, StrategySignal, StrategyResult
 
@@ -47,8 +51,92 @@ class ICTSMCStrategy(BaseStrategy):
                 swing_highs.append((i, float(df['high'].iloc[i])))
             if df['low'].iloc[i] == window_low.min():
                 swing_lows.append((i, float(df['low'].iloc[i])))
-                
+
         return swing_highs, swing_lows
+
+    def _is_ob_mitigated(self, df: pd.DataFrame, ob_idx: int, ob_high: float, ob_low: float, direction: str) -> bool:
+        """
+        Проверяет, был ли Order Block уже митигирован (цена заходила в зону после формирования).
+        Митигированный OB = отработанный, не надёжный.
+        """
+        for i in range(ob_idx + 2, len(df)):
+            if direction == "LONG":
+                # Бычий OB митигирован если цена закрылась ниже его low
+                if df['close'].iloc[i] < ob_low:
+                    return True
+            else:
+                # Медвежий OB митигирован если цена закрылась выше его high
+                if df['close'].iloc[i] > ob_high:
+                    return True
+        return False
+
+    def _is_fvg_mitigated(self, df: pd.DataFrame, fvg_idx: int, fvg_low: float, fvg_high: float, direction: str) -> bool:
+        """
+        Проверяет, был ли FVG уже заполнен (цена полностью закрыла гэп).
+        """
+        for i in range(fvg_idx + 1, len(df)):
+            if direction == "LONG":
+                if df['low'].iloc[i] <= fvg_low:
+                    return True
+            else:
+                if df['high'].iloc[i] >= fvg_high:
+                    return True
+        return False
+
+    def _detect_inducement(self, df: pd.DataFrame, swing_lows: list, swing_highs: list, direction: str) -> bool:
+        """
+        Обнаруживает Inducement (ловушку):
+        - LONG: цена снимает мелкие лоу (minor swing low) перед разворотом вверх
+        - SHORT: цена снимает мелкие хай (minor swing high) перед разворотом вниз
+        """
+        if len(df) < 10:
+            return False
+
+        recent = df.iloc[-8:]
+
+        if direction == "LONG" and len(swing_lows) >= 3:
+            # Ищем снятие предпоследнего лоу с последующим закрытием выше
+            minor_low = swing_lows[-2][1]
+            for i in range(len(recent) - 1):
+                if float(recent['low'].iloc[i]) < minor_low and float(recent['close'].iloc[i]) > minor_low:
+                    return True
+
+        elif direction == "SHORT" and len(swing_highs) >= 3:
+            minor_high = swing_highs[-2][1]
+            for i in range(len(recent) - 1):
+                if float(recent['high'].iloc[i]) > minor_high and float(recent['close'].iloc[i]) < minor_high:
+                    return True
+
+        return False
+
+    def _find_liquidity_target(self, swing_highs: list, swing_lows: list, direction: str, entry: float, sl: float) -> Optional[float]:
+        """
+        Находит ближайшую цель на ликвидности (swing high/low где стоят стопы трейдеров).
+        Это реальные магниты для цены, в отличие от фиксированных ATR множителей.
+        """
+        risk = abs(entry - sl)
+
+        if direction == "LONG":
+            # Ищем swing highs выше входа с минимум 2.5 R:R
+            targets = [h[1] for h in swing_highs if h[1] > entry + 2.4 * risk]
+            if targets:
+                return min(targets)  # Ближайший swing high
+        else:
+            # Ищем swing lows ниже входа с минимум 2.5 R:R
+            targets = [l[1] for l in swing_lows if l[1] < entry - 2.4 * risk]
+            if targets:
+                return max(targets)  # Ближайший swing low
+
+        return None
+
+    def _is_in_kill_zone(self) -> bool:
+        """Проверяет, сейчас ли Kill Zone (London Open 07-10 или NY Open 12-15 UTC)."""
+        try:
+            now = datetime.now(timezone.utc)
+            hour = now.hour
+            return (7 <= hour < 10) or (12 <= hour < 15)
+        except Exception:
+            return False
 
     def analyze(self, df: pd.DataFrame, symbol: str, timeframe: str) -> StrategyResult:
         if len(df) < 30:
@@ -68,7 +156,7 @@ class ICTSMCStrategy(BaseStrategy):
             atr = (df['high'].max() - df['low'].min()) * 0.01
 
         current_price = float(df['close'].iloc[-1])
-        
+
         # 2. Поиск свингов (lookback=2 для идеальной чувствительности)
         swing_highs, swing_lows = self._find_swing_points(df, lookback=2)
 
@@ -92,10 +180,10 @@ class ICTSMCStrategy(BaseStrategy):
         last_highs = swing_highs[-4:]
         last_lows = swing_lows[-4:]
 
-        # BUG 1 FIX: Structure Detection
+        # Structure Detection
         hh1, hh2 = last_highs[-1][1], last_highs[-2][1]
         hl1, hl2 = last_lows[-1][1], last_lows[-2][1]
-        
+
         strong_bull = (hh1 > hh2) and (hl1 > hl2)
         strong_bear = (hh1 < hh2) and (hl1 < hl2)
         weak_bull = ((hh1 > hh2) or (hl1 > hl2)) and not strong_bear
@@ -143,7 +231,6 @@ class ICTSMCStrategy(BaseStrategy):
                 direction = "SHORT"
                 details.append("Структура: Сильный нисходящий тренд (без BOS/CHoCH)")
             else:
-                # НЕТ mid_point fallback — нет чёткой структуры = нет сигнала
                 return self._make_result(
                     StrategySignal(direction="NEUTRAL", confidence=0, details=["Нет BOS/CHoCH и нет выраженного тренда"]),
                     ["Неопределённая структура рынка — пропуск"]
@@ -152,16 +239,43 @@ class ICTSMCStrategy(BaseStrategy):
         if direction == "NEUTRAL":
             return self._make_result(StrategySignal(direction="NEUTRAL"), details)
 
-        # BUG 5 FIX: Volume Confirmation
+        # ═══ УЛУЧШЕНИЕ 2: Premium / Discount зоны ═══
+        # LONG только в Discount (нижняя половина диапазона), SHORT только в Premium
+        recent_window = min(50, len(df))
+        range_high = float(df['high'].iloc[-recent_window:].max())
+        range_low = float(df['low'].iloc[-recent_window:].min())
+        range_mid = (range_high + range_low) / 2
+
+        if direction == "LONG" and current_price > range_mid:
+            # Покупка в Premium зоне — плохой вход, пропуск
+            return self._make_result(
+                StrategySignal(direction="NEUTRAL", confidence=0,
+                              details=details + [f"Цена в Premium зоне ({self._format_price(current_price, symbol)} > mid {self._format_price(range_mid, symbol)})"]),
+                details + ["Не покупаем в Premium зоне — ждём откат в Discount"]
+            )
+        elif direction == "SHORT" and current_price < range_mid:
+            return self._make_result(
+                StrategySignal(direction="NEUTRAL", confidence=0,
+                              details=details + [f"Цена в Discount зоне ({self._format_price(current_price, symbol)} < mid {self._format_price(range_mid, symbol)})"]),
+                details + ["Не продаём в Discount зоне — ждём рост в Premium"]
+            )
+
+        if direction == "LONG":
+            details.append(f"✅ Discount зона (цена ниже {self._format_price(range_mid, symbol)})")
+        else:
+            details.append(f"✅ Premium зона (цена выше {self._format_price(range_mid, symbol)})")
+
+        # Volume Confirmation
         vol_penalty = 0
         if (bos_found or choch_found) and 'volume' in df.columns:
             vol_sma = df['volume'].rolling(20).mean().iloc[-1]
-            if df['volume'].iloc[-1] < 0.8 * vol_sma:
-                vol_penalty = 1
-                details.append("Низкий объем на пробое (слабое подтверждение)")
-            else:
-                sub_signals += 1
-                details.append("Высокий объем подтверждает движение")
+            if pd.notna(vol_sma) and vol_sma > 0:
+                if df['volume'].iloc[-1] < 0.8 * vol_sma:
+                    vol_penalty = 1
+                    details.append("Низкий объем на пробое (слабое подтверждение)")
+                else:
+                    sub_signals += 1
+                    details.append("Высокий объем подтверждает движение")
 
         # 4. Liquidity Sweep Detection (Снятие ликвидности / Judas Swing)
         lookback_sweep = min(8, len(df))
@@ -183,59 +297,69 @@ class ICTSMCStrategy(BaseStrategy):
                     details.append(f"⚡ Снятие ликвидности (Liquidity Sweep): ложный прокол {self._format_price(hh1, symbol)} с резким возвратом")
                     break
 
-        # 6. Order Block (OB)
+        # ═══ УЛУЧШЕНИЕ 6: Inducement Detection ═══
+        if self._detect_inducement(df, swing_lows, swing_highs, direction):
+            sub_signals += 1
+            details.append("🪤 Inducement: снятие мелких стопов перед разворотом (усиление сигнала)")
+
+        # ═══ УЛУЧШЕНИЕ 1: Order Block — поиск с КОНЦА (newest first) + проверка митигации ═══
         ob_zone: Optional[Tuple[float, float]] = None
-        lookback_ob = min(30, len(df)-2)
-        for i in range(len(df)-lookback_ob, len(df)-2):
-            is_bull_next = df['close'].iloc[i+1] > df['open'].iloc[i+1]
-            is_bear_next = df['close'].iloc[i+1] < df['open'].iloc[i+1]
-            impulse = abs(df['close'].iloc[i+1] - df['open'].iloc[i+1])
+        lookback_ob = min(30, len(df) - 2)
+        # Ищем с конца — самый свежий OB первым
+        for i in range(len(df) - 3, max(len(df) - lookback_ob - 2, 0), -1):
+            is_bull_next = df['close'].iloc[i + 1] > df['open'].iloc[i + 1]
+            is_bear_next = df['close'].iloc[i + 1] < df['open'].iloc[i + 1]
+            impulse = abs(df['close'].iloc[i + 1] - df['open'].iloc[i + 1])
 
             if impulse > 1.1 * atr:
                 if df['close'].iloc[i] < df['open'].iloc[i] and is_bull_next and direction == "LONG":
                     ob_high, ob_low = float(df['high'].iloc[i]), float(df['low'].iloc[i])
                     if current_price >= ob_low:
-                        ob_zone = (ob_high, ob_low)
-                        sub_signals += 1
-                        details.append(f"Бычий Order Block: {self._format_price(ob_low, symbol)} — {self._format_price(ob_high, symbol)}")
-                        break
+                        # ═══ УЛУЧШЕНИЕ 3: Проверка митигации ═══
+                        if not self._is_ob_mitigated(df, i, ob_high, ob_low, direction):
+                            ob_zone = (ob_high, ob_low)
+                            sub_signals += 1
+                            details.append(f"Бычий Order Block (свежий): {self._format_price(ob_low, symbol)} — {self._format_price(ob_high, symbol)}")
+                            break
                 elif df['close'].iloc[i] > df['open'].iloc[i] and is_bear_next and direction == "SHORT":
                     ob_high, ob_low = float(df['high'].iloc[i]), float(df['low'].iloc[i])
                     if current_price <= ob_high:
-                        ob_zone = (ob_high, ob_low)
-                        sub_signals += 1
-                        details.append(f"Медвежий Order Block: {self._format_price(ob_low, symbol)} — {self._format_price(ob_high, symbol)}")
-                        break
+                        if not self._is_ob_mitigated(df, i, ob_high, ob_low, direction):
+                            ob_zone = (ob_high, ob_low)
+                            sub_signals += 1
+                            details.append(f"Медвежий Order Block (свежий): {self._format_price(ob_low, symbol)} — {self._format_price(ob_high, symbol)}")
+                            break
 
-        # BUG 6 FIX: FVG Detection
+        # FVG Detection — reversed + mitigation check
         fvg_zone: Optional[Tuple[float, float]] = None
-        lookback_fvg = min(20, len(df)-3)
-        for i in range(len(df)-lookback_fvg, len(df)-1):
+        lookback_fvg = min(20, len(df) - 3)
+        for i in range(len(df) - 2, max(len(df) - lookback_fvg - 1, 1), -1):
             middle_body = abs(df['close'].iloc[i] - df['open'].iloc[i])
             if middle_body < 0.5 * atr:
                 continue
-                
-            if direction == "LONG" and df['close'].iloc[i] > df['open'].iloc[i]:
-                if df['low'].iloc[i+1] > df['high'].iloc[i-1]:
-                    fvg_low, fvg_high = float(df['high'].iloc[i-1]), float(df['low'].iloc[i+1])
-                    if current_price >= fvg_low:
-                        sub_signals += 1
-                        fvg_zone = (fvg_low, fvg_high)
-                        details.append(f"Бычий FVG: {self._format_price(fvg_low, symbol)} — {self._format_price(fvg_high, symbol)}")
-                        break
-            elif direction == "SHORT" and df['close'].iloc[i] < df['open'].iloc[i]:
-                if df['high'].iloc[i+1] < df['low'].iloc[i-1]:
-                    fvg_low, fvg_high = float(df['high'].iloc[i+1]), float(df['low'].iloc[i-1])
-                    if current_price <= fvg_high:
-                        sub_signals += 1
-                        fvg_zone = (fvg_low, fvg_high)
-                        details.append(f"Медвежий FVG: {self._format_price(fvg_low, symbol)} — {self._format_price(fvg_high, symbol)}")
-                        break
 
-        # BUG 7 FIX: OTE
-        recent_window = min(15, len(df))
-        impulse_high = max(hh1, float(df['high'].iloc[-recent_window:].max()))
-        impulse_low = min(hl1, float(df['low'].iloc[-recent_window:].min()))
+            if direction == "LONG" and df['close'].iloc[i] > df['open'].iloc[i]:
+                if df['low'].iloc[i + 1] > df['high'].iloc[i - 1]:
+                    fvg_low, fvg_high = float(df['high'].iloc[i - 1]), float(df['low'].iloc[i + 1])
+                    if current_price >= fvg_low:
+                        if not self._is_fvg_mitigated(df, i, fvg_low, fvg_high, direction):
+                            sub_signals += 1
+                            fvg_zone = (fvg_low, fvg_high)
+                            details.append(f"Бычий FVG (свежий): {self._format_price(fvg_low, symbol)} — {self._format_price(fvg_high, symbol)}")
+                            break
+            elif direction == "SHORT" and df['close'].iloc[i] < df['open'].iloc[i]:
+                if df['high'].iloc[i + 1] < df['low'].iloc[i - 1]:
+                    fvg_low, fvg_high = float(df['high'].iloc[i + 1]), float(df['low'].iloc[i - 1])
+                    if current_price <= fvg_high:
+                        if not self._is_fvg_mitigated(df, i, fvg_low, fvg_high, direction):
+                            sub_signals += 1
+                            fvg_zone = (fvg_low, fvg_high)
+                            details.append(f"Медвежий FVG (свежий): {self._format_price(fvg_low, symbol)} — {self._format_price(fvg_high, symbol)}")
+                            break
+
+        # OTE (Optimal Trade Entry) — Fibonacci 0.618-0.705
+        impulse_high = max(hh1, float(df['high'].iloc[-min(15, len(df)):].max()))
+        impulse_low = min(hl1, float(df['low'].iloc[-min(15, len(df)):].min()))
         diff = impulse_high - impulse_low
 
         if diff <= 0:
@@ -259,24 +383,36 @@ class ICTSMCStrategy(BaseStrategy):
                 ote_entry = fib_0618
                 details.append(f"Зона OTE (0.618-0.705): {self._format_price(fib_0618, symbol)} — {self._format_price(fib_0705, symbol)}")
 
-        # BUG 4 FIX: Confidence logic
+        # ═══ УЛУЧШЕНИЕ 8: Kill Zone awareness ═══
+        in_kill_zone = self._is_in_kill_zone()
+        if in_kill_zone:
+            details.append("⚡ Активна Kill Zone — сигнал усилен")
+
+        # ═══ УЛУЧШЕНИЕ 7: Минимум подтверждений для входа ═══
+        # Без Kill Zone: минимум 3 подтверждения
+        # В Kill Zone: минимум 2 подтверждения (снайперские входы в пик ликвидности)
         final_confidence = max(1, sub_signals - vol_penalty)
-        if final_confidence < 3:
+        min_required = 2 if in_kill_zone else 3
+
+        if final_confidence < min_required:
             return self._make_result(
-                StrategySignal(direction="NEUTRAL", confidence=final_confidence, details=details + ["Недостаточно подтверждений (<3)"]),
+                StrategySignal(direction="NEUTRAL", confidence=final_confidence,
+                              details=details + [f"Недостаточно подтверждений ({final_confidence}<{min_required})"]),
                 details + ["Слабый сетап, остаемся в стороне"]
             )
-        
-        confidence_stars = min(5, final_confidence)
 
-        # BUG FIX: Институциональный минимальный размер стоп-лосса (защита от спреда и шума)
-        # На M15 ATR может быть аномально низким (0.00018 = 1.8 пипса), поэтому задаем жесткий пол:
+        confidence_stars = min(5, final_confidence)
+        # Kill Zone бонус: +1 звезда
+        if in_kill_zone and confidence_stars < 5:
+            confidence_stars += 1
+
+        # ── Институциональный минимальный размер стоп-лосса ──
         if 'JPY' in symbol:
             abs_min_sl = 0.15  # минимум 15.0 пипсов для JPY пар
         elif 'XAU' in symbol:
             abs_min_sl = 2.00  # минимум $2.00 (20 пипсов) для Золота
         else:
-            abs_min_sl = 0.0010  # минимум 10.0 пипсов для 5-значных пар (EUR, GBP, AUD, NZD, CAD, CHF)
+            abs_min_sl = 0.0010  # минимум 10.0 пипсов для 5-значных пар
 
         atr_sl_mult = 1.2 if str(timeframe).lower() in ['15m', 'm15', '1h', 'h1', '60m'] else 0.9
         min_sl_dist = max(abs_min_sl, atr_sl_mult * atr)
@@ -294,9 +430,9 @@ class ICTSMCStrategy(BaseStrategy):
                 candidates.append(fvg_zone[1])
 
             if not candidates:
-                # Если зоны нет или она слишком далеко (поезд уже ушёл)
                 return self._make_result(
-                    StrategySignal(direction="NEUTRAL", confidence=0, details=details + ["Зона входа слишком далеко от текущей цены (>1.2 ATR)"]),
+                    StrategySignal(direction="NEUTRAL", confidence=0,
+                                  details=details + ["Зона входа слишком далеко от текущей цены (>1.2 ATR)"]),
                     details + ["Цена ушла слишком далеко от институциональной зоны — сетап пропущен"]
                 )
             entry = max(candidates)
@@ -304,7 +440,7 @@ class ICTSMCStrategy(BaseStrategy):
             base_sl = ob_zone[1] if ob_zone else impulse_low
             sl = min(base_sl - 0.25 * atr, entry - min_sl_dist)
 
-            # Вариант 1 (Market Execution): Если цена в пределах 0.35*ATR от зоны — вход моментальный ПО РЫНКУ
+            # Market vs Limit: Если цена в пределах 0.35*ATR от зоны — вход по рынку
             if abs(entry - current_price) <= 0.35 * atr or entry >= current_price:
                 entry = current_price
                 order_type = "BUY_MARKET"
@@ -316,8 +452,15 @@ class ICTSMCStrategy(BaseStrategy):
                 sl = entry - min_sl_dist
                 risk = entry - sl
 
-            tp1 = entry + 2.5 * risk
-            tp2 = entry + 4.0 * risk
+            # ═══ УЛУЧШЕНИЕ 5: TP на ликвидности ═══
+            liq_target = self._find_liquidity_target(swing_highs, swing_lows, direction, entry, sl)
+            if liq_target:
+                tp1 = liq_target
+                tp2 = entry + 4.0 * risk
+                details.append(f"🎯 TP1 на ликвидности (swing high): {self._format_price(tp1, symbol)}")
+            else:
+                tp1 = entry + 2.5 * risk
+                tp2 = entry + 4.0 * risk
 
         else:  # SHORT
             candidates = []
@@ -330,7 +473,8 @@ class ICTSMCStrategy(BaseStrategy):
 
             if not candidates:
                 return self._make_result(
-                    StrategySignal(direction="NEUTRAL", confidence=0, details=details + ["Зона входа слишком далеко от текущей цены (>1.2 ATR)"]),
+                    StrategySignal(direction="NEUTRAL", confidence=0,
+                                  details=details + ["Зона входа слишком далеко от текущей цены (>1.2 ATR)"]),
                     details + ["Цена ушла слишком далеко от институциональной зоны — сетап пропущен"]
                 )
             entry = min(candidates)
@@ -338,7 +482,6 @@ class ICTSMCStrategy(BaseStrategy):
             base_sl = ob_zone[0] if ob_zone else impulse_high
             sl = max(base_sl + 0.25 * atr, entry + min_sl_dist)
 
-            # Вариант 1 (Market Execution): Если цена в пределах 0.35*ATR от зоны — вход моментальный ПО РЫНКУ
             if abs(entry - current_price) <= 0.35 * atr or entry <= current_price:
                 entry = current_price
                 order_type = "SELL_MARKET"
@@ -350,8 +493,15 @@ class ICTSMCStrategy(BaseStrategy):
                 sl = entry + min_sl_dist
                 risk = sl - entry
 
-            tp1 = entry - 2.5 * risk
-            tp2 = entry - 4.0 * risk
+            # TP на ликвидности
+            liq_target = self._find_liquidity_target(swing_highs, swing_lows, direction, entry, sl)
+            if liq_target:
+                tp1 = liq_target
+                tp2 = entry - 4.0 * risk
+                details.append(f"🎯 TP1 на ликвидности (swing low): {self._format_price(tp1, symbol)}")
+            else:
+                tp1 = entry - 2.5 * risk
+                tp2 = entry - 4.0 * risk
 
         risk = abs(entry - sl)
         reward_1 = abs(tp1 - entry)
