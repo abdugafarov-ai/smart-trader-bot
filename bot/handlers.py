@@ -595,6 +595,54 @@ async def cb_menu_actions(callback: CallbackQuery):
             await callback.message.edit_text(f"⚠️ Ошибка построения кривой: {e}", reply_markup=back_keyboard(), parse_mode="HTML")
     elif action == "help":
         await callback.message.edit_text(format_help(), reply_markup=back_keyboard(), parse_mode="HTML")
+    elif action == "autotrade":
+        from trading.execution_bridge import bridge_manager
+        from bot.keyboards import autotrade_keyboard
+        status_emoji = "🟢 ВКЛЮЧЕНА" if bridge_manager.enabled else "🔴 ВЫКЛЮЧЕНА (ПАУЗА)"
+        text = (
+            f"🤖 <b>УПРАВЛЕНИЕ АВТО-ТОРГОВЛЕЙ (MT5 BRIDGE)</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"<b>Статус:</b> {status_emoji}\n"
+            f"<b>Размер лота:</b> <code>{bridge_manager.default_lot}</code>\n"
+            f"<b>Риск на сделку:</b> <code>{bridge_manager.default_risk}%</code>\n"
+            f"<b>Символов:</b> <code>17 пар (Форекс + Золото)</code>\n"
+            f"<b>Auto-Breakeven:</b> <code>Включён (в безубыток на 50% TP1)</code>\n\n"
+            f"Используйте кнопки ниже для быстрого управления 👇\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        )
+        await callback.message.edit_text(text, reply_markup=autotrade_keyboard(), parse_mode="HTML")
+    elif action == "main":
+        await callback.message.edit_text(format_welcome(), reply_markup=main_menu_keyboard(), parse_mode="HTML")
+
+
+@router.callback_query(F.data.startswith("autotrade:"))
+async def cb_autotrade_actions(callback: CallbackQuery):
+    from trading.execution_bridge import bridge_manager
+    from bot.keyboards import autotrade_keyboard
+    parts = callback.data.split(":")
+    action = parts[1]
+    if action == "on":
+        bridge_manager.set_enabled(True)
+    elif action == "off":
+        bridge_manager.set_enabled(False)
+    elif action == "lot":
+        val = float(parts[2])
+        bridge_manager.set_lot(val)
+
+    status_emoji = "🟢 ВКЛЮЧЕНА" if bridge_manager.enabled else "🔴 ВЫКЛЮЧЕНА (ПАУЗА)"
+    text = (
+        f"🤖 <b>УПРАВЛЕНИЕ АВТО-ТОРГОВЛЕЙ (MT5 BRIDGE)</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"<b>Статус:</b> {status_emoji}\n"
+        f"<b>Размер лота:</b> <code>{bridge_manager.default_lot}</code>\n"
+        f"<b>Риск на сделку:</b> <code>{bridge_manager.default_risk}%</code>\n"
+        f"<b>Символов:</b> <code>17 пар (Форекс + Золото)</code>\n"
+        f"<b>Auto-Breakeven:</b> <code>Включён (в безубыток на 50% TP1)</code>\n\n"
+        f"Используйте кнопки ниже для быстрого управления 👇\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    )
+    await callback.message.edit_text(text, reply_markup=autotrade_keyboard(), parse_mode="HTML")
+
 
 @router.callback_query(F.data.startswith("sym_backtest:"))
 async def cb_sym_backtest(callback: CallbackQuery):

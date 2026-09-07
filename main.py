@@ -75,6 +75,28 @@ async def main():
             except Exception as e:
                 logging.error(f"Error sending startup msg: {e}")
 
+        # Регистрация меню команд в Telegram
+        try:
+            from aiogram.types import BotCommand
+            await bot.set_my_commands([
+                BotCommand(command="start", description="Главное меню терминала"),
+                BotCommand(command="signals", description="Радар актуальных сигналов (4-5★)"),
+                BotCommand(command="analyze", description="Анализ пары: /analyze EURUSD"),
+                BotCommand(command="autotrade", description="Управление авто-торговлей MT5"),
+                BotCommand(command="lot", description="Задать рабочий лот: /lot 0.01"),
+                BotCommand(command="risk", description="Задать риск: /risk 1.0"),
+                BotCommand(command="stats", description="Статистика винрейта и PnL"),
+                BotCommand(command="history", description="Журнал последних сделок"),
+                BotCommand(command="equity", description="График кривой капитала PnL"),
+                BotCommand(command="sessions", description="Торговые сессии и Kill Zones"),
+                BotCommand(command="news", description="Экономический календарь новостей"),
+                BotCommand(command="webapp", description="Интерактивный терминал TradingView"),
+                BotCommand(command="help", description="Справочник по всем командам"),
+            ])
+            logging.info("Bot commands registered successfully in Telegram Menu.")
+        except Exception as e:
+            logging.error("Failed to set bot commands: %s", e)
+
         # Фоновые задачи
         asyncio.create_task(scanner.start())
         asyncio.create_task(tracker.start())

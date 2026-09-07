@@ -23,6 +23,10 @@ def main_menu_keyboard() -> InlineKeyboardMarkup:
         )
 
     builder.row(
+        InlineKeyboardButton(text="🤖 Авто-Торговля MT5", callback_data="menu:autotrade"),
+        InlineKeyboardButton(text="📡 Радар Сигналов", callback_data="menu:signals")
+    )
+    builder.row(
         InlineKeyboardButton(text="📊 Анализ Актива", callback_data="menu:analyze"),
         InlineKeyboardButton(text="📈 Индикаторы", callback_data="menu:indicators")
     )
@@ -31,8 +35,8 @@ def main_menu_keyboard() -> InlineKeyboardMarkup:
         InlineKeyboardButton(text="⏰ Торговые Сессии", callback_data="menu:sessions")
     )
     builder.row(
-        InlineKeyboardButton(text="📡 Радар Сигналов", callback_data="menu:signals"),
-        InlineKeyboardButton(text="📰 Макро Календарь", callback_data="menu:news")
+        InlineKeyboardButton(text="📰 Макро Календарь", callback_data="menu:news"),
+        InlineKeyboardButton(text="📈 Кривая PnL", callback_data="menu:equity")
     )
     builder.row(
         InlineKeyboardButton(text="📊 Win-Rate Статы", callback_data="menu:stats"),
@@ -40,11 +44,25 @@ def main_menu_keyboard() -> InlineKeyboardMarkup:
     )
     builder.row(
         InlineKeyboardButton(text="🔬 Бэктест ICT (300 баров)", callback_data="sym_backtest:EURUSD"),
-        InlineKeyboardButton(text="📈 Кривая PnL", callback_data="menu:equity")
+        InlineKeyboardButton(text="📖 Справочник", callback_data="menu:help")
+    )
+    return builder.as_markup()
+
+
+def autotrade_keyboard() -> InlineKeyboardMarkup:
+    """Клавиатура быстрого управления авто-торговлей MT5."""
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="🟢 ВКЛЮЧИТЬ", callback_data="autotrade:on"),
+        InlineKeyboardButton(text="🔴 ПАУЗА", callback_data="autotrade:off")
     )
     builder.row(
-        InlineKeyboardButton(text="⚙️ Параметры", callback_data="settings"),
-        InlineKeyboardButton(text="📖 Справочник", callback_data="menu:help")
+        InlineKeyboardButton(text="🔹 Лот 0.01", callback_data="autotrade:lot:0.01"),
+        InlineKeyboardButton(text="🔹 Лот 0.02", callback_data="autotrade:lot:0.02"),
+        InlineKeyboardButton(text="🔹 Лот 0.05", callback_data="autotrade:lot:0.05")
+    )
+    builder.row(
+        InlineKeyboardButton(text="🔙 В главное меню", callback_data="menu:main")
     )
     return builder.as_markup()
 
