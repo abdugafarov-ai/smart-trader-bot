@@ -110,10 +110,32 @@ async def bridge_get_orders(request: web.Request) -> web.Response:
     Возвращает список сигналов, которые нужно открыть или модифицировать.
     """
     try:
-        # Берем активные сигналы за последние 3 часа
-        active = await get_active_signals()
-        orders = []
         from trading.execution_bridge import bridge_manager
+        if not bridge_manager.enabled:
+            return web.json_response({
+                "status": "ok",
+                "autotrade_enabled": False,
+                "lot": bridge_manager.default_lot,
+                "risk_percent": bridge_manager.default_risk,
+                "orders": [],
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            })
+
+        # Берем активные и свежие ожидающие сигналы за последние 4 часа
+        from db.database import DB_PATH
+        import aiosqlite
+        async with aiosqlite.connect(str(DB_PATH)) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                """SELECT * FROM signals 
+                   WHERE status IN ('ACTIVE', 'OPEN', 'TP1_PARTIAL', 'PENDING')
+                   AND datetime(created_at) >= datetime('now', '-4 hours')
+                   ORDER BY id DESC"""
+            )
+            rows = await cursor.fetchall()
+            active = [dict(r) for r in rows]
+
+        orders = []
         for sig in (active or []):
             orders.append({
                 "id": sig.get("id"),
@@ -147,7 +169,7 @@ async def bridge_post_report(request: web.Request) -> web.Response:
     """
     Советник MT4/MT5 сообщает боту о результате исполнения:
     POST /api/v1/bridge/report
-    Body: {"signal_id": 12, "ticket": 98765432, "action": "OPENED", "price": 1.16210, "profit": 0.0}
+    Body: {"symbol": "USDJPY", "action": "SELL", "price": 154.68}
     """
     try:
         data = await request.json()
@@ -156,6 +178,21 @@ async def bridge_post_report(request: web.Request) -> web.Response:
             **data,
             "received_at": datetime.now(timezone.utc).isoformat()
         })
+
+        # Обновляем статус сигнала в БД на OPEN при подтверждении исполнения советником
+        symbol = data.get("symbol")
+        if symbol:
+            from db.database import DB_PATH
+            import aiosqlite
+            async with aiosqlite.connect(str(DB_PATH)) as db:
+                await db.execute(
+                    """UPDATE signals 
+                       SET status = 'OPEN', activated_at = ?
+                       WHERE symbol = ? AND status IN ('PENDING', 'ACTIVE')""",
+                    (datetime.now(timezone.utc).isoformat(), symbol)
+                )
+                await db.commit()
+
         return web.json_response({"status": "ok", "acknowledged": True})
     except Exception as e:
         logger.error("bridge_post_report error: %s", e)

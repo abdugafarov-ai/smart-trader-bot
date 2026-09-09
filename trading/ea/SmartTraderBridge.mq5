@@ -122,21 +122,27 @@ void ParseAndExecuteOrders(string json)
       bool is_short = (StringFind(block, "\"SHORT\"") >= 0);
       if(!is_long && !is_short) continue;
 
-      // Проверяем, открыта ли уже позиция по этой паре с нашим Magic
-      if(HasOpenPosition(broker_symbol))
+      // Проверяем, открыта ли уже позиция или отложенный ордер по этой паре с нашим Magic
+      if(HasOpenPosition(broker_symbol) || HasPendingOrder(broker_symbol))
       {
-         // Проверяем перенос в безубыток
-         if(StringFind(block, "\"breakeven_applied\":true") >= 0 || StringFind(block, "\"breakeven_applied\": true") >= 0)
+         // Проверяем перенос в безубыток для открытых
+         if(HasOpenPosition(broker_symbol))
          {
-            ApplyBreakevenIfEligible(broker_symbol);
+            if(StringFind(block, "\"breakeven_applied\":true") >= 0 || StringFind(block, "\"breakeven_applied\": true") >= 0)
+            {
+               ApplyBreakevenIfEligible(broker_symbol);
+            }
          }
          continue;
       }
 
-      // Извлекаем SL и TP
-      double sl = ExtractDouble(block, "\"stop_loss\":");
-      double tp = ExtractDouble(block, "\"tp1\":");
+      // Извлекаем SL, TP и Entry
+      double entry = ExtractDouble(block, "\"entry\":");
+      double sl    = ExtractDouble(block, "\"stop_loss\":");
+      double tp    = ExtractDouble(block, "\"tp1\":");
       if(sl <= 0 || tp <= 0) continue;
+
+      bool is_limit = (StringFind(block, "LIMIT") >= 0);
 
       // Рассчитываем лот
       double lot = InpFixedLot;
@@ -149,19 +155,41 @@ void ParseAndExecuteOrders(string json)
       if(is_long)
       {
          double ask = SymbolInfoDouble(broker_symbol, SYMBOL_ASK);
-         if(trade.Buy(lot, broker_symbol, ask, sl, tp, "SmartTrader Institutional"))
+         if(is_limit && entry > 0 && entry < ask)
          {
-            Print("✅ [SmartTrader] BUY ордер открыт: ", broker_symbol, " | Лот: ", lot, " | SL: ", sl, " | TP: ", tp);
-            ReportExecution(pair, "BUY", ask);
+            if(trade.BuyLimit(lot, entry, broker_symbol, sl, tp, ORDER_TIME_GTC, 0, "SmartTrader Limit"))
+            {
+               Print("✅ [SmartTrader] BUY_LIMIT ордер выставлен: ", broker_symbol, " @ ", entry, " | SL: ", sl, " | TP: ", tp);
+               ReportExecution(pair, "BUY_LIMIT", entry);
+            }
+         }
+         else
+         {
+            if(trade.Buy(lot, broker_symbol, ask, sl, tp, "SmartTrader Institutional"))
+            {
+               Print("✅ [SmartTrader] BUY ордер открыт: ", broker_symbol, " | Лот: ", lot, " | SL: ", sl, " | TP: ", tp);
+               ReportExecution(pair, "BUY", ask);
+            }
          }
       }
       else if(is_short)
       {
          double bid = SymbolInfoDouble(broker_symbol, SYMBOL_BID);
-         if(trade.Sell(lot, broker_symbol, bid, sl, tp, "SmartTrader Institutional"))
+         if(is_limit && entry > 0 && entry > bid)
          {
-            Print("✅ [SmartTrader] SELL ордер открыт: ", broker_symbol, " | Лот: ", lot, " | SL: ", sl, " | TP: ", tp);
-            ReportExecution(pair, "SELL", bid);
+            if(trade.SellLimit(lot, entry, broker_symbol, sl, tp, ORDER_TIME_GTC, 0, "SmartTrader Limit"))
+            {
+               Print("✅ [SmartTrader] SELL_LIMIT ордер выставлен: ", broker_symbol, " @ ", entry, " | SL: ", sl, " | TP: ", tp);
+               ReportExecution(pair, "SELL_LIMIT", entry);
+            }
+         }
+         else
+         {
+            if(trade.Sell(lot, broker_symbol, bid, sl, tp, "SmartTrader Institutional"))
+            {
+               Print("✅ [SmartTrader] SELL ордер открыт: ", broker_symbol, " | Лот: ", lot, " | SL: ", sl, " | TP: ", tp);
+               ReportExecution(pair, "SELL", bid);
+            }
          }
       }
    }
@@ -198,6 +226,23 @@ bool HasOpenPosition(string symbol)
       if(PositionGetSymbol(i) == symbol)
       {
          if(PositionGetInteger(POSITION_MAGIC) == InpMagicNumber)
+            return true;
+      }
+   }
+   return false;
+}
+
+//+------------------------------------------------------------------+
+//| Проверка наличия отложенного ордера                             |
+//+------------------------------------------------------------------+
+bool HasPendingOrder(string symbol)
+{
+   for(int i = OrdersTotal() - 1; i >= 0; i--)
+   {
+      ulong ticket = OrderGetTicket(i);
+      if(ticket > 0 && OrderGetString(ORDER_SYMBOL) == symbol)
+      {
+         if(OrderGetInteger(ORDER_MAGIC) == InpMagicNumber)
             return true;
       }
    }

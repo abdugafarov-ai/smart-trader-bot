@@ -12,7 +12,8 @@ from bot.guide import get_guide_step, get_total_steps, GUIDE_STEPS
 from bot.keyboards import (
     main_menu_keyboard, symbols_keyboard, category_pairs_keyboard,
     timeframes_keyboard, strategies_keyboard, settings_keyboard,
-    back_keyboard, guide_keyboard, admin_approve_keyboard
+    back_keyboard, guide_keyboard, admin_approve_keyboard,
+    analysis_result_keyboard
 )
 from utils.formatters import (
     format_indicators, format_strategy, format_multi_tf_analysis,
@@ -332,21 +333,25 @@ async def cmd_analyze(message: Message):
                         stars=res.overall_stars,
                         theme=chart_theme,
                     )
+                    can_exec = bool(res.overall_direction != "NEUTRAL" and res.entry and res.stop_loss and res.overall_stars >= 3)
+                    kb = analysis_result_keyboard(symbol, can_execute=can_exec)
                     if chart_bytes:
                         photo = BufferedInputFile(chart_bytes, filename=f"analysis_{symbol}.png")
                         # Telegram caption limit = 1024 chars, text may be longer
                         if len(text) <= 1024:
-                            await message.answer_photo(photo=photo, caption=text, parse_mode="HTML", reply_markup=back_keyboard())
+                            await message.answer_photo(photo=photo, caption=text, parse_mode="HTML", reply_markup=kb)
                         else:
                             await message.answer_photo(photo=photo, caption=f"📊 <b>{symbol}</b> | {res.overall_direction} | {'★' * res.overall_stars}", parse_mode="HTML")
                             for i in range(0, len(text), 4000):
-                                await message.answer(text[i:i+4000], reply_markup=back_keyboard(), parse_mode="HTML")
+                                await message.answer(text[i:i+4000], reply_markup=kb, parse_mode="HTML")
                         return
             except Exception as e:
                 logging.getLogger(__name__).error("Chart generation error: %s", e)
         
+        can_exec = bool(res.overall_direction != "NEUTRAL" and res.entry and res.stop_loss and res.overall_stars >= 3)
+        kb = analysis_result_keyboard(symbol, can_execute=can_exec)
         for i in range(0, len(text), 4000):
-            await message.answer(text[i:i+4000], reply_markup=back_keyboard(), parse_mode="HTML")
+            await message.answer(text[i:i+4000], reply_markup=kb, parse_mode="HTML")
     else:
         await message.answer("📊 <b>Выберите категорию активов для анализа:</b>", reply_markup=symbols_keyboard(), parse_mode="HTML")
 
@@ -738,13 +743,64 @@ async def cb_symbol(callback: CallbackQuery):
     res = await run_multi_tf_analysis(symbol)
     if res:
         text = format_multi_tf_analysis(res)
+        can_exec = bool(res.overall_direction != "NEUTRAL" and res.entry and res.stop_loss and res.overall_stars >= 3)
+        kb = analysis_result_keyboard(symbol, can_execute=can_exec)
         for i in range(0, len(text), 4000):
             if i == 0:
-                await safe_edit(callback, text[i:i+4000], reply_markup=back_keyboard(), parse_mode="HTML")
+                await safe_edit(callback, text[i:i+4000], reply_markup=kb, parse_mode="HTML")
             else:
                 await callback.message.answer(text[i:i+4000], parse_mode="HTML")
     else:
         await safe_edit(callback, "⚠️ Ошибка получения котировок.", reply_markup=back_keyboard(), parse_mode="HTML")
+
+
+@router.callback_query(F.data.startswith("exec_mt5:"))
+async def cb_exec_mt5(callback: CallbackQuery):
+    symbol = callback.data.split(":")[1]
+    await callback.answer("⏳ Анализирую и отправляю в MT5...", show_alert=False)
+    
+    try:
+        from db.database import save_signal, check_signal_exists
+        res = await run_multi_tf_analysis(symbol)
+        
+        if not res or res.overall_direction == "NEUTRAL" or not res.entry:
+            await callback.message.answer(f"⚠️ По {symbol} сейчас нет четкого направленного сетапа (NEUTRAL). Ордер не создан.", parse_mode="HTML")
+            return
+            
+        strategies_str = ", ".join([f"{e} {n}: {v}" for e, n, v in res.strategy_verdicts])
+        timeframes_str = ", ".join([f"{t.timeframe}: {t.direction}" for t in res.tf_analyses])
+
+        await save_signal(
+            symbol=symbol,
+            direction=res.overall_direction,
+            order_type=res.order_type,
+            tag_emoji=res.tag_emoji,
+            stars=max(4, res.overall_stars),
+            current_price=res.current_price,
+            entry_price=res.entry,
+            stop_loss=res.stop_loss,
+            take_profit_1=res.take_profit_1,
+            take_profit_2=res.take_profit_2,
+            risk_reward=res.risk_reward_1,
+            strategies_agreed=strategies_str,
+            timeframes_agreed=timeframes_str,
+        )
+        
+        confirm_text = (
+            f"🚀 <b>СИГНАЛ ПЕРЕДАН В METATRADER 5!</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"<b>СИМВОЛ:</b> <code>{symbol}</code>\n"
+            f"<b>ТИП:</b> <code>{res.order_type}</code> [{res.overall_direction}]\n"
+            f"📍 <b>ENTRY:</b> <code>{res.entry}</code>\n"
+            f"🛑 <b>STOP LOSS:</b> <code>{res.stop_loss}</code>\n"
+            f"🎯 <b>TAKE PROFIT 1:</b> <code>{res.take_profit_1}</code>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"✅ <i>Советник MT5 примет и выставит ордер при очередном 3-секундном цикле.</i>"
+        )
+        await callback.message.answer(confirm_text, parse_mode="HTML", reply_markup=back_keyboard())
+    except Exception as e:
+        logger.error("cb_exec_mt5 error: %s", e, exc_info=True)
+        await callback.message.answer(f"❌ Ошибка отправки в MT5: {e}", parse_mode="HTML")
 
 @router.callback_query(F.data.startswith("tf:"))
 async def cb_timeframe(callback: CallbackQuery):

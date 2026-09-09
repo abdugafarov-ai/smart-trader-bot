@@ -83,6 +83,18 @@ def signal_inline_keyboard(symbol: str) -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
+def analysis_result_keyboard(symbol: str, can_execute: bool = False) -> InlineKeyboardMarkup:
+    """Клавиатура под ручным анализом пары, с кнопкой быстрой отправки в MT5."""
+    builder = InlineKeyboardBuilder()
+    if can_execute:
+        builder.row(InlineKeyboardButton(text="⚡ Открыть в MT5 Авто-роботом", callback_data=f"exec_mt5:{symbol}"))
+    builder.row(
+        InlineKeyboardButton(text="🔄 Обновить", callback_data=f"sym:{symbol}"),
+        InlineKeyboardButton(text="◀️ В Терминал", callback_data="menu")
+    )
+    return builder.as_markup()
+
+
 def symbols_keyboard() -> InlineKeyboardMarkup:
     """Выбор категории активов."""
     builder = InlineKeyboardBuilder()

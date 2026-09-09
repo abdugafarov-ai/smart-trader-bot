@@ -181,7 +181,7 @@ def format_notification(result: MultiTFResult) -> str:
         f"│ 🛑 <b>STOP:</b>   <code>{format_price(result.stop_loss, result.symbol)}</code>{pips_sl_s}\n"
         f"│ 🎯 <b>TP 1:</b>   <code>{format_price(result.take_profit_1, result.symbol)}</code>{pips_tp1_s}{rr1_s}\n"
         f"│ 🎯 <b>TP 2:</b>   <code>{format_price(result.take_profit_2, result.symbol)}</code>{pips_tp2_s}{rr2_s}\n"
-        f"└── <b>R:R:</b>    <code>1:{result.risk_reward_1:.1f} / 1:{result.risk_reward_2:.1f}</code> ────────\n\n"
+        f"└── <b>R:R:</b>    <code>1:{result.risk_reward_1:.1f if result.risk_reward_1 is not None else 0.0} / 1:{result.risk_reward_2:.1f if result.risk_reward_2 is not None else 0.0}</code> ────────\n\n"
         f"⏱ <b>СТРУКТУРА ТФ:</b> {tf_summary}\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         f"{action_hint}\n"

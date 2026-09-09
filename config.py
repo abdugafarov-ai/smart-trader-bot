@@ -185,8 +185,8 @@ CORRELATION_GROUPS = {
 MAX_CORRELATED_SIGNALS = 2  # Max simultaneous signals in one correlation group
 
 # ── Daily Limits ──────────────────────────────────────────
-MAX_SIGNALS_PER_DAY = 3
-SIGNAL_COOLDOWN_HOURS = 2  # Минимум 2 часа между сигналами на одну пару
+MAX_SIGNALS_PER_DAY = 15
+SIGNAL_COOLDOWN_HOURS = 1  # 1 час между сигналами на одну пару (динамичнее)
 
 def is_pair_in_active_session(symbol: str) -> bool:
     """Проверяет, торгуется ли пара в текущую сессию."""
