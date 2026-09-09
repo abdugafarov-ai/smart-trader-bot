@@ -349,18 +349,77 @@ async def check_signal_exists(symbol: str, direction: str, hours: int = 6) -> bo
     return await has_open_signal_for_pair(symbol)
 
 
-async def get_consecutive_sl_count() -> int:
-    """Считает количество последовательных Stop Loss среди последних закрытых сигналов."""
+async def get_drawdown_reset_time() -> Optional[str]:
+    """Получает время последнего ручного сброса просадки."""
     try:
         async with aiosqlite.connect(str(DB_PATH)) as db:
+            cursor = await db.execute("SELECT value FROM system_settings WHERE key = 'drawdown_reset_time'")
+            row = await cursor.fetchone()
+            return row[0] if row else None
+    except Exception:
+        return None
+
+
+async def set_drawdown_reset_now() -> bool:
+    """Сбрасывает таймер просадки на текущий момент."""
+    try:
+        now_iso = datetime.now(timezone.utc).isoformat()
+        async with aiosqlite.connect(str(DB_PATH)) as db:
+            await db.execute(
+                "CREATE TABLE IF NOT EXISTS system_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+            )
+            await db.execute(
+                "INSERT OR REPLACE INTO system_settings (key, value) VALUES ('drawdown_reset_time', ?)",
+                (now_iso,)
+            )
+            await db.commit()
+            logger.info("Drawdown reset timestamp saved: %s", now_iso)
+            return True
+    except Exception as e:
+        logger.error("set_drawdown_reset_now error: %s", e)
+        return False
+
+
+async def get_consecutive_sl_count(max_lookback_hours: float = 12.0) -> int:
+    """
+    Считает количество последовательных Stop Loss среди последних закрытых сигналов.
+    Автоматически сбрасывается, если последний SL был закрыт более max_lookback_hours назад,
+    или если администратор выполнил сброс просадки.
+    """
+    try:
+        reset_time_str = await get_drawdown_reset_time()
+        reset_dt = datetime.fromisoformat(reset_time_str) if reset_time_str else None
+        if reset_dt and reset_dt.tzinfo is None:
+            reset_dt = reset_dt.replace(tzinfo=timezone.utc)
+
+        async with aiosqlite.connect(str(DB_PATH)) as db:
             cursor = await db.execute(
-                """SELECT status FROM signals 
+                """SELECT status, closed_at FROM signals 
                    WHERE status IN ('TP1_HIT', 'TP2_HIT', 'SL_HIT') 
                    ORDER BY closed_at DESC LIMIT 10"""
             )
             rows = await cursor.fetchall()
             sl_count = 0
-            for (status,) in rows:
+            now = datetime.now(timezone.utc)
+            for status, closed_at_str in rows:
+                if not closed_at_str:
+                    continue
+                try:
+                    closed_at = datetime.fromisoformat(closed_at_str)
+                    if closed_at.tzinfo is None:
+                        closed_at = closed_at.replace(tzinfo=timezone.utc)
+
+                    # 1. Если сделка закрыта до последнего ручного сброса просадки — стоп
+                    if reset_dt and closed_at < reset_dt:
+                        break
+
+                    # 2. Если сделка закрыта более max_lookback_hours назад — авто-сброс
+                    age_hours = (now - closed_at).total_seconds() / 3600.0
+                    if age_hours > max_lookback_hours:
+                        break
+                except Exception:
+                    pass
+
                 if status == 'SL_HIT':
                     sl_count += 1
                 else:

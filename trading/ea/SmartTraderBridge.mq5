@@ -217,13 +217,13 @@ string GetBrokerSymbol(string standard_pair)
 }
 
 //+------------------------------------------------------------------+
-//| Проверка наличия открытой позиции                               |
+//| Проверка наличия открытой позиции (регистронезависимо)          |
 //+------------------------------------------------------------------+
 bool HasOpenPosition(string symbol)
 {
    for(int i = PositionsTotal() - 1; i >= 0; i--)
    {
-      if(PositionGetSymbol(i) == symbol)
+      if(StringCompare(PositionGetSymbol(i), symbol, false) == 0)
       {
          if(PositionGetInteger(POSITION_MAGIC) == InpMagicNumber)
             return true;
@@ -233,14 +233,14 @@ bool HasOpenPosition(string symbol)
 }
 
 //+------------------------------------------------------------------+
-//| Проверка наличия отложенного ордера                             |
+//| Проверка наличия отложенного ордера (регистронезависимо)        |
 //+------------------------------------------------------------------+
 bool HasPendingOrder(string symbol)
 {
    for(int i = OrdersTotal() - 1; i >= 0; i--)
    {
       ulong ticket = OrderGetTicket(i);
-      if(ticket > 0 && OrderGetString(ORDER_SYMBOL) == symbol)
+      if(ticket > 0 && StringCompare(OrderGetString(ORDER_SYMBOL), symbol, false) == 0)
       {
          if(OrderGetInteger(ORDER_MAGIC) == InpMagicNumber)
             return true;
@@ -256,7 +256,7 @@ void ApplyBreakevenIfEligible(string symbol)
 {
    for(int i = PositionsTotal() - 1; i >= 0; i--)
    {
-      if(PositionGetSymbol(i) == symbol && PositionGetInteger(POSITION_MAGIC) == InpMagicNumber)
+      if(StringCompare(PositionGetSymbol(i), symbol, false) == 0 && PositionGetInteger(POSITION_MAGIC) == InpMagicNumber)
       {
          ulong ticket = PositionGetTicket(i);
          double open_price = PositionGetDouble(POSITION_PRICE_OPEN);
@@ -327,6 +327,6 @@ void ReportExecution(string symbol, string action, double price)
    char post_data[];
    char result_data[];
    string result_headers;
-   StringToCharArray(body, post_data, 0, WHOLE_ARRAY, CP_UTF8);
+   StringToCharArray(body, post_data, 0, StringLen(body), CP_UTF8);
    WebRequest("POST", url, headers, 3000, post_data, result_data, result_headers);
 }

@@ -164,11 +164,11 @@ class AutoSignalScanner:
                         daily_count, config.MAX_SIGNALS_PER_DAY)
             return
 
-        # Drawdown Protection: пауза при 3 стопах подряд
+        # Drawdown Protection: пауза при 3 стопах подряд за последние 12 часов
         from db.database import get_consecutive_sl_count
-        consecutive_sl = await get_consecutive_sl_count()
+        consecutive_sl = await get_consecutive_sl_count(max_lookback_hours=12.0)
         if consecutive_sl >= 3:
-            logger.warning("Drawdown Protection: %d consecutive SL hits. Scanner paused to protect capital.", consecutive_sl)
+            logger.warning("Drawdown Protection: %d consecutive SL hits in last 12h. Scanner paused to protect capital.", consecutive_sl)
             return
 
         news_blocked = await self._get_news_blocked_pairs()

@@ -232,11 +232,11 @@ class SignalTracker:
             logger.info("Signal #%d closed by timeout.", signal_id)
             return
 
-        # ── 1. BREAKEVEN CHECK (1:1 risk = reward reached) ──
+        # ── 1. BREAKEVEN CHECK (1:1.5 risk = reward reached) ──
         risk = abs(entry - sl)
         if not breakeven_applied and risk > 0 and status != "TP1_PARTIAL":
             if direction == "LONG":
-                breakeven_target = entry + risk
+                breakeven_target = entry + 1.5 * risk
                 if recent_high >= breakeven_target:
                     new_sl = entry
                     await update_signal_sl(signal_id, new_sl, breakeven=True)
@@ -247,7 +247,7 @@ class SignalTracker:
                     tp1_s = format_price(tp1, symbol)
                     pips_protected = round(risk * mult, 1)
                     msg = (
-                        f"🛡 <b>БЕЗУБЫТОК АКТИВИРОВАН</b>\n"
+                        f"🛡 <b>БЕЗУБЫТОК АКТИВИРОВАН (1:1.5R)</b>\n"
                         f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
                         f"📊 <b>{symbol}</b> | LONG\n"
                         f"┌ 📍 Вход: <code>{entry_s}</code>\n"
@@ -255,13 +255,13 @@ class SignalTracker:
                         f"├ 🎯 TP1: <code>{tp1_s}</code>\n"
                         f"└ ⚡ Защищено: <code>+{pips_protected}</code> pips риска\n"
                         f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                        f"💼 <i>Прибыль достигла 1:1 — риск снят.</i>"
+                        f"💼 <i>Прибыль достигла 1:1.5R — безубыток активирован, риск снят.</i>"
                     )
                     await self._send_to_all(msg)
-                    logger.info("Signal #%d BREAKEVEN applied at %s", signal_id, new_sl_s)
+                    logger.info("Signal #%d BREAKEVEN 1:1.5R applied at %s", signal_id, new_sl_s)
 
             elif direction == "SHORT":
-                breakeven_target = entry - risk
+                breakeven_target = entry - 1.5 * risk
                 if recent_low <= breakeven_target:
                     new_sl = entry
                     await update_signal_sl(signal_id, new_sl, breakeven=True)
@@ -272,7 +272,7 @@ class SignalTracker:
                     tp1_s = format_price(tp1, symbol)
                     pips_protected = round(risk * mult, 1)
                     msg = (
-                        f"🛡 <b>БЕЗУБЫТОК АКТИВИРОВАН</b>\n"
+                        f"🛡 <b>БЕЗУБЫТОК АКТИВИРОВАН (1:1.5R)</b>\n"
                         f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
                         f"📊 <b>{symbol}</b> | SHORT\n"
                         f"┌ 📍 Вход: <code>{entry_s}</code>\n"
@@ -280,10 +280,10 @@ class SignalTracker:
                         f"├ 🎯 TP1: <code>{tp1_s}</code>\n"
                         f"└ ⚡ Защищено: <code>+{pips_protected}</code> pips риска\n"
                         f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                        f"💼 <i>Прибыль достигла 1:1 — риск снят.</i>"
+                        f"💼 <i>Прибыль достигла 1:1.5R — безубыток активирован, риск снят.</i>"
                     )
                     await self._send_to_all(msg)
-                    logger.info("Signal #%d BREAKEVEN applied at %s", signal_id, new_sl_s)
+                    logger.info("Signal #%d BREAKEVEN 1:1.5R applied at %s", signal_id, new_sl_s)
 
         # ── 2. LONG ПОЗИЦИИ ──
         if direction == "LONG":

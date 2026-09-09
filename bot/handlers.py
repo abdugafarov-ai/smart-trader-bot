@@ -1133,5 +1133,22 @@ async def cmd_equity(message: Message):
         logger.error("Equity command error: %s", e, exc_info=True)
         await message.answer(f"❌ Ошибка генерации графика: {e}", parse_mode=None)
 
-
-
+@router.message(Command("reset_drawdown"))
+async def cmd_reset_drawdown(message: Message):
+    """Ручной сброс блокировки просадки."""
+    try:
+        from db.database import set_drawdown_reset_now
+        ok = await set_drawdown_reset_now()
+        if ok:
+            await message.answer(
+                "✅ <b>Защита от просадки успешно сброшена!</b>\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                "🚀 Авто-сканер сигналов разблокирован и готов находить новые сетапы!",
+                parse_mode="HTML",
+                reply_markup=back_keyboard()
+            )
+        else:
+            await message.answer("❌ Ошибка при сбросе просадки.", parse_mode=None)
+    except Exception as e:
+        logger.error("cmd_reset_drawdown error: %s", e)
+        await message.answer(f"❌ Ошибка: {e}", parse_mode=None)

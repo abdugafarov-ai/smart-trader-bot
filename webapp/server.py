@@ -172,7 +172,14 @@ async def bridge_post_report(request: web.Request) -> web.Response:
     Body: {"symbol": "USDJPY", "action": "SELL", "price": 154.68}
     """
     try:
-        data = await request.json()
+        try:
+            data = await request.json()
+        except Exception:
+            raw_text = await request.text()
+            clean_text = raw_text.strip().rstrip('\x00').strip()
+            if "}" in clean_text:
+                clean_text = clean_text[:clean_text.rfind("}") + 1]
+            data = json.loads(clean_text)
         logger.info("MetaTrader Bridge report received: %s", data)
         _executed_orders_log.append({
             **data,
