@@ -58,7 +58,7 @@ NOTIFY_USER_IDS: list[int] = [
 SCAN_INTERVAL_MINUTES: int = int(os.getenv("SCAN_INTERVAL_MINUTES", "30"))
 
 # ── Web App (Mini App) & Execution Bridge ──────────────────
-WEBAPP_HOST: str = os.getenv("WEBAPP_HOST", "0.0.0.0")
+WEBAPP_HOST: str = os.getenv("WEBAPP_HOST", "127.0.0.1")
 WEBAPP_PORT: int = int(os.getenv("WEBAPP_PORT", "8080"))
 WEBAPP_URL: str = os.getenv("WEBAPP_URL", "")  # URL для Telegram WebApp (например https://mydomain.com или ngrok)
 

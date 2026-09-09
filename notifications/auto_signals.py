@@ -164,16 +164,16 @@ class AutoSignalScanner:
                         daily_count, config.MAX_SIGNALS_PER_DAY)
             return
 
-        # Drawdown Protection: пауза при 3 стопах подряд за последние 12 часов
+        # Drawdown Protection: полностью автоматический режим (без остановки сканера!)
         from db.database import get_consecutive_sl_count
         consecutive_sl = await get_consecutive_sl_count(max_lookback_hours=12.0)
-        if consecutive_sl >= 3:
-            logger.warning("Drawdown Protection: %d consecutive SL hits in last 12h. Scanner paused to protect capital.", consecutive_sl)
-            return
+        drawdown_mode = consecutive_sl >= 3
+        if drawdown_mode:
+            logger.info("Auto Drawdown Filter Active (%d SL). Strict 5-star filter engaged automatically.", consecutive_sl)
 
         news_blocked = await self._get_news_blocked_pairs()
         scan_list = self.symbols
-        logger.info("Scanning %d pairs (Kill Zone: %s)...", len(scan_list), kz or "OFF")
+        logger.info("Scanning %d pairs (Kill Zone: %s | Strict Mode: %s)...", len(scan_list), kz or "OFF", "ON" if drawdown_mode else "OFF")
 
         for symbol in scan_list:
             try:
@@ -204,11 +204,14 @@ class AutoSignalScanner:
                     continue
 
                 min_stars = config.MIN_SIGNAL_STARS
-                # Kill Zone бонус: снижаем порог на 1 звезду (4→3)
-                if in_kill_zone:
+                # В режиме серии стопов автоматически требуем наивысшее качество (5 звёзд)
+                if drawdown_mode:
+                    min_stars = 5
+                elif in_kill_zone:
+                    # Kill Zone бонус: снижаем порог на 1 звезду (4→3)
                     min_stars = max(3, min_stars - 1)
 
-                if result.overall_stars >= min_stars and (result.risk_reward_1 or 0) >= 2.4:
+                if result.overall_stars >= min_stars and (result.risk_reward_1 or 0) >= 2.0:
 
                     # ── ФИЛЬТР 6: Корреляция ──
                     if not await self._check_correlation_limit(symbol, result.overall_direction):

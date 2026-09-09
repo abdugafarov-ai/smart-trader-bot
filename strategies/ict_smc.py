@@ -239,21 +239,37 @@ class ICTSMCStrategy(BaseStrategy):
         if direction == "NEUTRAL":
             return self._make_result(StrategySignal(direction="NEUTRAL"), details)
 
-        # ═══ УЛУЧШЕНИЕ 2: Premium / Discount зоны ═══
+        # ═══ УЛУЧШЕНИЕ 2: Premium / Discount зоны (Строгое правило ICT) ═══
         recent_window = min(50, len(df))
         range_high = float(df['high'].iloc[-recent_window:].max())
         range_low = float(df['low'].iloc[-recent_window:].min())
         range_mid = (range_high + range_low) / 2
 
-        in_discount = current_price <= range_mid
-        in_premium = current_price >= range_mid
+        in_discount = current_price <= (range_mid + 0.05 * (range_high - range_low))
+        in_premium = current_price >= (range_mid - 0.05 * (range_high - range_low))
 
-        if direction == "LONG" and in_discount:
+        if direction == "LONG":
+            if not in_discount:
+                details.append(f"❌ Отклонено: Покупка в зоне Premium запрещена ({self._format_price(current_price, symbol)} > {self._format_price(range_mid, symbol)})")
+                return self._make_result(StrategySignal(direction="NEUTRAL"), details + ["Рынок перекуплен, вход на хаях приведет к зависанию позиции"])
             sub_signals += 1
-            details.append(f"✅ Цена в Discount зоне ({self._format_price(current_price, symbol)} <= {self._format_price(range_mid, symbol)})")
-        elif direction == "SHORT" and in_premium:
+            details.append(f"✅ Цена в выгодной Discount зоне ({self._format_price(current_price, symbol)} <= {self._format_price(range_mid, symbol)})")
+        elif direction == "SHORT":
+            if not in_premium:
+                details.append(f"❌ Отклонено: Продажа в зоне Discount запрещена ({self._format_price(current_price, symbol)} < {self._format_price(range_mid, symbol)})")
+                return self._make_result(StrategySignal(direction="NEUTRAL"), details + ["Рынок перепродан, вход на лоях приведет к зависанию позиции"])
             sub_signals += 1
-            details.append(f"✅ Цена в Premium зоне ({self._format_price(current_price, symbol)} >= {self._format_price(range_mid, symbol)})")
+            details.append(f"✅ Цена в выгодной Premium зоне ({self._format_price(current_price, symbol)} >= {self._format_price(range_mid, symbol)})")
+
+        # ═══ ФИЛЬТР КОНСОЛИДАЦИИ И МЕРТВОГО РЫНКА (ANTI-CHOP / АНТИ-ЗАМОРОЗКА) ═══
+        last_5_candles = df.iloc[-5:]
+        avg_range_5 = float((last_5_candles['high'] - last_5_candles['low']).mean())
+        if avg_range_5 < 0.50 * atr:
+            details.append("⚠️ Рынок замер на месте (свечи микроскопические < 0.5 ATR) — сигнал пропущен")
+            return self._make_result(
+                StrategySignal(direction="NEUTRAL", confidence=0, details=details),
+                details + ["Мертвая консолидация: нет волатильности для быстрого движения к цели"]
+            )
 
         # Volume Confirmation
         vol_penalty = 0

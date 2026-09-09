@@ -159,8 +159,8 @@ async def run_multi_tf_analysis(symbol: str) -> MultiTFResult:
     pips_tp1 = round(abs(tp1 - entry) * pip_mult, 1) if entry and tp1 else None
     pips_tp2 = round(abs(tp2 - entry) * pip_mult, 1) if entry and tp2 else None
     
-    # Звезды уверенности: ТРЕБУЕТСЯ сонаправленность минимум 2 таймфреймов (tf_agree >= 2) и R:R >= 2.4
-    if overall_dir != 'NEUTRAL' and rr1 and rr1 >= 2.4 and tf_agree >= 2:
+    # Звезды уверенности: ТРЕБУЕТСЯ сонаправленность минимум 2 таймфреймов (tf_agree >= 2) и R:R >= 2.0
+    if overall_dir != 'NEUTRAL' and rr1 and rr1 >= 2.0 and tf_agree >= 2:
         overall_stars = 5 if tf_agree >= 3 else 4
     else:
         overall_stars = 0
