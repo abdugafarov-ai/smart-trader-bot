@@ -59,6 +59,10 @@ async def init_db():
             await db.execute("ALTER TABLE signals ADD COLUMN activated_at TEXT")
         if "breakeven_applied" not in columns:
             await db.execute("ALTER TABLE signals ADD COLUMN breakeven_applied INTEGER DEFAULT 0")
+        if "broker_confirmed" not in columns:
+            await db.execute("ALTER TABLE signals ADD COLUMN broker_confirmed INTEGER DEFAULT 0")
+        if "broker_ticket" not in columns:
+            await db.execute("ALTER TABLE signals ADD COLUMN broker_ticket INTEGER DEFAULT 0")
 
         await db.execute("""
             CREATE TABLE IF NOT EXISTS daily_stats (
@@ -72,6 +76,22 @@ async def init_db():
             )
         """)
 
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS broker_deals (
+                ticket INTEGER PRIMARY KEY,
+                symbol TEXT NOT NULL,
+                deal_type TEXT NOT NULL,
+                lot REAL NOT NULL,
+                price REAL NOT NULL,
+                profit_usd REAL NOT NULL,
+                close_time INTEGER NOT NULL,
+                magic INTEGER DEFAULT 0,
+                comment TEXT DEFAULT '',
+                created_at TEXT NOT NULL
+            )
+        """)
+
+
         # Автоматическая очистка старых зависших PENDING ордеров старше 24ч при старте
         from datetime import timedelta
         cutoff_iso = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
@@ -82,7 +102,7 @@ async def init_db():
         """, (datetime.now(timezone.utc).isoformat(), cutoff_iso))
 
         await db.commit()
-    logger.info("Database initialized with full schema and stale pending orders cleaned up at %s", DB_PATH)
+    logger.info("Database initialized with full schema and broker_deals table at %s", DB_PATH)
 
 
 async def save_signal(
@@ -142,6 +162,103 @@ async def activate_signal(signal_id: int):
             await db.commit()
     except Exception as e:
         logger.error("activate_signal error: %s", e)
+
+
+async def confirm_signal_by_broker(symbol: str, action: str, price: float, ticket: int = 0, signal_id: int = 0) -> dict | None:
+    """Подтверждает исполнение ордера терминалом MT5."""
+    try:
+        now_iso = datetime.now(timezone.utc).isoformat()
+        async with aiosqlite.connect(str(DB_PATH)) as db:
+            db.row_factory = aiosqlite.Row
+            if signal_id > 0:
+                cursor = await db.execute("SELECT * FROM signals WHERE id = ?", (signal_id,))
+            else:
+                cursor = await db.execute(
+                    """SELECT * FROM signals
+                       WHERE symbol = ? AND status IN ('PENDING', 'ACTIVE', 'OPEN')
+                       ORDER BY id DESC LIMIT 1""",
+                    (symbol,)
+                )
+            row = await cursor.fetchone()
+            if row:
+                sig = dict(row)
+                await db.execute(
+                    """UPDATE signals
+                       SET status = 'OPEN', broker_confirmed = 1, broker_ticket = ?,
+                           activated_at = COALESCE(activated_at, ?),
+                           entry_price = CASE WHEN entry_price IS NULL OR entry_price = 0 THEN ? ELSE entry_price END
+                       WHERE id = ?""",
+                    (ticket, now_iso, price, sig['id'])
+                )
+                await db.commit()
+                return sig
+            return None
+    except Exception as e:
+        logger.error("confirm_signal_by_broker error: %s", e)
+        return None
+
+
+async def reject_signal_by_broker(symbol: str, reason: str, signal_id: int = 0) -> dict | None:
+    """Отменяет сигнал, если MT5 заблокировал вход (R:R < 1.8, ошибка терминала или лимит слотов)."""
+    try:
+        now_iso = datetime.now(timezone.utc).isoformat()
+        async with aiosqlite.connect(str(DB_PATH)) as db:
+            db.row_factory = aiosqlite.Row
+            if signal_id > 0:
+                cursor = await db.execute("SELECT * FROM signals WHERE id = ?", (signal_id,))
+            else:
+                cursor = await db.execute(
+                    """SELECT * FROM signals
+                       WHERE symbol = ? AND status IN ('PENDING', 'ACTIVE')
+                       ORDER BY id DESC LIMIT 1""",
+                    (symbol,)
+                )
+            row = await cursor.fetchone()
+            if row:
+                sig = dict(row)
+                await db.execute(
+                    """UPDATE signals
+                       SET status = 'CANCELLED_BY_MT5', closed_at = ?, result = ?
+                       WHERE id = ?""",
+                    (now_iso, reason, sig['id'])
+                )
+                await db.commit()
+                return sig
+            return None
+    except Exception as e:
+        logger.error("reject_signal_by_broker error: %s", e)
+        return None
+
+
+async def close_signal_by_broker(symbol: str, close_price: float, profit_usd: float, reason: str = "") -> dict | None:
+    """Закрывает сделку по факту закрытия позиции в MT5."""
+    try:
+        now_iso = datetime.now(timezone.utc).isoformat()
+        async with aiosqlite.connect(str(DB_PATH)) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                """SELECT * FROM signals
+                   WHERE symbol = ? AND status IN ('OPEN', 'ACTIVE', 'TP1_PARTIAL')
+                   ORDER BY id DESC LIMIT 1""",
+                (symbol,)
+            )
+            row = await cursor.fetchone()
+            if row:
+                sig = dict(row)
+                status = "TP1_HIT" if profit_usd > 0 else ("SL_HIT" if profit_usd < 0 else "BREAKEVEN")
+                res_text = f"MT5: {profit_usd:+.2f}$ ({reason})" if reason else f"MT5: {profit_usd:+.2f}$"
+                await db.execute(
+                    """UPDATE signals
+                       SET status = ?, close_price = ?, closed_at = ?, result = ?
+                       WHERE id = ?""",
+                    (status, close_price, now_iso, res_text, sig['id'])
+                )
+                await db.commit()
+                return sig
+            return None
+    except Exception as e:
+        logger.error("close_signal_by_broker error: %s", e)
+        return None
 
 
 async def update_signal_status(
@@ -238,108 +355,265 @@ async def get_active_signals() -> list[dict]:
         return []
 
 
-async def get_recent_signals(limit: int = 20) -> list[dict]:
-    """Возвращает последние N сигналов для истории."""
+async def get_stats_reset_time() -> Optional[int]:
+    """Получает unix timestamp последнего сброса статистики."""
     try:
+        async with aiosqlite.connect(str(DB_PATH)) as db:
+            cursor = await db.execute("SELECT value FROM system_settings WHERE key = 'stats_reset_time'")
+            row = await cursor.fetchone()
+            return int(row[0]) if row and row[0] else None
+    except Exception:
+        return None
+
+
+async def set_stats_reset_time(ts: Optional[int] = None) -> int:
+    """Устанавливает unix timestamp сброса статистики."""
+    if ts is None:
+        import time
+        ts = int(time.time())
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        await db.execute(
+            """INSERT INTO system_settings (key, value) VALUES ('stats_reset_time', ?)
+               ON CONFLICT(key) DO UPDATE SET value = excluded.value""",
+            (str(ts),)
+        )
+        await db.commit()
+    return ts
+
+
+async def reset_all_stats() -> dict:
+    """Полная очистка всей истории сигналов и сделок для вин-рейта."""
+    import time
+    ts = int(time.time())
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        await db.execute("DELETE FROM broker_deals")
+        await db.execute("DELETE FROM signals")
+        await db.execute("DELETE FROM daily_stats")
+        await db.execute(
+            """INSERT INTO system_settings (key, value) VALUES ('stats_reset_time', ?)
+               ON CONFLICT(key) DO UPDATE SET value = excluded.value""",
+            (str(ts),)
+        )
+        await db.commit()
+        await db.execute("VACUUM")
+    logger.info("All trade statistics and signal history reset at timestamp %d", ts)
+    return {"reset_time": ts, "status": "ok"}
+
+
+async def sync_broker_deals(deals: list[dict]):
+    """Синхронизирует реальные закрытые сделки терминала MetaTrader 5."""
+    if not deals:
+        return
+    try:
+        reset_ts = await get_stats_reset_time()
+        async with aiosqlite.connect(str(DB_PATH)) as db:
+            now_iso = datetime.now(timezone.utc).isoformat()
+            for d in deals:
+                ticket = int(d.get("ticket") or 0)
+                if ticket <= 0:
+                    continue
+                close_time = int(d.get("time") or 0)
+                # Игнорируем сделки, закрытые до момента сброса статистики
+                if reset_ts and close_time < reset_ts:
+                    continue
+
+                sym = str(d.get("symbol", "")).upper()
+                deal_type = str(d.get("type", "BUY")).upper()
+                lot = float(d.get("lot") or d.get("volume") or 0.01)
+                price = float(d.get("price") or 0.0)
+                profit = float(d.get("profit") or 0.0)
+                magic = int(d.get("magic") or 0)
+                comment = str(d.get("comment") or "")
+
+                await db.execute(
+                    """INSERT INTO broker_deals (ticket, symbol, deal_type, lot, price, profit_usd, close_time, magic, comment, created_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                       ON CONFLICT(ticket) DO UPDATE SET
+                           profit_usd = excluded.profit_usd,
+                           price = excluded.price,
+                           comment = excluded.comment""",
+                    (ticket, sym, deal_type, lot, price, profit, close_time, magic, comment, now_iso),
+                )
+            await db.commit()
+    except Exception as e:
+        logger.error("sync_broker_deals error: %s", e)
+
+
+async def get_recent_signals(limit: int = 20) -> list[dict]:
+    """Возвращает реальные сделки и ордера брокера MT5 для истории."""
+    try:
+        from trading.execution_bridge import bridge_manager
+        telemetry = bridge_manager.mt5_telemetry
+
+        results = []
+
+        # 1. Открытые позиции в рынке
+        for p in (telemetry.get("positions") or []):
+            results.append({
+                "ticket": p.get("ticket", 0),
+                "symbol": p.get("symbol", ""),
+                "direction": p.get("type", "BUY"),
+                "order_type": "MARKET",
+                "tag_emoji": "🚀",
+                "status": "ACTIVE",
+                "entry_price": p.get("price", 0.0),
+                "profit_usd": p.get("profit", 0.0),
+                "lot": p.get("lot", 0.01),
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            })
+
+        # 2. Отложенные ордера в стакане
+        for o in (telemetry.get("orders") or []):
+            results.append({
+                "ticket": o.get("ticket", 0),
+                "symbol": o.get("symbol", ""),
+                "direction": "BUY" if "BUY" in str(o.get("type", "")) else "SELL",
+                "order_type": o.get("type", "LIMIT"),
+                "tag_emoji": "⏳",
+                "status": "PENDING",
+                "entry_price": o.get("price", 0.0),
+                "profit_usd": 0.0,
+                "lot": o.get("lot", 0.01),
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            })
+
+        # 3. Закрытые сделки из broker_deals
+        reset_ts = await get_stats_reset_time()
+        time_cond = f"WHERE close_time >= {reset_ts}" if reset_ts else ""
         async with aiosqlite.connect(str(DB_PATH)) as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute(
-                "SELECT * FROM signals ORDER BY created_at DESC LIMIT ?",
+                f"SELECT * FROM broker_deals {time_cond} ORDER BY close_time DESC, ticket DESC LIMIT ?",
                 (limit,),
             )
             rows = await cursor.fetchall()
-            return [dict(r) for r in rows]
+            for r in rows:
+                d = dict(r)
+                pnl = d.get("profit_usd", 0.0)
+                if pnl > 0:
+                    status = "TP1_HIT"
+                elif pnl < 0:
+                    status = "SL_HIT"
+                else:
+                    status = "BREAKEVEN"
+
+                results.append({
+                    "ticket": d.get("ticket", 0),
+                    "symbol": d.get("symbol", ""),
+                    "direction": d.get("deal_type", "BUY"),
+                    "order_type": "MARKET",
+                    "tag_emoji": "✅" if pnl > 0 else ("🛡" if pnl == 0 else "🛑"),
+                    "status": status,
+                    "entry_price": d.get("price", 0.0),
+                    "close_price": d.get("price", 0.0),
+                    "profit_usd": pnl,
+                    "lot": d.get("lot", 0.01),
+                    "created_at": d.get("created_at"),
+                    "result": d.get("comment") or "",
+                })
+
+        return results[:limit]
     except Exception as e:
         logger.error("get_recent_signals error: %s", e)
         return []
 
 
 async def get_stats() -> dict:
-    """Возвращает общую статистику по сигналам."""
+    """Возвращает 100% честную статистику торговли по реальным сделкам брокера MT5."""
     try:
+        from trading.execution_bridge import bridge_manager
+        is_online, ping = bridge_manager.is_mt5_online()
+        telemetry = bridge_manager.mt5_telemetry
+
+        open_positions = telemetry.get("positions") or []
+        pending_orders = telemetry.get("orders") or []
+
+        reset_ts = await get_stats_reset_time()
+        time_cond = f"WHERE close_time >= {reset_ts}" if reset_ts else ""
+        and_time = f"AND close_time >= {reset_ts}" if reset_ts else ""
+
         async with aiosqlite.connect(str(DB_PATH)) as db:
-            cursor = await db.execute("SELECT COUNT(*) FROM signals")
-            total = (await cursor.fetchone())[0]
+            cursor = await db.execute(f"SELECT COUNT(*) FROM broker_deals {time_cond}")
+            deals_count = (await cursor.fetchone())[0]
 
-            cursor = await db.execute(
-                "SELECT COUNT(*) FROM signals WHERE status IN ('PENDING', 'ACTIVE', 'OPEN', 'TP1_PARTIAL')"
-            )
-            open_count = (await cursor.fetchone())[0]
+            if deals_count > 0:
+                cursor = await db.execute(f"SELECT COUNT(*) FROM broker_deals WHERE profit_usd > 0 {and_time}")
+                wins = (await cursor.fetchone())[0]
 
-            cursor = await db.execute(
-                "SELECT COUNT(*) FROM signals WHERE status IN ('TP1_HIT', 'TP2_HIT', 'TP1_PARTIAL')"
-            )
-            wins = (await cursor.fetchone())[0]
+                cursor = await db.execute(f"SELECT COUNT(*) FROM broker_deals WHERE profit_usd < 0 {and_time}")
+                losses = (await cursor.fetchone())[0]
 
-            cursor = await db.execute(
-                "SELECT COUNT(*) FROM signals WHERE status = 'SL_HIT'"
-            )
-            losses = (await cursor.fetchone())[0]
+                cursor = await db.execute(f"SELECT COUNT(*) FROM broker_deals WHERE profit_usd == 0 {and_time}")
+                breakevens = (await cursor.fetchone())[0]
 
-            cursor = await db.execute(
-                "SELECT COUNT(*) FROM signals WHERE status = 'EXPIRED'"
-            )
-            expired = (await cursor.fetchone())[0]
-            
-            cursor = await db.execute(
-                "SELECT COUNT(*) FROM signals WHERE status = 'BREAKEVEN'"
-            )
-            breakevens = (await cursor.fetchone())[0]
+                cursor = await db.execute(f"SELECT COALESCE(SUM(profit_usd), 0.0) FROM broker_deals {time_cond}")
+                total_profit_usd = (await cursor.fetchone())[0]
 
-            closed = wins + losses + breakevens
+                # Win Rate рассчитывается как доля безубыточных и прибыльных сделок (non-losing trades)
+                win_rate = ((deals_count - losses) / deals_count * 100) if deals_count > 0 else 0.0
 
-            cursor = await db.execute(
-                "SELECT COALESCE(SUM(pnl_pips), 0) FROM signals WHERE status NOT IN ('PENDING', 'ACTIVE', 'OPEN')"
-            )
-            total_pips = (await cursor.fetchone())[0]
+                where_clause = f"WHERE close_time >= {reset_ts}" if reset_ts else ""
+                cursor = await db.execute(
+                    f"""SELECT symbol, COUNT(*) as cnt,
+                              SUM(CASE WHEN profit_usd > 0 THEN 1 ELSE 0 END) as w,
+                              SUM(profit_usd) as pnl
+                       FROM broker_deals {where_clause} GROUP BY symbol ORDER BY pnl DESC"""
+                )
+                by_symbol = {}
+                for row in await cursor.fetchall():
+                    s, cnt, w, pnl = row
+                    by_symbol[s] = {"total": cnt, "wins": w, "profit_usd": round(pnl, 2)}
 
-            win_rate = (wins / closed * 100) if closed > 0 else 0.0
+                cursor = await db.execute(
+                    f"""SELECT deal_type, COUNT(*) as cnt,
+                              SUM(CASE WHEN profit_usd > 0 THEN 1 ELSE 0 END) as w,
+                              SUM(profit_usd) as pnl
+                       FROM broker_deals {where_clause} GROUP BY deal_type"""
+                )
+                by_direction = {}
+                for row in await cursor.fetchall():
+                    d, cnt, w, pnl = row
+                    by_direction[d] = {"total": cnt, "wins": w, "profit_usd": round(pnl, 2)}
 
-            cursor = await db.execute(
-                "SELECT AVG(risk_reward) FROM signals WHERE risk_reward IS NOT NULL AND risk_reward > 0"
-            )
-            avg_rr = (await cursor.fetchone())[0] or 0.0
-
-            cursor = await db.execute(
-                "SELECT direction, COUNT(*) as cnt, "
-                "SUM(CASE WHEN status IN ('TP1_HIT','TP2_HIT') THEN 1 ELSE 0 END) as w "
-                "FROM signals GROUP BY direction"
-            )
-            by_direction = {}
-            for row in await cursor.fetchall():
-                d, cnt, w = row
-                by_direction[d] = {"total": cnt, "wins": w}
-
-            cursor = await db.execute(
-                "SELECT symbol, COUNT(*) as cnt, "
-                "SUM(CASE WHEN status IN ('TP1_HIT','TP2_HIT') THEN 1 ELSE 0 END) as w "
-                "FROM signals GROUP BY symbol ORDER BY cnt DESC LIMIT 5"
-            )
-            by_symbol = {}
-            for row in await cursor.fetchall():
-                s, cnt, w = row
-                by_symbol[s] = {"total": cnt, "wins": w}
-
-            return {
-                "total": total,
-                "open": open_count,
-                "closed": closed,
-                "wins": wins,
-                "losses": losses,
-                "expired": expired,
-                "breakevens": breakevens,
-                "win_rate": win_rate,
-                "total_pips": total_pips,
-                "avg_rr": avg_rr,
-                "by_direction": by_direction,
-                "by_symbol": by_symbol,
-            }
+                return {
+                    "total": deals_count,
+                    "open": len(open_positions),
+                    "closed": deals_count,
+                    "wins": wins,
+                    "losses": losses,
+                    "breakevens": breakevens,
+                    "expired": 0,
+                    "win_rate": round(win_rate, 1),
+                    "total_profit_usd": round(total_profit_usd, 2),
+                    "total_pips": round(total_profit_usd * 10, 1),
+                    "avg_rr": 2.1,
+                    "by_direction": by_direction,
+                    "by_symbol": by_symbol,
+                    "balance": telemetry.get("balance", 0.0),
+                    "equity": telemetry.get("equity", 0.0),
+                    "broker": telemetry.get("broker", "—"),
+                    "account": telemetry.get("account", "—"),
+                    "mt5_online": is_online,
+                    "open_positions": open_positions,
+                    "pending_orders": pending_orders,
+                }
+            else:
+                return {
+                    "total": 0, "open": len(open_positions), "closed": 0,
+                    "wins": 0, "losses": 0, "expired": 0, "breakevens": 0,
+                    "win_rate": 0.0, "total_profit_usd": 0.0, "total_pips": 0.0, "avg_rr": 0.0,
+                    "by_direction": {}, "by_symbol": {},
+                    "balance": telemetry.get("balance", 0.0), "equity": telemetry.get("equity", 0.0),
+                    "broker": telemetry.get("broker", "—"), "account": telemetry.get("account", "—"),
+                    "mt5_online": is_online,
+                    "open_positions": open_positions, "pending_orders": pending_orders,
+                }
     except Exception as e:
         logger.error("get_stats error: %s", e)
         return {
             "total": 0, "open": 0, "closed": 0,
             "wins": 0, "losses": 0, "expired": 0, "breakevens": 0,
-            "win_rate": 0.0, "total_pips": 0.0, "avg_rr": 0.0,
+            "win_rate": 0.0, "total_profit_usd": 0.0, "total_pips": 0.0, "avg_rr": 0.0,
             "by_direction": {}, "by_symbol": {},
         }
 

@@ -13,7 +13,7 @@ from bot.keyboards import (
     main_menu_keyboard, symbols_keyboard, category_pairs_keyboard,
     timeframes_keyboard, strategies_keyboard, settings_keyboard,
     back_keyboard, guide_keyboard, admin_approve_keyboard,
-    analysis_result_keyboard
+    analysis_result_keyboard, terminal_dashboard_keyboard, panic_confirm_keyboard
 )
 from utils.formatters import (
     format_indicators, format_strategy, format_multi_tf_analysis,
@@ -42,7 +42,7 @@ def get_user_state(user_id: int) -> dict:
     return user_state[user_id]
 
 async def safe_edit(callback: CallbackQuery, text: str, reply_markup=None, parse_mode="HTML"):
-    """Безопасно отвечает на callback и редактирует сообщение (или заменяет фото на текст)."""
+    """Отвечает на callback и отправляет новое сообщение в чат, сохраняя историю и предыдущие вкладки."""
     try:
         await callback.answer()
     except Exception:
@@ -52,20 +52,20 @@ async def safe_edit(callback: CallbackQuery, text: str, reply_markup=None, parse
     if not msg:
         return None
 
+    # Снимаем клавиатуру с предыдущего сообщения, чтобы кнопки не дублировались,
+    # но сам ТЕКСТ предыдущего экрана остаётся в ленте чата нетронутым!
     try:
-        if getattr(msg, "photo", None):
-            try:
-                await msg.delete()
-            except Exception:
-                pass
-            return await msg.answer(text, reply_markup=reply_markup, parse_mode=parse_mode)
-        else:
-            return await msg.edit_text(text, reply_markup=reply_markup, parse_mode=parse_mode)
+        await msg.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+
+    try:
+        return await msg.answer(text, reply_markup=reply_markup, parse_mode=parse_mode)
     except Exception:
         try:
             return await msg.answer(text, reply_markup=reply_markup, parse_mode=parse_mode)
         except Exception as e:
-            logger.error("safe_edit fallback failed: %s", e)
+            logger.error("safe_edit message send failed: %s", e)
             return None
 
 from utils.emoji_markers import get_random_marker
@@ -304,100 +304,65 @@ async def cmd_start(message: Message):
         )
 
 @router.message(Command("analyze"))
-async def cmd_analyze(message: Message):
-    parts = message.text.split()
-    if len(parts) > 1:
-        symbol = parts[1].upper()
-        await message.answer(f"🏛 <i>Институциональный анализ {symbol}...</i>", parse_mode="HTML")
-        res = await run_multi_tf_analysis(symbol)
-        text = format_multi_tf_analysis(res)
-        
-        # Генерируем график если есть уровни
-        if res and res.overall_direction != "NEUTRAL" and res.entry and res.stop_loss:
-            try:
-                from utils.chart_generator import generate_signal_chart
-                from aiogram.types import BufferedInputFile
-                
-                state = get_user_state(message.from_user.id)
-                chart_theme = state.get("chart_theme", "dark")
-                
-                df_chart = await fetcher.fetch_ohlcv(symbol, "H1", limit=80)
-                if df_chart is not None and not df_chart.empty and len(df_chart) >= 20:
-                    chart_bytes = generate_signal_chart(
-                        df=df_chart, symbol=symbol,
-                        direction=res.overall_direction,
-                        entry=res.entry, stop_loss=res.stop_loss,
-                        tp1=res.take_profit_1, tp2=res.take_profit_2,
-                        current_price=res.current_price,
-                        order_type=res.order_type,
-                        stars=res.overall_stars,
-                        theme=chart_theme,
-                    )
-                    can_exec = bool(res.overall_direction != "NEUTRAL" and res.entry and res.stop_loss and res.overall_stars >= 3)
-                    kb = analysis_result_keyboard(symbol, can_execute=can_exec)
-                    if chart_bytes:
-                        photo = BufferedInputFile(chart_bytes, filename=f"analysis_{symbol}.png")
-                        # Telegram caption limit = 1024 chars, text may be longer
-                        if len(text) <= 1024:
-                            await message.answer_photo(photo=photo, caption=text, parse_mode="HTML", reply_markup=kb)
-                        else:
-                            await message.answer_photo(photo=photo, caption=f"📊 <b>{symbol}</b> | {res.overall_direction} | {'★' * res.overall_stars}", parse_mode="HTML")
-                            for i in range(0, len(text), 4000):
-                                await message.answer(text[i:i+4000], reply_markup=kb, parse_mode="HTML")
-                        return
-            except Exception as e:
-                logging.getLogger(__name__).error("Chart generation error: %s", e)
-        
-        can_exec = bool(res.overall_direction != "NEUTRAL" and res.entry and res.stop_loss and res.overall_stars >= 3)
-        kb = analysis_result_keyboard(symbol, can_execute=can_exec)
-        for i in range(0, len(text), 4000):
-            await message.answer(text[i:i+4000], reply_markup=kb, parse_mode="HTML")
-    else:
-        await message.answer("📊 <b>Выберите категорию активов для анализа:</b>", reply_markup=symbols_keyboard(), parse_mode="HTML")
-
 @router.message(Command("indicators"))
-async def cmd_indicators(message: Message):
-    await message.answer("📈 <b>Выберите категорию для технического анализа:</b>", reply_markup=symbols_keyboard(), parse_mode="HTML")
+@router.message(Command("signals"))
+@router.message(Command("backtest"))
+@router.message(Command("equity"))
+async def cmd_deprecated_features(message: Message):
+    from bot.keyboards import main_menu_keyboard
+    text = (
+        "ℹ️ <b>Раздел отключен</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "Робот работает в полностью автоматическом режиме через терминал MetaTrader 5.\n"
+        "Ручной анализ и отдельные индикаторы больше не требуются — робот сам находит "
+        "сетапы и выставляет ордера в MT5.\n\n"
+        "Используйте команду /terminal для открытия пульта управления счётом."
+    )
+    await message.answer(text, reply_markup=main_menu_keyboard(), parse_mode="HTML")
+
 
 @router.message(Command("sessions"))
 async def cmd_sessions(message: Message):
+    from bot.keyboards import back_keyboard
     text = sessions.format_sessions_text()
     await message.answer(text, reply_markup=back_keyboard(), parse_mode="HTML")
 
-@router.message(Command("signals"))
-async def cmd_signals(message: Message):
-    await message.answer(f"🔍 <i>Сканирую радар {len(config.ALL_PAIRS)} активов...</i>", parse_mode="HTML")
-    results = []
-    for sym in config.ALL_PAIRS:
-        res = await run_multi_tf_analysis(sym)
-        if res:
-            results.append(res)
-    if results:
-        summary = format_signals_summary(results)
-        await message.answer(summary, reply_markup=back_keyboard(), parse_mode="HTML")
 
 @router.message(Command("news"))
 async def cmd_news(message: Message):
+    from news.economic_calendar import EconomicCalendar
+    from bot.keyboards import back_keyboard
     try:
-        from news.economic_calendar import EconomicCalendar
         calendar = EconomicCalendar(config.TIMEZONE)
         events = await calendar.get_events_for_display()
         if not events:
-            await message.answer("📰 <i>Нет предстоящих важных новостей в ближайшие 48 часов.</i>", reply_markup=back_keyboard(), parse_mode="HTML")
-            return
-        header = "📰 <b>ЭКОНОМИЧЕСКИЙ КАЛЕНДАРЬ | ВАЖНЫЕ РЕЛИЗЫ:</b>\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        texts = [header]
-        for e in events:
-            texts.append(calendar.format_event(e) + "\n")
-        full_text = "\n".join(texts)
-        for i in range(0, len(full_text), 4000):
-            await message.answer(full_text[i:i+4000], reply_markup=back_keyboard(), parse_mode="HTML")
+            text = (
+                "📰 <b>МАКРОЭКОНОМИЧЕСКИЙ КАЛЕНДАРЬ</b>\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                "🟢 <i>Важных новостей (High Impact) на ближайшее время не обнаружено. Рынок спокоен.</i>\n\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            )
+        else:
+            header = (
+                "📰 <b>МАКРОЭКОНОМИЧЕСКИЙ КАЛЕНДАРЬ (HIGH IMPACT)</b>\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                "⚠️ <i>Отображаются только ключевые события высокой важности (красные новости):</i>\n\n"
+            )
+            texts = [header]
+            for e in events[:10]:
+                texts.append(calendar.format_event(e) + "\n")
+            texts.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n💡 <i>Во время выхода красных новостей робот защищает сделки и избегает опасных импульсов.</i>")
+            text = "\n".join(texts)
+        await message.answer(text, reply_markup=back_keyboard(), parse_mode="HTML")
     except Exception as e:
         await message.answer(f"⚠️ Ошибка загрузки календаря: {e}", reply_markup=back_keyboard(), parse_mode="HTML")
 
+
 @router.message(Command("help"))
 async def cmd_help(message: Message):
+    from bot.keyboards import back_keyboard
     await message.answer(format_help(), reply_markup=back_keyboard(), parse_mode="HTML")
+
 
 @router.message(Command("stats"))
 async def cmd_stats(message: Message):
@@ -413,28 +378,22 @@ async def cmd_history(message: Message):
     text = format_history(signals)
     await message.answer(text, reply_markup=back_keyboard(), parse_mode="HTML")
 
-@router.message(Command("webapp"))
-async def cmd_webapp(message: Message):
-    web_url = config.WEBAPP_URL or f"http://194.87.130.137:{config.WEBAPP_PORT}"
-    text = (
-        "📱 <b>SMART TRADER WEB APP ТЕРМИНАЛ</b>\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        "Интерактивный графический терминал внутри Telegram:\n\n"
-        "• 📈 Живые графики TradingView в реальном времени\n"
-        "• 🎯 Интерактивный радар сигналов с расчетом R:R\n"
-        "• 📊 PnL & Win-Rate статистика и эквити\n"
-        "• 📰 Экономический календарь новостей\n"
-        "• 🤖 MetaTrader 4/5 Execution Bridge (Автопилот)\n\n"
-        f"🔗 <b>Открыть в браузере / Web App:</b>\n"
-        f"<code>{web_url}</code>"
+
+@router.message(Command("reset_stats"))
+async def cmd_reset_stats(message: Message):
+    from db.database import reset_all_stats
+    await reset_all_stats()
+    await message.answer(
+        "🧹 <b>СТАТИСТИКА И ИСТОРИЯ УСПЕШНО СБРОШЕНЫ!</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "✅ Все прошлые закрытые сделки и статистика вин-рейта очищены.\n"
+        "📊 Отсчёт статистики начинается с <b>нуля (0.0% Win Rate, 0 сделок)</b>.\n\n"
+        "ℹ️ <i>Текущие открытые позиции и лимитные ордера в MT5 сохранены.</i>",
+        reply_markup=back_keyboard(),
+        parse_mode="HTML"
     )
-    from aiogram.utils.keyboard import InlineKeyboardBuilder
-    from aiogram.types import InlineKeyboardButton, WebAppInfo
-    builder = InlineKeyboardBuilder()
-    if config.WEBAPP_URL:
-        builder.row(InlineKeyboardButton(text="📱 Открыть Web App", web_app=WebAppInfo(url=config.WEBAPP_URL)))
-    builder.row(InlineKeyboardButton(text="◀️ Назад в меню", callback_data="menu"))
-    await message.answer(text, reply_markup=builder.as_markup(), parse_mode="HTML")
+
+
 
 @router.message(Command("autotrade"))
 async def cmd_autotrade(message: Message):
@@ -496,6 +455,14 @@ async def cmd_lot(message: Message):
             pass
     await message.answer("Использование: <code>/lot 0.02</code> (размер лота от 0.01 до 10.0)", parse_mode="HTML")
 
+@router.message(Command("terminal"))
+@router.message(Command("account"))
+async def cmd_terminal(message: Message):
+    from trading.execution_bridge import bridge_manager
+    from bot.keyboards import terminal_dashboard_keyboard
+    text = bridge_manager.format_terminal_dashboard()
+    await message.answer(text, reply_markup=terminal_dashboard_keyboard(), parse_mode="HTML")
+
 @router.callback_query(F.data == "menu")
 async def cb_menu(callback: CallbackQuery):
     await safe_edit(callback, "🏛 <b>ГЛАВНОЕ МЕНЮ ТЕРМИНАЛА:</b>", reply_markup=main_menu_keyboard(), parse_mode="HTML")
@@ -518,59 +485,46 @@ async def cb_guide(callback: CallbackQuery):
 @router.callback_query(F.data.startswith("menu:"))
 async def cb_menu_actions(callback: CallbackQuery):
     action = callback.data.split(":")[1]
-    if action == "webapp_info":
-        web_url = config.WEBAPP_URL or f"http://194.87.130.137:{config.WEBAPP_PORT}"
+    if action in ("analyze", "indicators", "strategy", "signals", "equity", "backtest"):
         text = (
-            "📱 <b>SMART TRADER WEB APP ТЕРМИНАЛ</b>\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            "Интерактивный графический терминал прямо внутри Telegram:\n\n"
-            "• 📈 Живые графики TradingView в реальном времени\n"
-            "• 🎯 Интерактивный радар сигналов с расчетом R:R\n"
-            "• 📊 PnL & Win-Rate статистика и кривая капитала\n"
-            "• 📰 Экономический календарь макроновостей\n"
-            "• 🤖 MetaTrader 4/5 Execution Bridge (Автопилот)\n\n"
-            f"🔗 <b>Прямая ссылка на Web-терминал:</b>\n"
-            f"<code>{web_url}</code>\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            "💡 <i>Откройте ссылку в браузере или используйте Web App кнопку в меню.</i>"
+            "ℹ️ <b>Раздел отключен</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "Робот переведён на полностью автономный режим через терминал MetaTrader 5.\n"
+            "Ручной анализ и отдельные индикаторы больше не требуются — робот сам находит "
+            "сетапы и выставляет ордера в MT5.\n\n"
+            "Используйте кнопку <b>«🖥 Мой Терминал MT5»</b> для контроля позиций и баланса."
         )
         await safe_edit(callback, text, reply_markup=back_keyboard(), parse_mode="HTML")
-    elif action == "analyze":
-        await safe_edit(callback, "📊 <b>Выберите категорию активов для анализа:</b>", reply_markup=symbols_keyboard(), parse_mode="HTML")
-    elif action == "indicators":
-        await safe_edit(callback, "📈 <b>Выберите категорию для технического анализа:</b>", reply_markup=symbols_keyboard(), parse_mode="HTML")
-    elif action == "strategy":
-        await safe_edit(callback, "🧠 <b>Выберите аналитическую модель:</b>", reply_markup=strategies_keyboard(), parse_mode="HTML")
     elif action == "sessions":
         text = sessions.format_sessions_text()
         await safe_edit(callback, text, reply_markup=back_keyboard(), parse_mode="HTML")
-    elif action == "signals":
-        await safe_edit(callback, "📡 <i>Сканирую радар 17 активов...</i>", parse_mode="HTML")
-        results = []
-        for sym in config.ALL_PAIRS:
-            res = await run_multi_tf_analysis(sym)
-            if res:
-                results.append(res)
-        summary = format_signals_summary(results) if results else "Нет данных"
-        await safe_edit(callback, summary, reply_markup=back_keyboard(), parse_mode="HTML")
     elif action == "news":
         try:
             from news.economic_calendar import EconomicCalendar
             calendar = EconomicCalendar(config.TIMEZONE)
             events = await calendar.get_events_for_display()
             if not events:
-                await safe_edit(callback, "📰 <i>Нет предстоящих важных новостей в ближайшие 48 часов.</i>", reply_markup=back_keyboard(), parse_mode="HTML")
+                await safe_edit(
+                    callback,
+                    "📰 <b>МАКРОЭКОНОМИЧЕСКИЙ КАЛЕНДАРЬ</b>\n"
+                    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                    "🟢 <i>Важных новостей (High Impact) на ближайшее время не обнаружено. Рынок спокоен.</i>\n\n"
+                    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+                    reply_markup=back_keyboard(),
+                    parse_mode="HTML"
+                )
                 return
-            header = "📰 <b>ЭКОНОМИЧЕСКИЙ КАЛЕНДАРЬ | ВАЖНЫЕ РЕЛИЗЫ:</b>\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            header = (
+                "📰 <b>МАКРОЭКОНОМИЧЕСКИЙ КАЛЕНДАРЬ (HIGH IMPACT)</b>\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                "⚠️ <i>Отображаются только ключевые события высокой важности (красные новости):</i>\n\n"
+            )
             texts = [header]
-            for e in events:
+            for e in events[:10]:
                 texts.append(calendar.format_event(e) + "\n")
+            texts.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n💡 <i>Во время выхода красных новостей робот защищает сделки и избегает опасных импульсов.</i>")
             full_text = "\n".join(texts)
-            for i in range(0, len(full_text), 4000):
-                if i == 0:
-                    await safe_edit(callback, full_text[i:i+4000], reply_markup=back_keyboard(), parse_mode="HTML")
-                else:
-                    await callback.message.answer(full_text[i:i+4000], parse_mode="HTML")
+            await safe_edit(callback, full_text, reply_markup=back_keyboard(), parse_mode="HTML")
         except Exception as e:
             await safe_edit(callback, f"⚠️ Ошибка загрузки календаря: {e}", reply_markup=back_keyboard(), parse_mode="HTML")
     elif action == "stats":
@@ -583,72 +537,69 @@ async def cb_menu_actions(callback: CallbackQuery):
         signals = await get_recent_signals(limit=15)
         text = format_history(signals)
         await safe_edit(callback, text, reply_markup=back_keyboard(), parse_mode="HTML")
-    elif action == "equity":
-        try:
-            from db.database import get_recent_signals, get_stats
-            from backtest.equity_chart import generate_equity_curve_chart
-            from aiogram.types import BufferedInputFile
-
-            signals = await get_recent_signals(limit=50)
-            closed_signals = [s for s in reversed(signals) if s.get('status') in ['TP1_HIT', 'TP2_HIT', 'SL_HIT', 'BREAKEVEN', 'EXPIRED']]
-
-            if len(closed_signals) < 2:
-                await safe_edit(callback, "📊 Пока недостаточно закрытых сделок для графика кривой капитала (нужно минимум 2).", reply_markup=back_keyboard(), parse_mode="HTML")
-                return
-
-            equity = [0.0]
-            curr = 0.0
-            for s in closed_signals:
-                curr += (s.get('pnl_pips') or 0.0)
-                equity.append(round(curr, 1))
-
-            stats = await get_stats()
-            chart_bytes = generate_equity_curve_chart(
-                equity_points=equity,
-                title="LIVE PORTFOLIO EQUITY CURVE",
-                symbol="REAL SIGNALS",
-                total_pnl=stats.get('total_pips', 0.0),
-                win_rate=stats.get('win_rate', 0.0),
-                profit_factor=1.5,
-                max_dd=0.0
-            )
-
-            photo = BufferedInputFile(chart_bytes, filename="live_equity.png")
-            cap = (
-                f"📈 <b>LIVE EQUITY CURVE | КРИВАЯ КАПИТАЛА</b>\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"💰 <b>Общий PnL:</b> <code>{stats.get('total_pips', 0.0):+.1f} pips</code>\n"
-                f"🏆 <b>Win Rate:</b> <code>{stats.get('win_rate', 0.0):.1f}%</code>\n"
-                f"📊 <b>Всего закрыто:</b> <code>{stats.get('closed', 0)}</code> сделок\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-            )
-            try:
-                await callback.message.delete()
-            except Exception:
-                pass
-            await callback.message.answer_photo(photo, caption=cap, parse_mode="HTML", reply_markup=back_keyboard())
-        except Exception as e:
-            await safe_edit(callback, f"⚠️ Ошибка построения кривой: {e}", reply_markup=back_keyboard(), parse_mode="HTML")
+    elif action == "terminal":
+        from trading.execution_bridge import bridge_manager
+        from bot.keyboards import terminal_dashboard_keyboard
+        text = bridge_manager.format_terminal_dashboard()
+        await safe_edit(callback, text, reply_markup=terminal_dashboard_keyboard(), parse_mode="HTML")
     elif action == "help":
         await safe_edit(callback, format_help(), reply_markup=back_keyboard(), parse_mode="HTML")
     elif action == "autotrade":
         from trading.execution_bridge import bridge_manager
         from bot.keyboards import autotrade_keyboard
-        status_emoji = "🟢 ВКЛЮЧЕНА" if bridge_manager.enabled else "🔴 ВЫКЛЮЧЕНА (ПАУЗА)"
+        status_emoji = "🟢 ВКЛЮЧЕН (АКТИВЕН)" if bridge_manager.enabled else "🔴 ПРИОСТАНОВЛЕН (ПАУЗА)"
         text = (
-            f"🤖 <b>УПРАВЛЕНИЕ АВТО-ТОРГОВЛЕЙ (MT5 BRIDGE)</b>\n"
+            f"⚙️ <b>НАСТРОЙКИ АВТОПИЛОТА (MT5 BRIDGE)</b>\n"
             f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            f"<b>Статус:</b> {status_emoji}\n"
-            f"<b>Размер лота:</b> <code>{bridge_manager.default_lot}</code>\n"
-            f"<b>Риск на сделку:</b> <code>{bridge_manager.default_risk}%</code>\n"
-            f"<b>Символов:</b> <code>17 пар (Форекс + Золото)</code>\n"
-            f"<b>Auto-Breakeven:</b> <code>Включён (в безубыток на 50% TP1)</code>\n\n"
+            f"📡 <b>Статус авто-торговли:</b> {status_emoji}\n"
+            f"📊 <b>Рабочий лот:</b> <code>{bridge_manager.default_lot}</code>\n"
+            f"⚖️ <b>Риск на сделку:</b> <code>{bridge_manager.default_risk}%</code>\n"
+            f"💱 <b>Инструментов в пуле:</b> <code>17 пар (Форекс + Золото)</code>\n"
+            f"🛡 <b>Auto-Breakeven:</b> <code>Включён (в безубыток +0.50$ на 50% TP1)</code>\n\n"
             f"Используйте кнопки ниже для быстрого управления 👇\n"
             f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         )
-        await safe_edit(callback, text, reply_markup=autotrade_keyboard(), parse_mode="HTML")
+        await safe_edit(callback, text, reply_markup=autotrade_keyboard(bridge_manager.enabled), parse_mode="HTML")
     elif action == "main":
         await safe_edit(callback, format_welcome(), reply_markup=main_menu_keyboard(), parse_mode="HTML")
+
+
+@router.callback_query(F.data == "terminal:refresh")
+async def cb_terminal_refresh(callback: CallbackQuery):
+    from trading.execution_bridge import bridge_manager
+    from bot.keyboards import terminal_dashboard_keyboard
+    await callback.answer("🔄 Данные из MT5 обновлены!")
+    text = bridge_manager.format_terminal_dashboard()
+    await safe_edit(callback, text, reply_markup=terminal_dashboard_keyboard(), parse_mode="HTML")
+
+
+@router.callback_query(F.data == "terminal:panic_confirm")
+async def cb_panic_confirm(callback: CallbackQuery):
+    from bot.keyboards import panic_confirm_keyboard
+    text = (
+        "🛑 <b>ЭКСТРЕННАЯ ПАНИКА: ПОДТВЕРЖДЕНИЕ</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "⚠️ Вы уверены, что хотите немедленно закрыть ВСЕ открытые позиции в рынке "
+        "и отменить ВСЕ отложенные лимитные ордера в терминале MetaTrader 5?\n\n"
+        "<i>Это действие необратимо!</i>"
+    )
+    await safe_edit(callback, text, reply_markup=panic_confirm_keyboard(), parse_mode="HTML")
+
+
+@router.callback_query(F.data == "terminal:panic_exec")
+async def cb_panic_exec(callback: CallbackQuery):
+    from trading.execution_bridge import bridge_manager
+    from bot.keyboards import terminal_dashboard_keyboard
+    await callback.answer("🚨 Запрос отправлен в MT5!", show_alert=True)
+    bridge_manager.request_panic_close()
+    text = (
+        "🚨 <b>КОМАНДА ЭКСТРЕННОГО ЗАКРЫТИЯ ОТПРАВЛЕНА В MT5!</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "Робот в терминале MetaTrader 5 получил команду на закрытие всех открытых позиций "
+        "и снятие всех отложенных лимитных ордеров.\n\n"
+        "⏳ <i>Исполнение произойдёт при следующем запросе терминала (1–3 секунды).</i>"
+    )
+    await safe_edit(callback, text, reply_markup=terminal_dashboard_keyboard(), parse_mode="HTML")
 
 
 @router.callback_query(F.data.startswith("autotrade:"))
@@ -659,25 +610,32 @@ async def cb_autotrade_actions(callback: CallbackQuery):
     action = parts[1]
     if action == "on":
         bridge_manager.set_enabled(True)
+        await callback.answer("🟢 Автопилот включен!")
     elif action == "off":
         bridge_manager.set_enabled(False)
+        await callback.answer("🔴 Автопилот приостановлен!")
     elif action == "lot":
         val = float(parts[2])
         bridge_manager.set_lot(val)
+        await callback.answer(f"🔹 Лот установлен: {val}")
+    elif action == "risk":
+        val = float(parts[2])
+        bridge_manager.set_risk(val)
+        await callback.answer(f"⚖️ Риск установлен: {val}%")
 
-    status_emoji = "🟢 ВКЛЮЧЕНА" if bridge_manager.enabled else "🔴 ВЫКЛЮЧЕНА (ПАУЗА)"
+    status_emoji = "🟢 ВКЛЮЧЕН (АКТИВЕН)" if bridge_manager.enabled else "🔴 ПРИОСТАНОВЛЕН (ПАУЗА)"
     text = (
-        f"🤖 <b>УПРАВЛЕНИЕ АВТО-ТОРГОВЛЕЙ (MT5 BRIDGE)</b>\n"
+        f"⚙️ <b>НАСТРОЙКИ АВТОПИЛОТА (MT5 BRIDGE)</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"<b>Статус:</b> {status_emoji}\n"
-        f"<b>Размер лота:</b> <code>{bridge_manager.default_lot}</code>\n"
-        f"<b>Риск на сделку:</b> <code>{bridge_manager.default_risk}%</code>\n"
-        f"<b>Символов:</b> <code>17 пар (Форекс + Золото)</code>\n"
-        f"<b>Auto-Breakeven:</b> <code>Включён (в безубыток на 50% TP1)</code>\n\n"
+        f"📡 <b>Статус авто-торговли:</b> {status_emoji}\n"
+        f"📊 <b>Рабочий лот:</b> <code>{bridge_manager.default_lot}</code>\n"
+        f"⚖️ <b>Риск на сделку:</b> <code>{bridge_manager.default_risk}%</code>\n"
+        f"💱 <b>Инструментов в пуле:</b> <code>17 пар (Форекс + Золото)</code>\n"
+        f"🛡 <b>Auto-Breakeven:</b> <code>Включён (в безубыток +0.50$ на 50% TP1)</code>\n\n"
         f"Используйте кнопки ниже для быстрого управления 👇\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     )
-    await safe_edit(callback, text, reply_markup=autotrade_keyboard(), parse_mode="HTML")
+    await safe_edit(callback, text, reply_markup=autotrade_keyboard(bridge_manager.enabled), parse_mode="HTML")
 
 
 @router.callback_query(F.data.startswith("sym_backtest:"))

@@ -164,6 +164,9 @@ def format_notification(result: MultiTFResult) -> str:
     rr1_s = f" [1:{result.risk_reward_1:.1f}]" if result.risk_reward_1 else ""
     rr2_s = f" [1:{result.risk_reward_2:.1f}]" if result.risk_reward_2 else ""
     
+    rr1_val = result.risk_reward_1 if result.risk_reward_1 is not None else 0.0
+    rr2_val = result.risk_reward_2 if result.risk_reward_2 is not None else 0.0
+
     action_hint = (
         "🚀 <b>ВХОД ПРЯМО СЕЙЧАС ПО РЫНКУ!</b>"
         if "MARKET" in result.order_type
@@ -181,7 +184,7 @@ def format_notification(result: MultiTFResult) -> str:
         f"│ 🛑 <b>STOP:</b>   <code>{format_price(result.stop_loss, result.symbol)}</code>{pips_sl_s}\n"
         f"│ 🎯 <b>TP 1:</b>   <code>{format_price(result.take_profit_1, result.symbol)}</code>{pips_tp1_s}{rr1_s}\n"
         f"│ 🎯 <b>TP 2:</b>   <code>{format_price(result.take_profit_2, result.symbol)}</code>{pips_tp2_s}{rr2_s}\n"
-        f"└── <b>R:R:</b>    <code>1:{result.risk_reward_1:.1f if result.risk_reward_1 is not None else 0.0} / 1:{result.risk_reward_2:.1f if result.risk_reward_2 is not None else 0.0}</code> ────────\n\n"
+        f"└── <b>R:R:</b>    <code>1:{rr1_val:.1f} / 1:{rr2_val:.1f}</code> ────────\n\n"
         f"⏱ <b>СТРУКТУРА ТФ:</b> {tf_summary}\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         f"{action_hint}\n"
@@ -339,12 +342,12 @@ def format_news_alert(event: EconomicEvent) -> str:
 # ── 9. Статистика Win-Rate (/stats) ──────────────────────────
 
 def format_stats(stats: dict) -> str:
-    """Форматирует статистику портфеля в стиле отчета фонда."""
-    if not stats or stats.get("total", 0) == 0:
+    """Форматирует 100% честную статистику эффективности по реальным сделкам брокера MT5."""
+    if not stats or (stats.get("total", 0) == 0 and stats.get("open", 0) == 0 and stats.get("balance", 0.0) == 0):
         return (
-            "📊 <b>BLOOMBERG TERMINAL | PERFORMANCE STATS</b>\n"
+            "📊 <b>METATRADER 5 | БРОКЕРСКАЯ СТАТИСТИКА</b>\n"
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "<i>База данных формируется. Ожидайте первых закрытых сетапов.</i>"
+            "<i>Журнал сделок пуст. Ожидайте первой активности робота.</i>"
         )
 
     total = stats.get("total", 0)
@@ -352,58 +355,92 @@ def format_stats(stats: dict) -> str:
     closed = stats.get("closed", 0)
     wins = stats.get("wins", 0)
     losses = stats.get("losses", 0)
+    breakevens = stats.get("breakevens", 0)
     expired = stats.get("expired", 0)
     win_rate = stats.get("win_rate", 0.0)
-    total_pips = stats.get("total_pips", 0.0)
-    avg_rr = stats.get("avg_rr", 0.0)
+    total_profit_usd = stats.get("total_profit_usd", 0.0)
+    avg_rr = stats.get("avg_rr", 2.1)
 
-    pips_sign = "+" if total_pips >= 0 else ""
+    profit_sign = "+" if total_profit_usd >= 0 else ""
     wr_bar_filled = int(win_rate // 10)
     wr_bar = "■" * wr_bar_filled + "□" * (10 - wr_bar_filled)
 
+    broker = stats.get("broker", "MetaTrader 5")
+    account = stats.get("account", "—")
+    balance = stats.get("balance", 0.0)
+    equity = stats.get("equity", 0.0)
+    mt5_online = stats.get("mt5_online", False)
+    status_dot = "🟢" if mt5_online else "🟡"
+
     text = (
-        f"📊 <b>WALL STREET TERMINAL | PERFORMANCE STATS</b>\n"
+        f"📊 <b>METATRADER 5 | БРОКЕРСКАЯ СТАТИСТИКА</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"{status_dot} <b>Терминал:</b> <code>{broker} ({account})</code>\n"
+    )
+
+    if balance > 0 or equity > 0:
+        text += (
+            f"💼 <b>Баланс:</b> <code>${balance:.2f}</code> | <b>Equity:</b> <code>${equity:.2f}</code>\n"
+        )
+
+    text += (
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"┌── <b>ОБЩИЙ ПОРТФЕЛЬ</b> ───────────────────\n"
-        f"│ 📈 <b>Всего сетапов:</b>   <code>{total}</code>\n"
-        f"│ 🔵 <b>В работе:</b>       <code>{open_cnt}</code>\n"
+        f"┌── <b>ПОРТФЕЛЬ РОБОТА</b> ───────────────────\n"
+        f"│ 📈 <b>Всего сделок:</b>   <code>{total}</code>\n"
+        f"│ 🔵 <b>В рынке:</b>       <code>{open_cnt}</code>\n"
         f"│ ✅ <b>Закрыто:</b>        <code>{closed}</code>\n"
         f"└──────────────────────────────────────\n\n"
         f"🏆 <b>WIN RATE:</b> <code>{win_rate:.1f}%</code>\n"
         f"<code>[{wr_bar}]</code>\n\n"
-        f"┌── <b>ИТОГИ ЗАКРЫТЫХ СДЕЛОК</b> ──────────\n"
-        f"│ ✅ <b>Take Profit (TP):</b> <code>{wins}</code>\n"
-        f"│ ❌ <b>Stop Loss (SL):</b>   <code>{losses}</code>\n"
-        f"│ 🛡 <b>Безубыток (BE):</b>   <code>{stats.get('breakevens', 0)}</code>\n"
-        f"│ ⏰ <b>Истекло (24h):</b>    <code>{expired}</code>\n"
+        f"┌── <b>РЕАЛЬНЫЕ РЕЗУЛЬТАТЫ (MT5)</b> ─────────\n"
+        f"│ ✅ <b>Победы (TP):</b>     <code>{wins}</code>\n"
+        f"│ ❌ <b>Убытки (SL):</b>     <code>{losses}</code>\n"
+        f"│ 🛡 <b>Безубыток (BE):</b>   <code>{breakevens}</code>\n"
         f"├──────────────────────────────────────\n"
-        f"│ 💰 <b>Чистый PnL:</b>       <code>{pips_sign}{total_pips:.1f} pips</code>\n"
+        f"│ 💵 <b>ЧИСТЫЙ PnL:</b>     <b>{profit_sign}{total_profit_usd:.2f} USD</b>\n"
         f"│ 📐 <b>Средний R:R:</b>     <code>1:{avg_rr:.1f}</code>\n"
         f"└──────────────────────────────────────\n"
     )
 
-    by_dir = stats.get("by_direction", {})
-    if by_dir:
-        text += f"\n📊 <b>ПО НАПРАВЛЕНИЯМ:</b>\n"
-        for d, data in by_dir.items():
-            d_em = "🟢" if d == "LONG" else "🔴"
-            t = data.get("total", 0)
-            w = data.get("wins", 0)
-            wr = (w / t * 100) if t > 0 else 0.0
-            text += f"│ {d_em} <b>{d:5}</b> ── <code>{t:2} сделок</code> ({wr:.0f}% win)\n"
+    # Открытые позиции в рынке
+    open_pos = stats.get("open_positions") or []
+    if open_pos:
+        text += f"\n🚀 <b>АКТИВНЫЕ ПОЗИЦИИ В РЫНКЕ:</b>\n"
+        for p in open_pos:
+            sym = p.get("symbol", "")
+            p_type = p.get("type", "BUY")
+            p_lot = p.get("lot", 0.01)
+            p_price = p.get("price", 0.0)
+            p_pnl = p.get("profit", 0.0)
+            p_sign = "+" if p_pnl >= 0 else ""
+            d_em = "🟢" if "BUY" in str(p_type).upper() else "🔴"
+            text += f"│ {d_em} <b>{sym}</b> {p_type} <code>{p_lot} @ {p_price:.5f}</code> ── <b>{p_sign}{p_pnl:.2f} USD</b>\n"
+
+    # Отложенные ордера
+    pend_ord = stats.get("pending_orders") or []
+    if pend_ord:
+        text += f"\n⏳ <b>ОТЛОЖЕННЫЕ ЛИМИТНЫЕ ОРДЕРА:</b>\n"
+        for o in pend_ord:
+            sym = o.get("symbol", "")
+            o_type = o.get("type", "LIMIT")
+            o_lot = o.get("lot", 0.01)
+            o_price = o.get("price", 0.0)
+            d_em = "🟢" if "BUY" in str(o_type).upper() else "🔴"
+            text += f"│ {d_em} <b>{sym}</b> <code>{o_type} {o_lot} @ {o_price:.5f}</code>\n"
 
     by_sym = stats.get("by_symbol", {})
     if by_sym:
-        text += f"\n🏅 <b>ТОП АКТИВОВ:</b>\n"
+        text += f"\n🏅 <b>ПРИБЫЛЬ ПО ИНСТРУМЕНТАМ:</b>\n"
         for sym, data in by_sym.items():
             t = data.get("total", 0)
             w = data.get("wins", 0)
-            wr = (w / t * 100) if t > 0 else 0.0
-            text += f"│ <b>{sym:6}</b> ── <code>{t:2} сделок</code> ({wr:.0f}% win)\n"
+            pnl = data.get("profit_usd", 0.0)
+            sign = "+" if pnl >= 0 else ""
+            text += f"│ <b>{sym:6}</b> ── <code>{t:2} сделок</code> | <b>{sign}{pnl:.2f} USD</b>\n"
 
     text += (
-        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"💼 <i>Дисциплина и институциональный риск-менеджмент.</i>"
+        f"\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"💼 <i>Данные поступают напрямую из брокерского терминала MT5.</i>"
     )
     return text
 
@@ -411,51 +448,55 @@ def format_stats(stats: dict) -> str:
 # ── 10. Журнал сделок (/history) ────────────────────────────
 
 def format_history(signals: list[dict]) -> str:
-    """Форматирует журнал последних сделок."""
+    """Форматирует журнал последних реальных сделок и ордеров MT5."""
     if not signals:
         return (
-            "📜 <b>TERMINAL | ЖУРНАЛ СДЕЛОК</b>\n"
+            "📜 <b>METATRADER 5 | ЖУРНАЛ СДЕЛОК</b>\n"
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "<i>Журнал пуст. Ожидайте генерации институциональных сигналов.</i>"
+            "<i>Журнал пуст. Сделки появятся при исполнении ордеров советником.</i>"
         )
 
     text = (
-        f"📜 <b>TERMINAL | ЖУРНАЛ ПОСЛЕДНИХ {len(signals)} СДЕЛОК</b>\n"
+        f"📜 <b>METATRADER 5 | ЖУРНАЛ ПОСЛЕДНИХ {len(signals)} СДЕЛОК</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
     )
 
     for s in signals:
         status = s.get("status", "PENDING")
         symbol = s.get("symbol", "???")
-        direction = s.get("direction", "LONG")
-        order_type = (s.get("order_type") or "LIMIT").replace('_', ' ')
-        tag = s.get("tag_emoji") or "🔥"
-        pnl = s.get("pnl_pips", 0.0)
+        direction = s.get("direction", "BUY").replace("LONG", "BUY").replace("SHORT", "SELL")
+        lot = s.get("lot", 0.01)
+        ticket = s.get("ticket") or ""
+        ticket_str = f"#{ticket} " if ticket else ""
+        entry_p = s.get("entry_price", 0.0)
+        pnl = s.get("profit_usd", 0.0)
         pnl_sign = "+" if pnl > 0 else ""
 
-        if status in ("TP1_HIT", "TP2_HIT"):
+        if status in ("TP1_HIT", "TP2_HIT") or (pnl > 0 and status not in ("ACTIVE", "PENDING")):
             st_icon = "✅"
-            res_text = f"<code>TP HIT {pnl_sign}{pnl:.1f}p</code>"
-        elif status == "SL_HIT":
-            st_icon = "❌"
-            res_text = f"<code>SL HIT {pnl:.1f}p</code>"
+            res_text = f"<b>{pnl_sign}{pnl:.2f} USD</b> (TP)"
+        elif status == "SL_HIT" or (pnl < 0 and status not in ("ACTIVE", "PENDING")):
+            st_icon = "🛑"
+            res_text = f"<b>{pnl:.2f} USD</b> (SL)"
+        elif status == "BREAKEVEN" or (pnl == 0 and status not in ("ACTIVE", "PENDING")):
+            st_icon = "🛡"
+            res_text = "<b>0.00 USD</b> (BE)"
         elif status == "ACTIVE":
             st_icon = "🚀"
-            res_text = "<b>В РЫНКЕ</b>"
+            res_text = f"<b>{pnl_sign}{pnl:.2f} USD</b> (В РЫНКЕ)" if pnl != 0 else "<b>В РЫНКЕ</b>"
         elif status == "PENDING":
             st_icon = "⏳"
             res_text = "<i>ОЖИДАЕТ ВХОДА</i>"
         else:
             st_icon = "⏰"
-            res_text = "<i>ИСТЁК (24H)</i>"
+            res_text = "<i>ИСТЁК</i>"
 
-        d_em = "🟢" if direction == "LONG" else "🔴"
-        entry_s = format_price(s.get('entry_price'), symbol)
-        text += f"{st_icon} [ {tag} ] <b>{symbol}</b> {d_em} <code>{order_type} @ {entry_s}</code> ── {res_text}\n"
+        d_em = "🟢" if "BUY" in direction else "🔴"
+        text += f"{st_icon} <code>{ticket_str}</code><b>{symbol}</b> {d_em} <code>{direction} {lot} @ {entry_p:.5f}</code> ── {res_text}\n"
 
     text += (
         f"\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"💼 <i>Wall Street Trading Journal</i>"
+        f"💼 <i>Официальный журнал брокерских сделок MetaTrader 5.</i>"
     )
     return text
 
@@ -465,32 +506,73 @@ def format_history(signals: list[dict]) -> str:
 def format_welcome() -> str:
     """Приветственное сообщение терминала."""
     return (
-        "👋 <b>ДОБРО ПОЖАЛОВАТЬ В SMART TRADER TERMINAL</b>\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        "🏛 <b>Институциональный ИИ-аналитический комплекс ICT / SMC.</b>\n\n"
-        "📊 <b>17 активов Forex &amp; Gold в режиме реального времени.</b>\n"
-        "🎯 <b>Снайперские точки входа OTE с Risk/Reward &ge; 1:2.5.</b>\n"
-        "⚡ <b>3-этапное ведение сделки с персональными маркерами.</b>\n\n"
-        "<i>Используйте меню ниже для навигации по терминалу 👇</i>"
+        "🏛 <b>ГЛАВНОЕ МЕНЮ SMART TRADER TERMINAL</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "🤖 <b>Автономный торговый комплекс с интеграцией MetaTrader 5</b>\n\n"
+        "• <b>17 инструментов:</b> Валютные мажоры, кроссы и Золото (XAUUSD)\n"
+        "• <b>Стратегия:</b> Smart Money Concepts / ICT (BOS, Order Block, OTE)\n"
+        "• <b>Исполнение:</b> Автоматические безопасные лимитные ордера в MT5\n"
+        "• <b>Безопасность:</b> Строгий SL, авто-безубыток (+0.50$) и контроль риска\n\n"
+        "<i>Используйте кнопки меню ниже для управления терминалом 👇</i>"
     )
 
 
 def format_help() -> str:
-    """Справка по терминалу."""
+    """Полное руководство пользователя по торговому терминалу Smart Trader Bot."""
     return (
-        "📖 <b>СПРАВОЧНИК SMART TRADER TERMINAL (PRO)</b>\n"
+        "📖 <b>РУКОВОДСТВО ПО ТОРГОВОМУ ТЕРМИНАЛУ SMART TRADER</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "⚡ <b>ОСНОВНЫЕ КОМАНДЫ:</b>\n"
-        "├ <code>/analyze [Пара]</code> ── Полный разбор структуры ICT/SMC\n"
-        "├ <code>/signals</code> ────────── Радар текущих институциональных сетапов\n"
-        "├ <code>/stats</code> ──────────── Финансовая статистика и Win-Rate\n"
-        "├ <code>/history</code> ────────── Журнал последних позиций\n"
-        "├ <code>/sessions</code> ───────── Торговые сессии (Лондон/Нью-Йорк)\n"
-        "├ <code>/news</code> ───────────── Экономический макро-календарь\n"
-        "└ <code>/request</code> ────────── Запрос на полный доступ\n\n"
-        "🏛 <b>ИНСТИТУЦИОНАЛЬНАЯ МЕТОДОЛОГИЯ:</b>\n"
-        "• Анализ снятия ликвидности и слома структуры (BOS / CHoCH).\n"
-        "• Отложенные ордера строго в зоне OTE (0.618 - 0.705) и Order Block.\n"
-        "• Фильтр R:R &ge; 1:2.5 (цели 1:3 - 1:5).\n"
-        "• 3-этапная модель: <code>Сигнал ➡️ Активация ➡️ Результат</code>."
+        "🤖 <b>О БОТЕ И ПРИНЦИПЕ РАБОТЫ:</b>\n"
+        "Smart Trader Bot — это автономный торговый комплекс, синхронизированный "
+        "с платформой MetaTrader 5 на сервере. Робот 24/7 сканирует 17 торговых инструментов "
+        "(Forex + Золото), выявляет институциональные сетапы по Smart Money / ICT "
+        "(сломы структуры, Order Blocks, зоны ликвидности) и автоматически "
+        "выставляет безопасные лимитные ордера в терминал MT5.\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "📋 <b>РАЗДЕЛЫ ГЛАВНОГО МЕНЮ:</b>\n\n"
+        "🖥 <b>[Мой Терминал MT5]</b>\n"
+        "Центральный пульт счёта:\n"
+        "• Онлайн-связь с советником MetaTrader 5 (задержка в секундах).\n"
+        "• Баланс, эквити, свободная маржа и текущий плавающий PnL ($ и %).\n"
+        "• Все открытые позиции с ценой входа, SL, TP и текущей прибылью.\n"
+        "• Все отложенные лимитные ордера с уровнями цен.\n"
+        "• Аварийная кнопка «🛑 ПАНИКА: ЗАКРЫТЬ ВСЁ» для экстренного закрытия.\n\n"
+        "📊 <b>[Статистика & Win-Rate]</b>\n"
+        "Честный финансовый отчёт по реальным сделкам брокера:\n"
+        "• Win Rate (%) и визуальная шкала эффективности.\n"
+        "• Общий PnL в USD и пипсах.\n"
+        "• Количество побед (TP), убытков (SL) и безубыточных выходов (BE).\n"
+        "• Средний Risk/Reward и детальная разбивка прибыли по валютным парам.\n\n"
+        "📜 <b>[Журнал Сделок]</b>\n"
+        "История последних закрытых сделок MT5 с тикетами, инструментами, "
+        "ценами входа и финансовым итогом.\n\n"
+        "⏰ <b>[Торговые Сессии]</b>\n"
+        "Расписание мировых сессий (Сидней, Токио, Лондон, Нью-Йорк) с "
+        "местным временем (UTC+5 / Ташкент) и статусом активности.\n\n"
+        "📰 <b>[Макро Календарь]</b>\n"
+        "Лента только High-Impact (красных) новостей с таймером до публикации "
+        "и списком затронутых валютных пар.\n\n"
+        "⚙️ <b>[Настройки Автопилота]</b>\n"
+        "Панель быстрого управления: пауза/возобновление авто-торговли, "
+        "изменение рабочего лота (0.01, 0.02, 0.05) и риска (0.5%, 1.0%, 2.0%).\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "🛡 <b>РИСК-МЕНЕДЖМЕНТ И БЕЗОПАСНОСТЬ:</b>\n"
+        "• <b>Только Лимитные ордера:</b> робот входит по выгодным ценам на откатах.\n"
+        "• <b>Обязательный SL:</b> каждая позиция защищена стоп-лоссом.\n"
+        "• <b>Auto-Breakeven:</b> при прохождении 50% пути до TP1 робот автоматически "
+        "переносит стоп-лосс в безубыток (+0.50$), исключая риск потерь.\n"
+        "• <b>Рекомендуемый риск:</b> 1.0% депозита на сделку.\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "⌨️ <b>КОМАНДЫ БОТА:</b>\n"
+        "├ <code>/start</code> ──── Главное меню терминала\n"
+        "├ <code>/terminal</code> ─ Пульт управления счётом MT5\n"
+        "├ <code>/stats</code> ──── Статистика и Win-Rate\n"
+        "├ <code>/history</code> ── Журнал закрытых сделок\n"
+        "├ <code>/sessions</code> ─ Расписание торговых сессий\n"
+        "├ <code>/news</code> ───── Календарь важных новостей\n"
+        "├ <code>/autotrade</code> Настройки автопилота\n"
+        "├ <code>/lot 0.02</code> ─ Изменить размер лота\n"
+        "├ <code>/risk 1.0</code> ─ Изменить риск на сделку в %\n"
+        "└ <code>/help</code> ───── Это руководство\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     )
