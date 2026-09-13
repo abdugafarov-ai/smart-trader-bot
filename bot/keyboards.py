@@ -3,7 +3,7 @@ Smart Trader Bot — Keyboards.
 Стиль: 🏛 «Wall Street / Bloomberg Terminal».
 """
 
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 import config
 
@@ -11,50 +11,62 @@ import config
 def main_menu_keyboard() -> InlineKeyboardMarkup:
     """Главное меню терминала."""
     builder = InlineKeyboardBuilder()
-    
-    # Кнопка Web App на первом месте
-    if config.WEBAPP_URL:
-        builder.row(
-            InlineKeyboardButton(text="📱 ОТКРЫТЬ WEB APP ТЕРМИНАЛ", web_app=WebAppInfo(url=config.WEBAPP_URL))
-        )
-    else:
-        builder.row(
-            InlineKeyboardButton(text="📱 Терминал Web App", callback_data="menu:webapp_info")
-        )
 
+    # 1. Центральный пульт MT5
     builder.row(
-        InlineKeyboardButton(text="🤖 Авто-Торговля MT5", callback_data="menu:autotrade"),
-        InlineKeyboardButton(text="📡 Радар Сигналов", callback_data="menu:signals")
+        InlineKeyboardButton(text="🖥 Мой Терминал MT5", callback_data="menu:terminal")
     )
+    # 2. Результаты и история
     builder.row(
-        InlineKeyboardButton(text="📊 Анализ Актива", callback_data="menu:analyze"),
-        InlineKeyboardButton(text="📈 Индикаторы", callback_data="menu:indicators")
-    )
-    builder.row(
-        InlineKeyboardButton(text="🧠 Модель ICT / SMC", callback_data="menu:strategy"),
-        InlineKeyboardButton(text="⏰ Торговые Сессии", callback_data="menu:sessions")
-    )
-    builder.row(
-        InlineKeyboardButton(text="📰 Макро Календарь", callback_data="menu:news"),
-        InlineKeyboardButton(text="📈 Кривая PnL", callback_data="menu:equity")
-    )
-    builder.row(
-        InlineKeyboardButton(text="📊 Win-Rate Статы", callback_data="menu:stats"),
+        InlineKeyboardButton(text="📊 Статистика & Win-Rate", callback_data="menu:stats"),
         InlineKeyboardButton(text="📜 Журнал Сделок", callback_data="menu:history")
     )
+    # 3. Рыночные условия
     builder.row(
-        InlineKeyboardButton(text="🔬 Бэктест ICT (300 баров)", callback_data="sym_backtest:EURUSD"),
+        InlineKeyboardButton(text="⏰ Торговые Сессии", callback_data="menu:sessions"),
+        InlineKeyboardButton(text="📰 Макро Календарь", callback_data="menu:news")
+    )
+    # 4. Управление и справочник
+    builder.row(
+        InlineKeyboardButton(text="⚙️ Настройки Автопилота", callback_data="menu:autotrade"),
         InlineKeyboardButton(text="📖 Справочник", callback_data="menu:help")
     )
     return builder.as_markup()
 
 
-def autotrade_keyboard() -> InlineKeyboardMarkup:
-    """Клавиатура быстрого управления авто-торговлей MT5."""
+def terminal_dashboard_keyboard() -> InlineKeyboardMarkup:
+    """Клавиатура пульта управления MetaTrader 5."""
     builder = InlineKeyboardBuilder()
     builder.row(
-        InlineKeyboardButton(text="🟢 ВКЛЮЧИТЬ", callback_data="autotrade:on"),
-        InlineKeyboardButton(text="🔴 ПАУЗА", callback_data="autotrade:off")
+        InlineKeyboardButton(text="🔄 Обновить статус", callback_data="terminal:refresh"),
+        InlineKeyboardButton(text="⚙️ Автопилот", callback_data="menu:autotrade")
+    )
+    builder.row(
+        InlineKeyboardButton(text="🛑 ПАНИКА: ЗАКРЫТЬ ВСЁ", callback_data="terminal:panic_confirm")
+    )
+    builder.row(
+        InlineKeyboardButton(text="◀️ В Главное Меню", callback_data="menu")
+    )
+    return builder.as_markup()
+
+
+def panic_confirm_keyboard() -> InlineKeyboardMarkup:
+    """Подтверждение экстренного закрытия всех сделок."""
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="⚠️ ДА, ЗАКРЫТЬ ВСЁ!", callback_data="terminal:panic_exec"),
+        InlineKeyboardButton(text="❌ Отмена", callback_data="menu:terminal")
+    )
+    return builder.as_markup()
+
+
+def autotrade_keyboard(enabled: bool = True) -> InlineKeyboardMarkup:
+    """Клавиатура быстрого управления авто-торговлей MT5."""
+    builder = InlineKeyboardBuilder()
+    toggle_text = "🔴 ПРИОСТАНОВИТЬ АВТОПИЛОТ" if enabled else "🟢 ВКЛЮЧИТЬ АВТОПИЛОТ"
+    toggle_cb = "autotrade:off" if enabled else "autotrade:on"
+    builder.row(
+        InlineKeyboardButton(text=toggle_text, callback_data=toggle_cb)
     )
     builder.row(
         InlineKeyboardButton(text="🔹 Лот 0.01", callback_data="autotrade:lot:0.01"),
@@ -62,7 +74,12 @@ def autotrade_keyboard() -> InlineKeyboardMarkup:
         InlineKeyboardButton(text="🔹 Лот 0.05", callback_data="autotrade:lot:0.05")
     )
     builder.row(
-        InlineKeyboardButton(text="🔙 В главное меню", callback_data="menu:main")
+        InlineKeyboardButton(text="⚖️ Риск 0.5%", callback_data="autotrade:risk:0.5"),
+        InlineKeyboardButton(text="⚖️ Риск 1.0%", callback_data="autotrade:risk:1.0"),
+        InlineKeyboardButton(text="⚖️ Риск 2.0%", callback_data="autotrade:risk:2.0")
+    )
+    builder.row(
+        InlineKeyboardButton(text="◀️ В Главное Меню", callback_data="menu")
     )
     return builder.as_markup()
 
@@ -73,13 +90,10 @@ def signal_inline_keyboard(symbol: str) -> InlineKeyboardMarkup:
     tv_symbol = f"FX:{symbol}" if symbol != "XAUUSD" else "TVC:GOLD"
     tv_url = f"https://www.tradingview.com/chart/?symbol={tv_symbol}"
     
-    btns = []
-    if config.WEBAPP_URL:
-        btns.append(InlineKeyboardButton(text="📱 Web App", web_app=WebAppInfo(url=config.WEBAPP_URL)))
-    btns.append(InlineKeyboardButton(text="📈 TradingView", url=tv_url))
-    btns.append(InlineKeyboardButton(text="🔍 Разбор", callback_data=f"sym:{symbol}"))
-    
-    builder.row(*btns)
+    builder.row(
+        InlineKeyboardButton(text="📈 TradingView", url=tv_url),
+        InlineKeyboardButton(text="🔍 Разбор", callback_data=f"sym:{symbol}")
+    )
     return builder.as_markup()
 
 
@@ -140,23 +154,21 @@ def timeframes_keyboard() -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
-def strategies_keyboard() -> InlineKeyboardMarkup:
-    """Выбор модели анализа."""
+def ict_model_keyboard() -> InlineKeyboardMarkup:
+    """Клавиатура для институциональной модели ICT/SMC."""
     builder = InlineKeyboardBuilder()
-    strats = [
-        ("🧠 ICT / SMC (Институциональная)", "ict"),
-        ("📦 Supply & Demand (Зоны)", "sd"),
-        ("📈 Wyckoff (Фазы рынка)", "wyckoff"),
-        ("🔓 Breakout + Retest", "breakout"),
-        ("⚡ Scalping Momentum", "scalping"),
-        ("📊 Volume & VWAP", "volume"),
-    ]
-    for text, val in strats:
-        builder.add(InlineKeyboardButton(text=text, callback_data=f"strat:{val}"))
-    builder.adjust(1)
-    builder.row(InlineKeyboardButton(text="🔍 Все модели сразу", callback_data="strat:all"))
-    builder.row(InlineKeyboardButton(text="◀️ Меню", callback_data="menu"))
+    builder.row(
+        InlineKeyboardButton(text="📊 Выбрать пару для анализа", callback_data="menu:analyze"),
+        InlineKeyboardButton(text="🔬 Запустить бэктест ICT", callback_data="sym_backtest:EURUSD")
+    )
+    builder.row(InlineKeyboardButton(text="◀️ В Главное Меню", callback_data="menu"))
     return builder.as_markup()
+
+
+def strategies_keyboard() -> InlineKeyboardMarkup:
+    """Обратная совместимость: возвращает единую клавиатуру ICT."""
+    return ict_model_keyboard()
+
 
 
 def settings_keyboard() -> InlineKeyboardMarkup:
@@ -189,6 +201,18 @@ def guide_keyboard(step: int) -> InlineKeyboardMarkup:
         builder.row(InlineKeyboardButton(text="Пропустить обучение", callback_data="guide:skip"))
     else:
         builder.row(InlineKeyboardButton(text="Войти в Терминал 🏛", callback_data="guide:skip"))
+    return builder.as_markup()
+
+
+def help_menu_keyboard() -> InlineKeyboardMarkup:
+    """Клавиатура справочника с кнопкой запуска интерактивного гида."""
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="🎓 Пройти Обучение (Гид)", callback_data="guide:start")
+    )
+    builder.row(
+        InlineKeyboardButton(text="◀️ В Главное Меню", callback_data="menu")
+    )
     return builder.as_markup()
 
 

@@ -57,10 +57,10 @@ NOTIFY_USER_IDS: list[int] = [
 ]
 SCAN_INTERVAL_MINUTES: int = int(os.getenv("SCAN_INTERVAL_MINUTES", "30"))
 
-# ── Web App (Mini App) & Execution Bridge ──────────────────
+# ── Local Execution Bridge (MetaTrader 5 API) ─────────────
 WEBAPP_HOST: str = os.getenv("WEBAPP_HOST", "127.0.0.1")
 WEBAPP_PORT: int = int(os.getenv("WEBAPP_PORT", "8080"))
-WEBAPP_URL: str = os.getenv("WEBAPP_URL", "")  # URL для Telegram WebApp (например https://mydomain.com или ngrok)
+WEBAPP_URL: str = ""
 
 # ── Auto-Trading Bridge (MetaTrader 4/5) ───────────────────
 AUTOTRADE_ENABLED: bool = os.getenv("AUTOTRADE_ENABLED", "true").lower() in ("true", "1", "yes")
@@ -83,39 +83,15 @@ TIMEFRAME_MAP_CCXT: dict[str, str] = {
     "H1": "1h", "H4": "4h", "D1": "1d", "W1": "1w",
 }
 
-TIMEFRAME_MAP_YF: dict[str, str] = {
-    "M1": "1m", "M5": "5m", "M15": "15m", "M30": "30m",
-    "H1": "1h", "H4": "1h", "D1": "1d", "W1": "1wk",
-}
-
-# ── Маппинг символов для yfinance ─────────────────────────
-YFINANCE_SYMBOL_MAP: dict[str, str] = {
-    # Мажоры
-    "EURUSD": "EURUSD=X", "GBPUSD": "GBPUSD=X", "USDJPY": "USDJPY=X",
-    "USDCHF": "USDCHF=X", "AUDUSD": "AUDUSD=X", "NZDUSD": "NZDUSD=X",
-    "USDCAD": "USDCAD=X",
-    # Кроссы
-    "EURGBP": "EURGBP=X", "EURJPY": "EURJPY=X", "GBPJPY": "GBPJPY=X",
-    "EURAUD": "EURAUD=X", "GBPAUD": "GBPAUD=X", "EURCHF": "EURCHF=X",
-    "CADJPY": "CADJPY=X", "AUDCAD": "AUDCAD=X", "AUDNZD": "AUDNZD=X",
-    # Металлы
-    "XAUUSD": "GC=F",
-}
-
 # ── Крипто-пары (отключены) ───────────────────────────────
 CRYPTO_SYMBOLS: set[str] = set()
 
 # ── Доступные таймфреймы ──────────────────────────────────
 AVAILABLE_TIMEFRAMES: list[str] = ["M5", "M15", "M30", "H1", "H4", "D1", "W1"]
 
-# ── Названия стратегий ────────────────────────────────────
+# ── Названия стратегий (Единая институциональная ось ICT/SMC) ───────
 STRATEGY_NAMES: dict[str, str] = {
     "ict": "ICT / Smart Money Concepts",
-    "sd": "Supply & Demand",
-    "wyckoff": "Wyckoff",
-    "breakout": "Breakout + Retest",
-    "scalping": "Scalping",
-    "volume": "Volume Analysis",
 }
 
 # ── Маппинг валют к странам (для новостей) ────────────────
@@ -139,13 +115,8 @@ PAIR_CURRENCIES: dict[str, list[str]] = {
 
 
 def is_crypto(symbol: str) -> bool:
-    """Определяет, является ли символ крипто-парой."""
-    return symbol.upper() in CRYPTO_SYMBOLS
-
-
-def get_yf_symbol(symbol: str) -> str:
-    """Преобразует наш символ в символ yfinance."""
-    return YFINANCE_SYMBOL_MAP.get(symbol.upper(), f"{symbol.upper()}=X")
+    """Определяет, является ли символ крипто-парой (крипта отключена)."""
+    return False
 
 
 # ── ICT Kill Zones (UTC hours) ────────────────────────────
@@ -184,8 +155,11 @@ CORRELATION_GROUPS = {
 }
 MAX_CORRELATED_SIGNALS = 2  # Max simultaneous signals in one correlation group
 
+# ── Order Limits (Лимит одновременно открытых ордеров) ────
+MAX_CONCURRENT_ORDERS = 7  # Максимум одновременно активных позиций + отложенных ордеров
+
 # ── Daily Limits ──────────────────────────────────────────
-MAX_SIGNALS_PER_DAY = 15
+MAX_SIGNALS_PER_DAY = 7    # Максимум 7 сигналов в сутки
 SIGNAL_COOLDOWN_HOURS = 1  # 1 час между сигналами на одну пару (динамичнее)
 
 def is_pair_in_active_session(symbol: str) -> bool:

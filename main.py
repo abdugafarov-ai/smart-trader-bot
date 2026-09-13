@@ -39,10 +39,10 @@ async def main():
     
     tracker = SignalTracker(bot=bot, check_interval_minutes=5)
     reporter = WeeklyReporter(bot=bot)
-    webapp_runner = None
+    bridge_runner = None
     
     async def on_startup():
-        nonlocal webapp_runner
+        nonlocal bridge_runner
         # Инициализация базы данных
         await init_db()
         await init_users_table()
@@ -51,13 +51,13 @@ async def main():
         logging.info("Bot started. Scanning %d pairs every %d min.",
                       len(config.ALL_PAIRS), config.SCAN_INTERVAL_MINUTES)
 
-        # Запуск WebApp & Bridge HTTP сервера
+        # Запуск MT5 Local Bridge HTTP сервера
         try:
             from webapp.server import start_webapp_server
-            webapp_runner = await start_webapp_server(config.WEBAPP_HOST, config.WEBAPP_PORT)
-            logging.info("WebApp & Bridge server started on %s:%d", config.WEBAPP_HOST, config.WEBAPP_PORT)
+            bridge_runner = await start_webapp_server(config.WEBAPP_HOST, config.WEBAPP_PORT, bot=bot)
+            logging.info("MT5 Bridge server started on %s:%d", config.WEBAPP_HOST, config.WEBAPP_PORT)
         except Exception as e:
-            logging.error("Failed to start WebApp server: %s", e)
+            logging.error("Failed to start MT5 Bridge server: %s", e)
 
         # Уведомление админа о запуске
         if config.ADMIN_ID:
@@ -71,7 +71,7 @@ async def main():
                     f"📰 Предупреждения о новостях: включены\n"
                     f"🔒 Контроль доступа: включён\n"
                     f"📊 Еженедельный отчёт: суббота 10:00\n"
-                    f"🌐 WebApp & Bridge: http://{config.WEBAPP_HOST}:{config.WEBAPP_PORT}\n\n"
+                    f"🔌 MT5 Bridge: http://{config.WEBAPP_HOST}:{config.WEBAPP_PORT}\n\n"
                     "Отправь /start для начала работы."
                 )
             except Exception as e:
@@ -81,19 +81,17 @@ async def main():
         try:
             from aiogram.types import BotCommand
             await bot.set_my_commands([
-                BotCommand(command="start", description="Главное меню терминала"),
-                BotCommand(command="signals", description="Радар актуальных сигналов (4-5★)"),
-                BotCommand(command="analyze", description="Анализ пары: /analyze EURUSD"),
-                BotCommand(command="autotrade", description="Управление авто-торговлей MT5"),
-                BotCommand(command="lot", description="Задать рабочий лот: /lot 0.01"),
-                BotCommand(command="risk", description="Задать риск: /risk 1.0"),
-                BotCommand(command="stats", description="Статистика винрейта и PnL"),
-                BotCommand(command="history", description="Журнал последних сделок"),
-                BotCommand(command="equity", description="График кривой капитала PnL"),
-                BotCommand(command="sessions", description="Торговые сессии и Kill Zones"),
-                BotCommand(command="news", description="Экономический календарь новостей"),
-                BotCommand(command="webapp", description="Интерактивный терминал TradingView"),
-                BotCommand(command="help", description="Справочник по всем командам"),
+                BotCommand(command="start", description="🏛 Главное меню терминала"),
+                BotCommand(command="terminal", description="🖥 Пульт управления MetaTrader 5"),
+                BotCommand(command="stats", description="📊 Статистика & Win-Rate брокера"),
+                BotCommand(command="history", description="📜 Журнал последних сделок"),
+                BotCommand(command="autotrade", description="⚙️ Автопилот советника MT5"),
+                BotCommand(command="lot", description="🔹 Задать лот: /lot 0.01"),
+                BotCommand(command="risk", description="⚖️ Задать риск: /risk 1.0"),
+                BotCommand(command="sessions", description="⏰ Расписание торговых сессий"),
+                BotCommand(command="news", description="📰 Календарь важных новостей"),
+                BotCommand(command="reset_stats", description="🧹 Сбросить статистику на 0"),
+                BotCommand(command="help", description="📖 Справочник и документация"),
             ])
             logging.info("Bot commands registered successfully in Telegram Menu.")
         except Exception as e:
@@ -111,12 +109,12 @@ async def main():
         await scanner.stop()
         await tracker.stop()
         await reporter.stop()
-        if webapp_runner:
+        if bridge_runner:
             try:
-                await webapp_runner.cleanup()
-                logging.info("WebApp server cleaned up.")
+                await bridge_runner.cleanup()
+                logging.info("MT5 Bridge server cleaned up.")
             except Exception as e:
-                logging.error(f"Error cleaning up WebApp server: {e}")
+                logging.error(f"Error cleaning up Bridge server: {e}")
         
     dp.startup.register(on_startup)
     dp.shutdown.register(on_shutdown)

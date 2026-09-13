@@ -264,23 +264,18 @@ async def run_full_analysis(symbol: str, timeframe: str) -> FullAnalysisResult:
 @router.message(CommandStart())
 async def cmd_start(message: Message):
     user_id = message.from_user.id
+    from bot.keyboards import main_menu_keyboard
 
-    # Админ — всегда пропускаем
+    # Админ — всегда пропускаем в Главное Меню
     if user_id == config.ADMIN_ID:
-        state = get_user_state(user_id)
-        state["guide_step"] = 0
-        await message.answer(format_welcome(), parse_mode="HTML")
-        await message.answer(get_guide_step(0), reply_markup=guide_keyboard(0), parse_mode="HTML")
+        await message.answer(format_welcome(), reply_markup=main_menu_keyboard(), parse_mode="HTML")
         return
 
     from db.users import get_user_status
     status = await get_user_status(user_id)
 
     if status == "approved":
-        state = get_user_state(user_id)
-        state["guide_step"] = 0
-        await message.answer(format_welcome(), parse_mode="HTML")
-        await message.answer(get_guide_step(0), reply_markup=guide_keyboard(0), parse_mode="HTML")
+        await message.answer(format_welcome(), reply_markup=main_menu_keyboard(), parse_mode="HTML")
     elif status == "pending":
         await message.answer(
             "⏳ <b>Ваша заявка на рассмотрении.</b>\n"
@@ -302,23 +297,6 @@ async def cmd_start(message: Message):
             "Администратор рассмотрит вашу кандидатуру.",
             parse_mode="HTML"
         )
-
-@router.message(Command("analyze"))
-@router.message(Command("indicators"))
-@router.message(Command("signals"))
-@router.message(Command("backtest"))
-@router.message(Command("equity"))
-async def cmd_deprecated_features(message: Message):
-    from bot.keyboards import main_menu_keyboard
-    text = (
-        "ℹ️ <b>Раздел отключен</b>\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "Робот работает в полностью автоматическом режиме через терминал MetaTrader 5.\n"
-        "Ручной анализ и отдельные индикаторы больше не требуются — робот сам находит "
-        "сетапы и выставляет ордера в MT5.\n\n"
-        "Используйте команду /terminal для открытия пульта управления счётом."
-    )
-    await message.answer(text, reply_markup=main_menu_keyboard(), parse_mode="HTML")
 
 
 @router.message(Command("sessions"))
@@ -360,8 +338,8 @@ async def cmd_news(message: Message):
 
 @router.message(Command("help"))
 async def cmd_help(message: Message):
-    from bot.keyboards import back_keyboard
-    await message.answer(format_help(), reply_markup=back_keyboard(), parse_mode="HTML")
+    from bot.keyboards import help_menu_keyboard
+    await message.answer(format_help(), reply_markup=help_menu_keyboard(), parse_mode="HTML")
 
 
 @router.message(Command("stats"))
@@ -472,7 +450,10 @@ async def cb_guide(callback: CallbackQuery):
     action = callback.data.split(":")[1]
     state = get_user_state(callback.from_user.id)
     
-    if action == "next":
+    if action == "start":
+        state["guide_step"] = 0
+        await safe_edit(callback, get_guide_step(0), reply_markup=guide_keyboard(0), parse_mode="HTML")
+    elif action == "next":
         state["guide_step"] += 1
         step = state["guide_step"]
         if step < get_total_steps():
@@ -543,7 +524,8 @@ async def cb_menu_actions(callback: CallbackQuery):
         text = bridge_manager.format_terminal_dashboard()
         await safe_edit(callback, text, reply_markup=terminal_dashboard_keyboard(), parse_mode="HTML")
     elif action == "help":
-        await safe_edit(callback, format_help(), reply_markup=back_keyboard(), parse_mode="HTML")
+        from bot.keyboards import help_menu_keyboard
+        await safe_edit(callback, format_help(), reply_markup=help_menu_keyboard(), parse_mode="HTML")
     elif action == "autotrade":
         from trading.execution_bridge import bridge_manager
         from bot.keyboards import autotrade_keyboard
@@ -638,59 +620,7 @@ async def cb_autotrade_actions(callback: CallbackQuery):
     await safe_edit(callback, text, reply_markup=autotrade_keyboard(bridge_manager.enabled), parse_mode="HTML")
 
 
-@router.callback_query(F.data.startswith("sym_backtest:"))
-async def cb_sym_backtest(callback: CallbackQuery):
-    symbol = callback.data.split(":")[1]
-    await safe_edit(callback, f"⏳ <i>Запуск бэктеста по {symbol} (H1, 300 баров)...</i>", parse_mode="HTML")
-    try:
-        from backtest.backtester import InstitutionalBacktester
-        from backtest.equity_chart import generate_equity_curve_chart
-        from aiogram.types import BufferedInputFile
 
-        tester = InstitutionalBacktester()
-        res = await tester.run_backtest(symbol=symbol, timeframe="H1", limit=300)
-
-        report_text = (
-            f"🔬 <b>WALL STREET | INSTITUTIONAL BACKTEST REPORT</b>\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"📊 <b>Актив:</b> <code>{res.symbol}</code> | <b>ТФ:</b> <code>{res.timeframe}</code>\n"
-            f"┌ 📈 <b>Всего сделок:</b> <code>{res.total_trades}</code>\n"
-            f"├ 🏆 <b>Win Rate:</b> <code>{res.win_rate}%</code>\n"
-            f"├ ✅ <b>Тейк-профиты (TP):</b> <code>{res.wins}</code>\n"
-            f"├ ❌ <b>Стоп-лоссы (SL):</b> <code>{res.losses}</code>\n"
-            f"├ 🛡 <b>Безубытки (BE):</b> <code>{res.breakevens}</code>\n"
-            f"├ 💰 <b>Итоговый PnL:</b> <code>{res.total_pips:+.1f} pips</code>\n"
-            f"├ 📐 <b>Суммарный R:</b> <code>{res.total_r:+.2f}R</code>\n"
-            f"├ ⚡ <b>Profit Factor:</b> <code>{res.profit_factor:.2f}</code>\n"
-            f"└ 📉 <b>Max Drawdown:</b> <code>-{res.max_drawdown_pips:.1f} pips</code>\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"💼 <i>Симуляция с Breakeven 1:1 и Partial Close 50%.</i>"
-        )
-
-        chart_bytes = generate_equity_curve_chart(
-            equity_points=res.equity_curve,
-            title="INSTITUTIONAL STRATEGY BACKTEST",
-            symbol=f"{res.symbol} ({res.timeframe})",
-            total_pnl=res.total_pips,
-            win_rate=res.win_rate,
-            profit_factor=res.profit_factor,
-            max_dd=res.max_drawdown_pips
-        )
-
-        try:
-            await callback.message.delete()
-        except Exception:
-            pass
-        photo = BufferedInputFile(chart_bytes, filename=f"backtest_{symbol}.png")
-        await callback.message.answer_photo(photo, caption=report_text, parse_mode="HTML", reply_markup=back_keyboard())
-    except Exception as e:
-        logger.error("cb_sym_backtest error: %s", e, exc_info=True)
-        await safe_edit(callback, f"❌ Ошибка бэктеста: {e}", reply_markup=back_keyboard(), parse_mode="HTML")
-
-@router.callback_query(F.data.startswith("cat:"))
-async def cb_category(callback: CallbackQuery):
-    category = callback.data.split(":")[1]
-    await safe_edit(callback, "📊 <b>Выберите торговый инструмент:</b>", reply_markup=category_pairs_keyboard(category), parse_mode="HTML")
 
 @router.callback_query(F.data.startswith("sym:"))
 async def cb_symbol(callback: CallbackQuery):
@@ -760,83 +690,7 @@ async def cb_exec_mt5(callback: CallbackQuery):
         logger.error("cb_exec_mt5 error: %s", e, exc_info=True)
         await callback.message.answer(f"❌ Ошибка отправки в MT5: {e}", parse_mode="HTML")
 
-@router.callback_query(F.data.startswith("tf:"))
-async def cb_timeframe(callback: CallbackQuery):
-    tf = callback.data.split(":")[1]
-    state = get_user_state(callback.from_user.id)
-    state["timeframe"] = tf
-    await callback.message.edit_text(f"Таймфрейм изменен на {tf}", reply_markup=back_keyboard())
 
-@router.callback_query(F.data == "settings")
-async def cb_settings(callback: CallbackQuery):
-    state = get_user_state(callback.from_user.id)
-    chart_theme = state.get("chart_theme", "dark")
-    theme_label = "🌙 Тёмная" if chart_theme == "dark" else "☀️ Светлая"
-    text = (
-        f"⚙️ Текущие настройки:\n\n"
-        f"📊 Пара: {state['symbol']}\n"
-        f"⏱ Таймфрейм: {state['timeframe']}\n"
-        f"🎨 Тема графиков: {theme_label}\n"
-    )
-    await callback.message.edit_text(text, reply_markup=settings_keyboard())
-
-@router.callback_query(F.data.startswith("settings:"))
-async def cb_settings_action(callback: CallbackQuery):
-    action = callback.data.split(":")[1]
-    if action == "pairs":
-        await callback.message.edit_text("Выберите категорию:", reply_markup=symbols_keyboard())
-    elif action == "tf":
-        await callback.message.edit_text("Выберите таймфрейм:", reply_markup=timeframes_keyboard())
-    elif action == "chart_theme":
-        state = get_user_state(callback.from_user.id)
-        current = state.get("chart_theme", "dark")
-        new_theme = "light" if current == "dark" else "dark"
-        state["chart_theme"] = new_theme
-        theme_label = "🌙 Тёмная (Wall Street)" if new_theme == "dark" else "☀️ Светлая (Classic)"
-        await callback.message.edit_text(
-            f"🎨 <b>Тема графиков изменена:</b> {theme_label}\n\n"
-            f"Все новые графики будут генерироваться в выбранной теме.",
-            reply_markup=back_keyboard(),
-            parse_mode="HTML",
-        )
-    elif action == "notif":
-        await callback.message.edit_text(
-            "🔔 Для настройки уведомлений добавьте свой Telegram ID "
-            "в переменную NOTIFY_USER_IDS в файле .env и перезапустите бота.\n\n"
-            "Узнать свой ID: @userinfobot",
-            reply_markup=back_keyboard()
-        )
-
-@router.callback_query(F.data.startswith("strat:"))
-async def cb_strategy(callback: CallbackQuery):
-    strat = callback.data.split(":")[1]
-    state = get_user_state(callback.from_user.id)
-    symbol = state["symbol"]
-    tf = state["timeframe"]
-    
-    await callback.message.edit_text(f"Запуск стратегии {strat} для {symbol}...", parse_mode=None)
-    
-    df = await fetcher.fetch_ohlcv(symbol, tf)
-    if df is None or df.empty:
-        await callback.message.edit_text("Ошибка данных.", reply_markup=back_keyboard())
-        return
-        
-    df = TechnicalIndicators.calculate_all(df)
-    
-    if strat == "all":
-        text = f"<b>Все стратегии для {symbol} ({tf})</b>\n\n"
-        for strategy in ALL_STRATEGIES:
-            res = strategy.analyze(df, symbol, tf)
-            text += f"{res.emoji} <b>{res.name}</b>: {res.summary}\n"
-        await callback.message.edit_text(text, reply_markup=back_keyboard(), parse_mode="HTML")
-    else:
-        strategy_class = STRATEGY_MAP.get(strat)
-        if strategy_class:
-            res = strategy_class.analyze(df, symbol, tf)
-            text = format_strategy(res)
-        else:
-            text = "Стратегия не найдена."
-        await callback.message.edit_text(text, reply_markup=back_keyboard(), parse_mode=None)
 
 
 # ═══════════════════════════════════════════════════════════
@@ -984,112 +838,7 @@ async def cmd_users(message: Message):
     await message.answer(text, reply_markup=back_keyboard(), parse_mode=None)
 
 
-@router.message(Command("backtest"))
-async def cmd_backtest(message: Message):
-    """Запуск институционального бэктеста ICT/SMC."""
-    parts = message.text.strip().split()
-    symbol = parts[1].upper() if len(parts) > 1 else "EURUSD"
-    tf = parts[2].upper() if len(parts) > 2 else "H1"
 
-    status_msg = await message.answer(
-        f"⏳ <i>Запуск институционального бэктеста по {symbol} ({tf}) на 300 свечах...</i>",
-        parse_mode="HTML"
-    )
-
-    try:
-        from backtest.backtester import InstitutionalBacktester
-        from backtest.equity_chart import generate_equity_curve_chart
-        from aiogram.types import BufferedInputFile
-
-        tester = InstitutionalBacktester()
-        res = await tester.run_backtest(symbol=symbol, timeframe=tf, limit=300)
-
-        if res.total_trades == 0:
-            await status_msg.edit_text(f"❌ Недостаточно данных для бэктеста {symbol}.", parse_mode=None)
-            return
-
-        report_text = (
-            f"🔬 <b>WALL STREET | INSTITUTIONAL BACKTEST REPORT</b>\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"📊 <b>Актив:</b> <code>{res.symbol}</code> | <b>ТФ:</b> <code>{res.timeframe}</code>\n"
-            f"┌ 📈 <b>Всего сделок:</b> <code>{res.total_trades}</code>\n"
-            f"├ 🏆 <b>Win Rate:</b> <code>{res.win_rate}%</code>\n"
-            f"├ ✅ <b>Тейк-профиты (TP):</b> <code>{res.wins}</code>\n"
-            f"├ ❌ <b>Стоп-лоссы (SL):</b> <code>{res.losses}</code>\n"
-            f"├ 🛡 <b>Безубытки (BE):</b> <code>{res.breakevens}</code>\n"
-            f"├ 💰 <b>Итоговый PnL:</b> <code>{res.total_pips:+.1f} pips</code>\n"
-            f"├ 📐 <b>Суммарный R:</b> <code>{res.total_r:+.2f}R</code>\n"
-            f"├ ⚡ <b>Profit Factor:</b> <code>{res.profit_factor:.2f}</code>\n"
-            f"└ 📉 <b>Max Drawdown:</b> <code>-{res.max_drawdown_pips:.1f} pips</code>\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"💼 <i>Симуляция с Breakeven 1:1 и Partial Close 50%.</i>"
-        )
-
-        chart_bytes = generate_equity_curve_chart(
-            equity_points=res.equity_curve,
-            title="INSTITUTIONAL STRATEGY BACKTEST",
-            symbol=f"{res.symbol} ({res.timeframe})",
-            total_pnl=res.total_pips,
-            win_rate=res.win_rate,
-            profit_factor=res.profit_factor,
-            max_dd=res.max_drawdown_pips
-        )
-
-        await status_msg.delete()
-        photo = BufferedInputFile(chart_bytes, filename=f"backtest_{symbol}.png")
-        await message.answer_photo(photo, caption=report_text, parse_mode="HTML", reply_markup=back_keyboard())
-
-    except Exception as e:
-        logger.error("Backtest error: %s", e, exc_info=True)
-        await status_msg.edit_text(f"❌ Ошибка бэктеста: {e}", parse_mode=None)
-
-
-@router.message(Command("equity"))
-async def cmd_equity(message: Message):
-    """График кривой капитала на основе реальных закрытых сигналов."""
-    try:
-        from db.database import get_recent_signals, get_stats
-        from backtest.equity_chart import generate_equity_curve_chart
-        from aiogram.types import BufferedInputFile
-
-        signals = await get_recent_signals(limit=50)
-        closed_signals = [s for s in reversed(signals) if s.get('status') in ['TP1_HIT', 'TP2_HIT', 'SL_HIT', 'BREAKEVEN', 'EXPIRED']]
-
-        if len(closed_signals) < 2:
-            await message.answer("📊 Пока недостаточно закрытых сделок для построения графика кривой капитала (нужно минимум 2 закрытых сделки).", reply_markup=back_keyboard(), parse_mode=None)
-            return
-
-        equity = [0.0]
-        curr = 0.0
-        for s in closed_signals:
-            curr += (s.get('pnl_pips') or 0.0)
-            equity.append(round(curr, 1))
-
-        stats = await get_stats()
-        chart_bytes = generate_equity_curve_chart(
-            equity_points=equity,
-            title="LIVE PORTFOLIO EQUITY CURVE",
-            symbol="REAL SIGNALS",
-            total_pnl=stats.get('total_pips', 0.0),
-            win_rate=stats.get('win_rate', 0.0),
-            profit_factor=1.5,
-            max_dd=0.0
-        )
-
-        photo = BufferedInputFile(chart_bytes, filename="live_equity.png")
-        cap = (
-            f"📈 <b>LIVE EQUITY CURVE | КРИВАЯ КАПИТАЛА</b>\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"💰 <b>Общий PnL:</b> <code>{stats.get('total_pips', 0.0):+.1f} pips</code>\n"
-            f"🏆 <b>Win Rate:</b> <code>{stats.get('win_rate', 0.0):.1f}%</code>\n"
-            f"📊 <b>Всего закрыто:</b> <code>{stats.get('closed', 0)}</code> сделок\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-        )
-        await message.answer_photo(photo, caption=cap, parse_mode="HTML", reply_markup=back_keyboard())
-
-    except Exception as e:
-        logger.error("Equity command error: %s", e, exc_info=True)
-        await message.answer(f"❌ Ошибка генерации графика: {e}", parse_mode=None)
 
 @router.message(Command("reset_drawdown"))
 async def cmd_reset_drawdown(message: Message):
