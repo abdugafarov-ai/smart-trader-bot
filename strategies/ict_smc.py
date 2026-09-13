@@ -457,8 +457,8 @@ class ICTSMCStrategy(BaseStrategy):
             base_sl = ob_zone[1] if ob_zone else impulse_low
             sl = min(base_sl - 0.75 * atr, entry - min_sl_dist)
 
-            # Market vs Limit: Если цена в пределах 0.35*ATR от зоны — вход по рынку
-            if abs(entry - current_price) <= 0.35 * atr or entry >= current_price:
+            # Market vs Limit: вход по рынку ТОЛЬКО если цена находится прямо в зоне (<= 0.25 ATR)
+            if abs(entry - current_price) <= 0.25 * atr:
                 entry = current_price
                 order_type = "BUY_MARKET"
             else:
@@ -473,14 +473,16 @@ class ICTSMCStrategy(BaseStrategy):
             pip_unit = 0.01 if 'JPY' in symbol else (0.1 if 'XAU' in symbol else 0.0001)
             tp_buffer = max(3.5 * pip_unit, 0.12 * atr)
 
+            adx_low = bool('adx' in df.columns and pd.notna(df['adx'].iloc[-1]) and df['adx'].iloc[-1] < 25.0)
+            target_mult = 1.3 if adx_low else 1.8
             liq_target = self._find_liquidity_target(swing_highs, swing_lows, direction, entry, sl)
             if liq_target:
-                tp1 = max(entry + 1.8 * risk, liq_target - tp_buffer)
-                tp2 = entry + 4.0 * risk - tp_buffer
+                tp1 = max(entry + target_mult * risk, liq_target - tp_buffer)
+                tp2 = entry + 3.0 * risk - tp_buffer
                 details.append(f"🎯 TP1 на ликвидности (front-run swing high): {self._format_price(tp1, symbol)}")
             else:
-                tp1 = entry + 2.5 * risk - tp_buffer
-                tp2 = entry + 4.0 * risk - tp_buffer
+                tp1 = entry + target_mult * risk - tp_buffer
+                tp2 = entry + 3.0 * risk - tp_buffer
 
         else:  # SHORT
             candidates = []
@@ -513,7 +515,8 @@ class ICTSMCStrategy(BaseStrategy):
             base_sl = ob_zone[0] if ob_zone else impulse_high
             sl = max(base_sl + 0.75 * atr, entry + min_sl_dist)
 
-            if abs(entry - current_price) <= 0.35 * atr or entry <= current_price:
+            # Market vs Limit: вход по рынку ТОЛЬКО если цена находится прямо в зоне (<= 0.25 ATR)
+            if abs(entry - current_price) <= 0.25 * atr:
                 entry = current_price
                 order_type = "SELL_MARKET"
             else:
@@ -528,23 +531,26 @@ class ICTSMCStrategy(BaseStrategy):
             pip_unit = 0.01 if 'JPY' in symbol else (0.1 if 'XAU' in symbol else 0.0001)
             tp_buffer = max(3.5 * pip_unit, 0.12 * atr)
 
+            adx_low = bool('adx' in df.columns and pd.notna(df['adx'].iloc[-1]) and df['adx'].iloc[-1] < 25.0)
+            target_mult = 1.3 if adx_low else 1.8
             liq_target = self._find_liquidity_target(swing_highs, swing_lows, direction, entry, sl)
             if liq_target:
-                tp1 = min(entry - 1.8 * risk, liq_target + tp_buffer)
-                tp2 = entry - 4.0 * risk + tp_buffer
+                tp1 = min(entry - target_mult * risk, liq_target + tp_buffer)
+                tp2 = entry - 3.0 * risk + tp_buffer
                 details.append(f"🎯 TP1 на ликвидности (front-run swing low): {self._format_price(tp1, symbol)}")
             else:
-                tp1 = entry - 2.5 * risk + tp_buffer
-                tp2 = entry - 4.0 * risk + tp_buffer
+                tp1 = entry - target_mult * risk + tp_buffer
+                tp2 = entry - 3.0 * risk + tp_buffer
 
         risk = abs(entry - sl)
         reward_1 = abs(tp1 - entry)
         rr1 = reward_1 / risk if risk > 0 else 0.0
 
-        if rr1 < 2.0:
+        min_rr = 1.5 if adx_low else 1.8
+        if rr1 < min_rr:
             return self._make_result(
-                StrategySignal(direction="NEUTRAL", confidence=0, details=["R:R < 1:2.0 — отброшен"]),
-                ["Сетап не соответствует критерию R:R >= 1:2.0"]
+                StrategySignal(direction="NEUTRAL", confidence=0, details=[f"R:R < 1:{min_rr:.1f} — отброшен"]),
+                [f"Сетап не соответствует критерию R:R >= 1:{min_rr:.1f}"]
             )
 
         signal = StrategySignal(

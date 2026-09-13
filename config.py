@@ -202,3 +202,28 @@ def get_affected_pairs(currency: str) -> list[str]:
     """Возвращает список пар, которые затрагивает валюта."""
     currency = currency.upper()
     return [pair for pair, currencies in PAIR_CURRENCIES.items() if currency in currencies]
+
+
+# ── SPREAD SPIKE GUARD ──
+# Защита от расширения спреда: если текущий спред брокера выше лимита (в пипсах), вход блокируется
+MAX_SPREAD_PIPS: dict[str, float] = {
+    "EURUSD": 2.5,
+    "GBPUSD": 3.0,
+    "USDJPY": 2.5,
+    "USDCHF": 3.0,
+    "AUDUSD": 3.0,
+    "NZDUSD": 3.5,
+    "USDCAD": 3.0,
+    "EURGBP": 3.0,
+    "EURJPY": 3.0,
+    "GBPJPY": 4.0,
+    "EURAUD": 4.0,
+    "GBPAUD": 4.5,
+    "EURCHF": 3.5,
+    "CADJPY": 3.5,
+    "AUDCAD": 3.5,
+    "AUDNZD": 3.5,
+    "XAUUSD": 45.0,  # Для золота 45 пунктов = $0.45 спреда
+    "DEFAULT": 4.0
+}
+

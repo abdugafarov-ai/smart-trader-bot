@@ -38,7 +38,8 @@ def terminal_dashboard_keyboard() -> InlineKeyboardMarkup:
     """Клавиатура пульта управления MetaTrader 5."""
     builder = InlineKeyboardBuilder()
     builder.row(
-        InlineKeyboardButton(text="🔄 Обновить статус", callback_data="terminal:refresh"),
+        InlineKeyboardButton(text="🔄 Обновить", callback_data="terminal:refresh"),
+        InlineKeyboardButton(text="📸 Скриншот MT5", callback_data="terminal:screenshot"),
         InlineKeyboardButton(text="⚙️ Автопилот", callback_data="menu:autotrade")
     )
     builder.row(
@@ -143,47 +144,6 @@ def category_pairs_keyboard(category: str) -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
-def timeframes_keyboard() -> InlineKeyboardMarkup:
-    """Выбор таймфрейма."""
-    builder = InlineKeyboardBuilder()
-    tfs = config.AVAILABLE_TIMEFRAMES
-    for tf in tfs:
-        builder.add(InlineKeyboardButton(text=f"⏱ {tf}", callback_data=f"tf:{tf}"))
-    builder.adjust(3)
-    builder.row(InlineKeyboardButton(text="◀️ Меню", callback_data="menu"))
-    return builder.as_markup()
-
-
-def ict_model_keyboard() -> InlineKeyboardMarkup:
-    """Клавиатура для институциональной модели ICT/SMC."""
-    builder = InlineKeyboardBuilder()
-    builder.row(
-        InlineKeyboardButton(text="📊 Выбрать пару для анализа", callback_data="menu:analyze"),
-        InlineKeyboardButton(text="🔬 Запустить бэктест ICT", callback_data="sym_backtest:EURUSD")
-    )
-    builder.row(InlineKeyboardButton(text="◀️ В Главное Меню", callback_data="menu"))
-    return builder.as_markup()
-
-
-def strategies_keyboard() -> InlineKeyboardMarkup:
-    """Обратная совместимость: возвращает единую клавиатуру ICT."""
-    return ict_model_keyboard()
-
-
-
-def settings_keyboard() -> InlineKeyboardMarkup:
-    """Настройки терминала."""
-    builder = InlineKeyboardBuilder()
-    builder.row(
-        InlineKeyboardButton(text="💱 Инструменты (17)", callback_data="settings:pairs"),
-        InlineKeyboardButton(text="⏱ Таймфрейм по умолч.", callback_data="settings:tf")
-    )
-    builder.row(
-        InlineKeyboardButton(text="🎨 Тема Графиков", callback_data="settings:chart_theme"),
-        InlineKeyboardButton(text="🔔 Уведомления", callback_data="settings:notif")
-    )
-    builder.row(InlineKeyboardButton(text="◀️ Меню", callback_data="menu"))
-    return builder.as_markup()
 
 
 def back_keyboard(callback: str = 'menu') -> InlineKeyboardMarkup:

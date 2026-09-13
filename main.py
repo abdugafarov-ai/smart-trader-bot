@@ -83,6 +83,8 @@ async def main():
             await bot.set_my_commands([
                 BotCommand(command="start", description="🏛 Главное меню терминала"),
                 BotCommand(command="terminal", description="🖥 Пульт управления MetaTrader 5"),
+                BotCommand(command="account", description="💼 Баланс и открытые позиции MT5"),
+                BotCommand(command="screenshot", description="📸 Снимок экрана терминала MT5"),
                 BotCommand(command="stats", description="📊 Статистика & Win-Rate брокера"),
                 BotCommand(command="history", description="📜 Журнал последних сделок"),
                 BotCommand(command="autotrade", description="⚙️ Автопилот советника MT5"),

@@ -112,7 +112,7 @@ class TradingSessions:
     def format_sessions_text(self) -> str:
         all_sessions = self._get_all_sessions()
         lines = [
-            "🏛 <b>WALL STREET TERMINAL | GLOBAL SESSIONS</b>",
+            "⏰ <b>РАСПИСАНИЕ ТОРГОВЫХ СЕССИЙ (UTC+5 / Ташкент)</b>",
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         ]
         
@@ -134,14 +134,10 @@ class TradingSessions:
                 status_text = "<i>Закрыта</i>"
                 rem_str = ""
                 
-            strats = ", ".join(s.recommended_strategies)
-            
             lines.append(f"{status_icon} <b>{s.name}</b> {s.emoji}")
-            lines.append(f"┌ 🕒 <b>Часы:</b> <code>{time_str}</code>")
-            lines.append(f"├ 📊 <b>Статус:</b> {status_text}{rem_str}")
-            lines.append(f"├ ⚡ <b>Волатильность:</b> <code>{s.volatility}</code>")
-            lines.append(f"└ 🎯 <b>Модели:</b> <code>{strats}</code>\n")
+            lines.append(f"├ 🕒 <b>Часы работы:</b> <code>{time_str}</code>")
+            lines.append(f"└ 📊 <b>Статус:</b> {status_text}{rem_str}\n")
             
         lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-        lines.append("💼 <i>Торгуйте в периоды высокой ликвидности (London & NY).</i>")
+        lines.append("💡 <i>Пик объёмов и активности: Лондонская и Нью-Йоркская сессии.</i>")
         return "\n".join(lines)

@@ -223,22 +223,41 @@ class BaseStrategy(ABC):
         atr_value: float,
     ) -> tuple[float, float, float, float]:
         """
-        Рассчитывает Entry, SL, TP1, TP2 на основе ATR.
+        Рассчитывает Entry, SL, TP1, TP2 на основе ATR с адаптивной волатильностью.
+        При низкой волатильности (ADX < 25) тейк-профиты подтягиваются ближе (1.2x ATR),
+        чтобы забирать быструю прибыль внутри сессии и не висеть днями в боковике.
         Возвращает: (entry, stop_loss, tp1, tp2)
         """
         current = df.iloc[-1]
         price = current['close']
 
+        # Проверка силы тренда по ADX (если доступен в DataFrame)
+        adx_val = 30.0
+        if 'adx' in df.columns:
+            val = df['adx'].iloc[-1]
+            if pd.notna(val):
+                adx_val = float(val)
+
+        # Адаптивные коэффициенты: при боковике (ADX < 25) цели в 1.5 раза ближе
+        if adx_val < 25.0:
+            tp1_mult = 1.2  # Компактный интрадей тейк
+            tp2_mult = 2.0
+            sl_mult = 1.2
+        else:
+            tp1_mult = 2.0  # Трендовый тейк
+            tp2_mult = 3.0
+            sl_mult = 1.5
+
         if direction == "LONG":
             entry = price
-            stop_loss = price - 1.5 * atr_value
-            tp1 = price + 2.0 * atr_value
-            tp2 = price + 3.0 * atr_value
+            stop_loss = price - sl_mult * atr_value
+            tp1 = price + tp1_mult * atr_value
+            tp2 = price + tp2_mult * atr_value
         elif direction == "SHORT":
             entry = price
-            stop_loss = price + 1.5 * atr_value
-            tp1 = price - 2.0 * atr_value
-            tp2 = price - 3.0 * atr_value
+            stop_loss = price + sl_mult * atr_value
+            tp1 = price - tp1_mult * atr_value
+            tp2 = price - tp2_mult * atr_value
         else:
             return (price, price, price, price)
 

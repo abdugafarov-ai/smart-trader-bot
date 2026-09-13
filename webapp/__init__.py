@@ -1,1 +1,1 @@
-"""Web App package for Telegram Mini App."""
+"""Smart Trader MT5 Bridge package."""

@@ -143,7 +143,7 @@ class EconomicCalendar:
 
         for item in events:
             impact = item.get("impact", "")
-            if impact not in ("High", "Medium"):
+            if impact != "High":
                 continue
 
             dt = self._parse_datetime(item)

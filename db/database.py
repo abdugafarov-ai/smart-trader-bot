@@ -19,6 +19,8 @@ async def init_db():
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
     async with aiosqlite.connect(str(DB_PATH)) as db:
+        await db.execute("PRAGMA journal_mode = WAL;")
+        await db.execute("PRAGMA synchronous = NORMAL;")
         await db.execute("""
             CREATE TABLE IF NOT EXISTS signals (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -100,6 +102,12 @@ async def init_db():
             SET status = 'EXPIRED', closed_at = ?, result = 'Истек срок ожидания (авто-очистка)'
             WHERE status = 'PENDING' AND created_at < ?
         """, (datetime.now(timezone.utc).isoformat(), cutoff_iso))
+
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_signals_status ON signals (status);")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_signals_symbol ON signals (symbol);")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_signals_created ON signals (created_at);")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_broker_deals_close_time ON broker_deals (close_time);")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_broker_deals_symbol ON broker_deals (symbol);")
 
         await db.commit()
     logger.info("Database initialized with full schema and broker_deals table at %s", DB_PATH)
@@ -400,11 +408,12 @@ async def reset_all_stats() -> dict:
     return {"reset_time": ts, "status": "ok"}
 
 
-async def sync_broker_deals(deals: list[dict]):
-    """Синхронизирует реальные закрытые сделки терминала MetaTrader 5."""
+async def sync_broker_deals(deals: list[dict]) -> list[dict]:
+    """Синхронизирует реальные закрытые сделки терминала MetaTrader 5 и возвращает список НОВЫХ закрытых сделок."""
     if not deals:
-        return
+        return []
     try:
+        new_deals = []
         reset_ts = await get_stats_reset_time()
         async with aiosqlite.connect(str(DB_PATH)) as db:
             now_iso = datetime.now(timezone.utc).isoformat()
@@ -416,6 +425,10 @@ async def sync_broker_deals(deals: list[dict]):
                 # Игнорируем сделки, закрытые до момента сброса статистики
                 if reset_ts and close_time < reset_ts:
                     continue
+
+                # Проверяем, была ли эта сделка уже зафиксирована в базе
+                cursor = await db.execute("SELECT ticket FROM broker_deals WHERE ticket = ?", (ticket,))
+                already_exists = await cursor.fetchone()
 
                 sym = str(d.get("symbol", "")).upper()
                 deal_type = str(d.get("type", "BUY")).upper()
@@ -434,9 +447,23 @@ async def sync_broker_deals(deals: list[dict]):
                            comment = excluded.comment""",
                     (ticket, sym, deal_type, lot, price, profit, close_time, magic, comment, now_iso),
                 )
+
+                if not already_exists:
+                    new_deals.append({
+                        "ticket": ticket,
+                        "symbol": sym,
+                        "type": deal_type,
+                        "lot": lot,
+                        "price": price,
+                        "profit": profit,
+                        "comment": comment
+                    })
+
             await db.commit()
+        return new_deals
     except Exception as e:
         logger.error("sync_broker_deals error: %s", e)
+        return []
 
 
 async def get_recent_signals(limit: int = 20) -> list[dict]:

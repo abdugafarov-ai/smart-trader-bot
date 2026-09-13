@@ -95,7 +95,7 @@ smart_trader_bot/
 │   └── volume_analysis.py     # Volume Analysis
 │
 ├── market/                    # Рыночные данные
-│   ├── data_fetcher.py        # OHLCV (yfinance + ccxt)
+│   ├── data_fetcher.py        # OHLCV (MT5 Bridge + CCXT)
 │   └── indicators.py          # Технические индикаторы
 │
 ├── notifications/             # Уведомления
@@ -139,10 +139,11 @@ smart_trader_bot/
 
 - **Python 3.12+**
 - **aiogram 3.x** — Telegram Bot API
-- **yfinance** — Forex и Металлы (Gold)
+- **MetaTrader 5 Bridge** — Прямые межбанковские котировки брокера и авто-исполнение
+- **ccxt** — Институциональные крипто- и фиат-фиды (Binance, Kraken)
 - **ta** — Технические индикаторы
-- **aiosqlite** — SQLite для хранения сигналов
-- **aiohttp** — HTTP для Forex Factory
+- **aiosqlite** — SQLite для хранения сигналов и сделок MT5
+- **aiohttp** — HTTP API для MT5 Bridge и Forex Factory
 
 ---
 

@@ -37,6 +37,7 @@ class AutoSignalScanner:
         self.signals_skipped_by_news: int = 0
         self.signals_skipped_by_session: int = 0
         self.signals_skipped_by_correlation: int = 0
+        self.signals_skipped_by_spread: int = 0
         self.signals_skipped_by_daily_limit: int = 0
         self.chart_theme: str = "dark"
         self._daily_signal_count: int = 0
@@ -123,7 +124,26 @@ class AutoSignalScanner:
             return True  # Allowed
         except Exception as e:
             logger.error("Correlation check error: %s", e)
-            return True  # Allow on error
+            return True
+
+    # ── Concurrent Active Orders Limit ──
+    async def _check_concurrent_limit(self) -> bool:
+        """
+        Проверяет, не превышен ли глобальный лимит одновременно активных/отложенных ордеров.
+        Если уже активно MAX_CONCURRENT_ORDERS ордеров, новые не создаются, пока текущие не закроются.
+        """
+        try:
+            open_signals = await get_active_signals()
+            pending = await get_pending_signals()
+            total_active = len(open_signals) + len(pending)
+            if total_active >= config.MAX_CONCURRENT_ORDERS:
+                logger.info("Concurrent order limit reached (%d/%d active/pending). New signals paused until orders close.",
+                            total_active, config.MAX_CONCURRENT_ORDERS)
+                return False
+            return True
+        except Exception as e:
+            logger.error("Concurrent limit check error: %s", e)
+            return True
 
     # ── Daily Limit (persistent via DB) ──
     async def _check_daily_limit(self) -> bool:
@@ -156,6 +176,10 @@ class AutoSignalScanner:
         in_kill_zone = kz is not None
         if in_kill_zone:
             logger.info("Active Kill Zone: %s — high priority scanning", kz)
+
+        # ── Проверка лимита одновременно открытых ордеров (MAX_CONCURRENT_ORDERS) ──
+        if not await self._check_concurrent_limit():
+            return
 
         # Daily limit check (persistent from DB)
         if not await self._check_daily_limit():
@@ -199,6 +223,10 @@ class AutoSignalScanner:
                 if not await self._check_daily_limit():
                     break
 
+                # ── ФИЛЬТР 6: Concurrent orders limit ──
+                if not await self._check_concurrent_limit():
+                    break
+
                 result = await run_multi_tf_analysis(symbol)
                 if not result or result.overall_direction == 'NEUTRAL':
                     continue
@@ -216,6 +244,15 @@ class AutoSignalScanner:
                     # ── ФИЛЬТР 6: Корреляция ──
                     if not await self._check_correlation_limit(symbol, result.overall_direction):
                         self.signals_skipped_by_correlation += 1
+                        continue
+
+                    # ── ФИЛЬТР 7: Защита от расширения спреда (Spread Spike Guard) ──
+                    from trading.execution_bridge import bridge_manager
+                    spread_ok, cur_spread, max_allowed = bridge_manager.is_spread_acceptable(symbol)
+                    if not spread_ok:
+                        logger.warning("Signal for %s BLOCKED: Spread spike detected (%.1f > %.1f pips). Waiting for market to calm.",
+                                       symbol, cur_spread, max_allowed)
+                        self.signals_skipped_by_spread = getattr(self, "signals_skipped_by_spread", 0) + 1
                         continue
 
                     strategies_str = ", ".join(
