@@ -206,8 +206,16 @@ class ExecutionBridge:
             f"💵 <b>Плавающий PnL:</b> {pnl_badge}",
             f"🤖 <b>Автопилот:</b> {'🟢 ВКЛЮЧЕН' if self.enabled else '🔴 ВЫКЛЮЧЕН'}",
             f"⚖️ <b>Риск на сделку:</b> <code>{self.default_risk}%</code> | <b>Лот:</b> <code>{self.default_lot}</code>",
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
         ]
+
+        # Статус недельного торгового окна
+        w_open, w_reason = config.is_weekly_trading_window_open()
+        if w_open:
+            lines.append("🕒 <b>Торговое окно недели:</b> 🟢 <b>ОТКРЫТО</b> (полная активность)")
+        else:
+            lines.append(f"🕒 <b>Торговое окно недели:</b> ⏳ <b>ОЖИДАНИЕ</b>\n   <i>({w_reason})</i>")
+
+        lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
         if not is_online:
             lines.append("⚠️ <i>Внимание: терминал MT5 на сервере не передает сигналы. Проверьте запущен ли советник SmartTraderBridge в MT5!</i>")

@@ -5,6 +5,8 @@ Smart Trader Bot — Configuration
 
 import os
 from pathlib import Path
+from datetime import datetime
+from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 
 # Загрузка .env
@@ -226,4 +228,42 @@ MAX_SPREAD_PIPS: dict[str, float] = {
     "XAUUSD": 45.0,  # Для золота 45 пунктов = $0.45 спреда
     "DEFAULT": 4.0
 }
+
+
+# ── SMART WEEKLY TRADING WINDOW (Защита понедельника и пятницы) ──
+# Понедельник: старт новых сделок с 07:00 UTC (12:00 Ташкент / открытие Лондона)
+# Пятница: запрет новых сделок после 14:00 UTC (19:00 Ташкент / защита от гэпа на выходных)
+WEEKLY_WINDOW_ENABLED: bool = True
+MONDAY_START_HOUR_UTC: int = 7    # 12:00 Ташкент (UTC+5)
+FRIDAY_END_HOUR_UTC: int = 14     # 19:00 Ташкент (UTC+5)
+
+
+def is_weekly_trading_window_open() -> tuple[bool, str]:
+    """
+    Проверяет институциональное торговое окно недели:
+    - Понедельник: входы разрешены с 07:00 UTC (12:00 Ташкент / Лондон)
+    - Вторник - Четверг: круглосуточно (24h)
+    - Пятница: новые входы разрешены только до 14:00 UTC (19:00 Ташкент)
+    - Выходные (Сб-Вс): закрыто
+    """
+    if not WEEKLY_WINDOW_ENABLED:
+        return True, ""
+
+    now = datetime.now(ZoneInfo('UTC'))
+    wd = now.weekday()  # 0 = Mon, ..., 4 = Fri, 5 = Sat, 6 = Sun
+    hour = now.hour
+
+    if wd == 5:
+        return False, "Суббота: рынок Forex закрыт"
+    if wd == 6 and hour < 22:
+        return False, "Воскресенье: рынок Forex закрыт до 22:00 UTC"
+
+    if wd == 0 and hour < MONDAY_START_HOUR_UTC:
+        return False, f"Понедельник утро (до 12:00 Ташкент / 07:00 UTC) — ожидание институционального объема Лондона"
+
+    if wd == 4 and hour >= FRIDAY_END_HOUR_UTC:
+        return False, f"Пятница вечер (после 19:00 Ташкент / 14:00 UTC) — защита от гэпа на выходных"
+
+    return True, ""
+
 

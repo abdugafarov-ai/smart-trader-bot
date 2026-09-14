@@ -171,6 +171,12 @@ class AutoSignalScanner:
             logger.info("Weekend: markets closed. Scanner paused.")
             return
 
+        # ── Проверка институционального недельного окна (Smart Weekly Window) ──
+        window_open, window_reason = config.is_weekly_trading_window_open()
+        if not window_open:
+            logger.info("Smart Weekly Window active: %s. New signals paused.", window_reason)
+            return
+
         # Kill Zone check
         kz = config.get_current_kill_zone()
         in_kill_zone = kz is not None
