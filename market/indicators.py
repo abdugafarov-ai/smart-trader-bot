@@ -1,6 +1,5 @@
 import pandas as pd
-import numpy as np
-from ta.trend import EMAIndicator
+from ta.trend import EMAIndicator, ADXIndicator
 from ta.momentum import RSIIndicator, StochRSIIndicator
 from ta.volatility import AverageTrueRange, BollingerBands
 from ta.volume import VolumeWeightedAveragePrice
@@ -32,6 +31,12 @@ class TechnicalIndicators:
         
         # Волатильность
         df['atr'] = AverageTrueRange(high=df['high'], low=df['low'], close=df['close'], window=14).average_true_range()
+        
+        # ADX (Average Directional Index)
+        adx_indicator = ADXIndicator(high=df['high'], low=df['low'], close=df['close'], window=14)
+        df['adx'] = adx_indicator.adx()
+        df['adx_pos'] = adx_indicator.adx_pos()
+        df['adx_neg'] = adx_indicator.adx_neg()
         
         bb = BollingerBands(close=df['close'], window=20, window_dev=2)
         df['bb_upper'] = bb.bollinger_hband()

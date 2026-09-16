@@ -114,7 +114,6 @@ void OnDeinit(const int reason)
 //+------------------------------------------------------------------+
 void OnTimer()
 {
-   CheckAndFixAnomalousPositions();
    PollOrdersFromServer();
 
    export_timer_counter++;
@@ -137,6 +136,7 @@ string GetActivePositionsSummary()
       ulong ticket = PositionGetTicket(i);
       if(ticket > 0)
       {
+         if(PositionGetInteger(POSITION_MAGIC) != InpMagicNumber) continue;
          if(count > 0) json += ",";
          string sym = PositionGetString(POSITION_SYMBOL);
          ENUM_POSITION_TYPE type = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
@@ -167,6 +167,7 @@ string GetPendingOrdersSummary()
       ulong ticket = OrderGetTicket(i);
       if(ticket > 0)
       {
+         if(OrderGetInteger(ORDER_MAGIC) != InpMagicNumber) continue;
          if(count > 0) json += ",";
          string sym = OrderGetString(ORDER_SYMBOL);
          ENUM_ORDER_TYPE type = (ENUM_ORDER_TYPE)OrderGetInteger(ORDER_TYPE);
@@ -228,6 +229,7 @@ string GetDealsHistorySummary()
       ulong ticket = HistoryDealGetTicket(i);
       if(ticket > 0)
       {
+         if(HistoryDealGetInteger(ticket, DEAL_MAGIC) != InpMagicNumber) continue;
          ENUM_DEAL_ENTRY entry = (ENUM_DEAL_ENTRY)HistoryDealGetInteger(ticket, DEAL_ENTRY);
          if(entry == DEAL_ENTRY_OUT || entry == DEAL_ENTRY_INOUT)
          {
@@ -469,6 +471,18 @@ void ParseAndExecuteOrders(string json)
                if(sig_id > 0) MarkSignalProcessed(sig_id);
                continue;
             }
+
+            // Spread check before execution
+            double spread_points = SymbolInfoInteger(broker_symbol, SYMBOL_SPREAD);
+            double point_val = SymbolInfoDouble(broker_symbol, SYMBOL_POINT);
+            double spread_price = spread_points * point_val;
+            double max_spread = real_risk * 0.15; // Spread should not exceed 15% of risk
+            if(spread_price > max_spread && max_spread > 0)
+            {
+               Print("⚠️ [SmartTrader] Spread too high for ", broker_symbol, ": ", spread_price, " > max ", max_spread);
+               continue;
+            }
+
             if(trade.Buy(lot, broker_symbol, ask, sl, tp, "SmartTrader Institutional"))
             {
                Print("✅ [SmartTrader] BUY ордер открыт: ", broker_symbol, " | Лот: ", lot, " | SL: ", sl, " | TP: ", tp, " | R:R: 1:", DoubleToString(real_rr, 2));
@@ -517,6 +531,18 @@ void ParseAndExecuteOrders(string json)
                if(sig_id > 0) MarkSignalProcessed(sig_id);
                continue;
             }
+
+            // Spread check before execution
+            double spread_points = SymbolInfoInteger(broker_symbol, SYMBOL_SPREAD);
+            double point_val = SymbolInfoDouble(broker_symbol, SYMBOL_POINT);
+            double spread_price = spread_points * point_val;
+            double max_spread = real_risk * 0.15; // Spread should not exceed 15% of risk
+            if(spread_price > max_spread && max_spread > 0)
+            {
+               Print("⚠️ [SmartTrader] Spread too high for ", broker_symbol, ": ", spread_price, " > max ", max_spread);
+               continue;
+            }
+
             if(trade.Sell(lot, broker_symbol, bid, sl, tp, "SmartTrader Institutional"))
             {
                Print("✅ [SmartTrader] SELL ордер открыт: ", broker_symbol, " | Лот: ", lot, " | SL: ", sl, " | TP: ", tp, " | R:R: 1:", DoubleToString(real_rr, 2));
@@ -696,41 +722,6 @@ void ReportExecution(string symbol, string action, double price, double profit=0
    WebRequest("POST", url, headers, 3000, post_data, result_data, result_headers);
 }
 
-//+------------------------------------------------------------------+
-//| Проверка и восстановление оригинальных TP и параметров позиций  |
-//+------------------------------------------------------------------+
-void CheckAndFixAnomalousPositions()
-{
-   for(int i = PositionsTotal() - 1; i >= 0; i--)
-   {
-      ulong ticket = PositionGetTicket(i);
-      if(ticket > 0 && PositionGetInteger(POSITION_MAGIC) == InpMagicNumber)
-      {
-         string sym = PositionGetString(POSITION_SYMBOL);
-         double sl = PositionGetDouble(POSITION_SL);
-         double tp = PositionGetDouble(POSITION_TP);
-
-         // Восстановление оригинального TP для CADJPY (если стоял микро-TP 111.898)
-         if(StringFind(sym, "CADJPY") >= 0 && tp > 0.0 && tp < 112.50)
-         {
-            double orig_tp = 113.399;
-            if(trade.PositionModify(ticket, sl, orig_tp))
-            {
-               Print("🔄 [SmartTrader] Восстановлен оригинальный Take Profit для CADJPY: ", orig_tp);
-            }
-         }
-         // Восстановление оригинального TP для EURJPY (если стоял микро-TP 179.382)
-         if(StringFind(sym, "EURJPY") >= 0 && tp > 0.0 && tp < 180.00)
-         {
-            double orig_tp = 184.177;
-            if(trade.PositionModify(ticket, sl, orig_tp))
-            {
-               Print("🔄 [SmartTrader] Восстановлен оригинальный Take Profit для EURJPY: ", orig_tp);
-            }
-         }
-      }
-   }
-}
 
 //+------------------------------------------------------------------+
 //| Trade transaction handler: мгновенное оповещение о закрытии      |
@@ -740,6 +731,7 @@ void OnTradeTransaction(const MqlTradeTransaction& trans, const MqlTradeRequest&
    if(trans.type == TRADE_TRANSACTION_DEAL_ADD)
    {
       ulong deal_ticket = trans.deal;
+      HistorySelect(0, TimeCurrent());
       if(deal_ticket > 0 && HistoryDealSelect(deal_ticket))
       {
          long magic = HistoryDealGetInteger(deal_ticket, DEAL_MAGIC);

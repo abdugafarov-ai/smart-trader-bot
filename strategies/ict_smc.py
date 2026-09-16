@@ -61,12 +61,12 @@ class ICTSMCStrategy(BaseStrategy):
         """
         for i in range(ob_idx + 2, len(df)):
             if direction == "LONG":
-                # Бычий OB митигирован если цена закрылась ниже его low
-                if df['close'].iloc[i] < ob_low:
+                # Бычий OB митигирован если цена коснулась или ушла ниже его high
+                if df['low'].iloc[i] <= ob_high:
                     return True
             else:
-                # Медвежий OB митигирован если цена закрылась выше его high
-                if df['close'].iloc[i] > ob_high:
+                # Медвежий OB митигирован если цена коснулась или ушла выше его low
+                if df['high'].iloc[i] >= ob_low:
                     return True
         return False
 
@@ -199,25 +199,29 @@ class ICTSMCStrategy(BaseStrategy):
         bos_found = False
         choch_found = False
 
-        # 3. Break of Structure (BOS) & CHoCH
-        if is_bullish_structure and current_price > hh1:
+        # 3. Break of Structure (BOS) & CHoCH (Historical check for pullback)
+        recent_closes = df['close'].iloc[-15:]
+        bull_break = (recent_closes > hh1).any()
+        bear_break = (recent_closes < hl1).any()
+
+        if is_bullish_structure and bull_break:
             bos_found = True
             direction = "LONG"
             sub_signals += 1
             details.append(f"Бычий BOS (пробой максимума {self._format_price(hh1, symbol)})")
-        elif is_bearish_structure and current_price < hl1:
+        elif is_bearish_structure and bear_break:
             bos_found = True
             direction = "SHORT"
             sub_signals += 1
             details.append(f"Медвежий BOS (пробой минимума {self._format_price(hl1, symbol)})")
 
         if not bos_found:
-            if is_bearish_structure and current_price > hh1:
+            if is_bearish_structure and bull_break:
                 choch_found = True
                 direction = "LONG"
                 sub_signals += 1
                 details.append(f"Бычий CHoCH (разворот тренда вверх через {self._format_price(hh1, symbol)})")
-            elif is_bullish_structure and current_price < hl1:
+            elif is_bullish_structure and bear_break:
                 choch_found = True
                 direction = "SHORT"
                 sub_signals += 1
@@ -264,7 +268,7 @@ class ICTSMCStrategy(BaseStrategy):
         # ═══ ФИЛЬТР КОНСОЛИДАЦИИ И МЕРТВОГО РЫНКА (ANTI-CHOP / АНТИ-ЗАМОРОЗКА) ═══
         last_5_candles = df.iloc[-5:]
         avg_range_5 = float((last_5_candles['high'] - last_5_candles['low']).mean())
-        if avg_range_5 < 0.50 * atr:
+        if avg_range_5 < 0.30 * atr:
             details.append("⚠️ Рынок замер на месте (свечи микроскопические < 0.5 ATR) — сигнал пропущен")
             return self._make_result(
                 StrategySignal(direction="NEUTRAL", confidence=0, details=details),
@@ -317,7 +321,7 @@ class ICTSMCStrategy(BaseStrategy):
             is_bear_next = df['close'].iloc[i + 1] < df['open'].iloc[i + 1]
             impulse = abs(df['close'].iloc[i + 1] - df['open'].iloc[i + 1])
 
-            if impulse > 1.1 * atr:
+            if impulse > 0.5 * atr:
                 if df['close'].iloc[i] < df['open'].iloc[i] and is_bull_next and direction == "LONG":
                     ob_high, ob_low = float(df['high'].iloc[i]), float(df['low'].iloc[i])
                     if current_price >= ob_low:
@@ -481,8 +485,8 @@ class ICTSMCStrategy(BaseStrategy):
                 tp2 = entry + 3.0 * risk - tp_buffer
                 details.append(f"🎯 TP1 на ликвидности (front-run swing high): {self._format_price(tp1, symbol)}")
             else:
-                tp1 = entry + target_mult * risk - tp_buffer
-                tp2 = entry + 3.0 * risk - tp_buffer
+                tp1 = entry + target_mult * risk
+                tp2 = entry + 3.0 * risk
 
         else:  # SHORT
             candidates = []
@@ -539,8 +543,8 @@ class ICTSMCStrategy(BaseStrategy):
                 tp2 = entry - 3.0 * risk + tp_buffer
                 details.append(f"🎯 TP1 на ликвидности (front-run swing low): {self._format_price(tp1, symbol)}")
             else:
-                tp1 = entry - target_mult * risk + tp_buffer
-                tp2 = entry - 3.0 * risk + tp_buffer
+                tp1 = entry - target_mult * risk
+                tp2 = entry - 3.0 * risk
 
         risk = abs(entry - sl)
         reward_1 = abs(tp1 - entry)

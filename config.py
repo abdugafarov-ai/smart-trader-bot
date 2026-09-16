@@ -225,7 +225,7 @@ MAX_SPREAD_PIPS: dict[str, float] = {
     "CADJPY": 3.5,
     "AUDCAD": 3.5,
     "AUDNZD": 3.5,
-    "XAUUSD": 45.0,  # Для золота 45 пунктов = $0.45 спреда
+    "XAUUSD": 5.0,  # Для золота 5 пунктов = $0.50 спреда
     "DEFAULT": 4.0
 }
 
@@ -253,10 +253,10 @@ def is_weekly_trading_window_open() -> tuple[bool, str]:
     wd = now.weekday()  # 0 = Mon, ..., 4 = Fri, 5 = Sat, 6 = Sun
     hour = now.hour
 
-    if wd == 5:
+    if wd == 5:  # Saturday
         return False, "Суббота: рынок Forex закрыт"
-    if wd == 6 and hour < 22:
-        return False, "Воскресенье: рынок Forex закрыт до 22:00 UTC"
+    if wd == 6:  # Sunday — block entirely
+        return False, "Воскресенье: рынок Forex закрыт"
 
     if wd == 0 and hour < MONDAY_START_HOUR_UTC:
         return False, f"Понедельник утро (до 12:00 Ташкент / 07:00 UTC) — ожидание институционального объема Лондона"

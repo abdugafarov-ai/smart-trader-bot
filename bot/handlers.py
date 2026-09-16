@@ -159,8 +159,22 @@ async def run_multi_tf_analysis(symbol: str) -> MultiTFResult:
     pips_tp2 = round(abs(tp2 - entry) * pip_mult, 1) if entry and tp2 else None
     
     # Звезды уверенности: ТРЕБУЕТСЯ сонаправленность минимум 2 таймфреймов (tf_agree >= 2) и R:R >= 2.0
-    if overall_dir != 'NEUTRAL' and rr1 and rr1 >= 2.0 and tf_agree >= 2:
-        overall_stars = 5 if tf_agree >= 3 else 4
+    if overall_dir != 'NEUTRAL' and rr1 and rr1 >= 1.5 and tf_agree >= 1:
+        # Graduated star system: 1 TF + low R:R = 3 stars, up to 5 stars for best setups
+        if tf_agree >= 3 and rr1 >= 2.5:
+            overall_stars = 5
+        elif tf_agree >= 3 and rr1 >= 2.0:
+            overall_stars = 5
+        elif tf_agree >= 2 and rr1 >= 2.0:
+            overall_stars = 4
+        elif tf_agree >= 2 and rr1 >= 1.5:
+            overall_stars = 3
+        elif tf_agree >= 1 and rr1 >= 2.0:
+            overall_stars = 3
+        else:
+            overall_stars = 0
+            overall_dir = "NEUTRAL"
+            entry = sl = tp1 = tp2 = rr1 = None
     else:
         overall_stars = 0
         overall_dir = "NEUTRAL"
