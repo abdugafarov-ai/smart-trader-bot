@@ -550,7 +550,7 @@ class ICTSMCStrategy(BaseStrategy):
         reward_1 = abs(tp1 - entry)
         rr1 = reward_1 / risk if risk > 0 else 0.0
 
-        min_rr = 1.5 if adx_low else 1.8
+        min_rr = 2.0  # Минимум 1:2.0 (строгое требование трейдера)
         if rr1 < min_rr:
             return self._make_result(
                 StrategySignal(direction="NEUTRAL", confidence=0, details=[f"R:R < 1:{min_rr:.1f} — отброшен"]),

@@ -237,13 +237,11 @@ class AutoSignalScanner:
                 if not result or result.overall_direction == 'NEUTRAL':
                     continue
 
-                min_stars = config.MIN_SIGNAL_STARS
+                min_stars = config.MIN_SIGNAL_STARS  # = 4
                 # В режиме серии стопов автоматически требуем наивысшее качество (5 звёзд)
                 if drawdown_mode:
                     min_stars = 5
-                elif in_kill_zone:
-                    # Kill Zone бонус: снижаем порог на 1 звезду (4→3)
-                    min_stars = max(3, min_stars - 1)
+                # Kill Zone НЕ снижает планку ниже 4★ (строгий режим)
 
                 if result.overall_stars >= min_stars and (result.risk_reward_1 or 0) >= 2.0:
 
