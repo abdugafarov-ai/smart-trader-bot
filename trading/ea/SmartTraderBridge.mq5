@@ -371,10 +371,11 @@ void ParseAndExecuteOrders(string json)
       // Получаем точное имя символа у брокера (с учетом суффиксов .pro, m, _i)
       string broker_symbol = GetBrokerSymbol(pair);
 
-      // Извлекаем фрагмент вокруг пары
-      int block_start = StringFind(json, "{", pos - 50);
+      // Извлекаем фрагмент вокруг пары (защита от отрицательного индекса в MQL5)
+      int search_start = (int)MathMax(0, pos - 100);
+      int block_start = StringFind(json, "{", search_start);
       int block_end   = StringFind(json, "}", pos);
-      if(block_start < 0 || block_end < 0) continue;
+      if(block_start < 0 || block_end < 0 || block_start > pos) continue;
 
       string block = StringSubstr(json, block_start, block_end - block_start + 1);
 

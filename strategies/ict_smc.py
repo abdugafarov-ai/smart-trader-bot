@@ -478,7 +478,7 @@ class ICTSMCStrategy(BaseStrategy):
             tp_buffer = max(3.5 * pip_unit, 0.12 * atr)
 
             adx_low = bool('adx' in df.columns and pd.notna(df['adx'].iloc[-1]) and df['adx'].iloc[-1] < 25.0)
-            target_mult = 1.3 if adx_low else 1.8
+            target_mult = 2.0  # Гарантирует R:R >= 1:2.0 (соответствует min_rr)
             liq_target = self._find_liquidity_target(swing_highs, swing_lows, direction, entry, sl)
             if liq_target:
                 tp1 = max(entry + target_mult * risk, liq_target - tp_buffer)
@@ -536,7 +536,7 @@ class ICTSMCStrategy(BaseStrategy):
             tp_buffer = max(3.5 * pip_unit, 0.12 * atr)
 
             adx_low = bool('adx' in df.columns and pd.notna(df['adx'].iloc[-1]) and df['adx'].iloc[-1] < 25.0)
-            target_mult = 1.3 if adx_low else 1.8
+            target_mult = 2.0  # Гарантирует R:R >= 1:2.0 (соответствует min_rr)
             liq_target = self._find_liquidity_target(swing_highs, swing_lows, direction, entry, sl)
             if liq_target:
                 tp1 = min(entry - target_mult * risk, liq_target + tp_buffer)
