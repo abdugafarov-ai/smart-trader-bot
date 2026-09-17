@@ -34,6 +34,9 @@ string   common_pairs[] = {
 };
 
 string GetBrokerSymbol(string standard_pair);
+void   ReportExecution(string symbol, string action, double price, double profit=0.0, string reason="", int signal_id=0);
+void   SetOptimalFillingMode(string symbol);
+void   CleanupStalePendingOrders();
 
 //+------------------------------------------------------------------+
 //| Получение JSON текущих живых цен (тиков) для всех пар           |
@@ -117,6 +120,11 @@ void OnTimer()
    PollOrdersFromServer();
 
    export_timer_counter++;
+   if(export_timer_counter % 5 == 0) // каждые 15 секунд
+   {
+      CleanupStalePendingOrders();
+   }
+
    if(export_timer_counter >= 20) // каждые 60 секунд (20 * 3 сек)
    {
       export_timer_counter = 0;
@@ -329,7 +337,11 @@ void PollOrdersFromServer()
    char post_data[];
    char result_data[];
    string result_headers;
-   StringToCharArray(body, post_data, 0, StringLen(body), CP_UTF8);
+   int bytes_copied = StringToCharArray(body, post_data, 0, WHOLE_ARRAY, CP_UTF8);
+   if(bytes_copied > 0 && post_data[bytes_copied - 1] == 0)
+   {
+      ArrayResize(post_data, bytes_copied - 1);
+   }
    
    int res = WebRequest("POST", url, headers, 3000, post_data, result_data, result_headers);
    if(res == 200)
@@ -348,6 +360,54 @@ void PollOrdersFromServer()
    {
       Print("⚠️ [SmartTraderBridge] Ошибка WebRequest. Код: ", GetLastError(), 
             ". Добавьте ", InpServerUrl, " в список разрешенных URL в MT5!");
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Автоматическое определение лучшего типа исполнения ордера        |
+//| (Совместимо со всеми брокерами, ECN, Standard и Prop-фирмами)    |
+//+------------------------------------------------------------------+
+void SetOptimalFillingMode(string symbol)
+{
+   uint fill_modes = (uint)SymbolInfoInteger(symbol, SYMBOL_FILLING_MODE);
+   
+   // SYMBOL_FILLING_IOC = 2, SYMBOL_FILLING_FOK = 1
+   if((fill_modes & SYMBOL_FILLING_IOC) != 0)
+   {
+      trade.SetTypeFilling(ORDER_FILLING_IOC);
+   }
+   else if((fill_modes & SYMBOL_FILLING_FOK) != 0)
+   {
+      trade.SetTypeFilling(ORDER_FILLING_FOK);
+   }
+   else
+   {
+      trade.SetTypeFilling(ORDER_FILLING_RETURN);
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Авто-очистка зависших отложенных ордеров старше 24 часов         |
+//+------------------------------------------------------------------+
+void CleanupStalePendingOrders()
+{
+   datetime now = TimeCurrent();
+   for(int i = OrdersTotal() - 1; i >= 0; i--)
+   {
+      ulong ticket = OrderGetTicket(i);
+      if(ticket > 0 && OrderGetInteger(ORDER_MAGIC) == InpMagicNumber)
+      {
+         datetime time_setup = (datetime)OrderGetInteger(ORDER_TIME_SETUP);
+         if(time_setup > 0 && (now - time_setup) > 86400)
+         {
+            string sym = OrderGetString(ORDER_SYMBOL);
+            Print("⏰ [SmartTrader] Отложенный ордер #", ticket, " (", sym, ") устарел (>24ч). Авто-удаление...");
+            if(trade.OrderDelete(ticket))
+            {
+               ReportExecution(sym, "LIMIT_EXPIRED", 0.0, 0.0, "Истек срок 24ч (авто-очистка советником)", 0);
+            }
+         }
+      }
    }
 }
 
@@ -438,16 +498,27 @@ void ParseAndExecuteOrders(string json)
          lot = CalculateRiskLot(broker_symbol, sl);
       }
 
+      // Автоматическое определение режима заполнения для брокера
+      SetOptimalFillingMode(broker_symbol);
+
       // Открываем ордер с валидацией R:R
       if(is_long)
       {
          double ask = SymbolInfoDouble(broker_symbol, SYMBOL_ASK);
          if(is_limit && entry > 0 && entry < ask)
          {
-            if(trade.BuyLimit(lot, entry, broker_symbol, sl, tp, ORDER_TIME_GTC, 0, "SmartTrader Limit"))
+            datetime exp_time = TimeCurrent() + 86400; // 24 часа
+            ENUM_ORDER_TYPE_TIME time_type = ORDER_TIME_GTC;
+            long exp_flags = SymbolInfoInteger(broker_symbol, SYMBOL_EXPIRATION_MODE);
+            if((exp_flags & SYMBOL_EXPIRATION_SPECIFIED) != 0)
             {
-               Print("✅ [SmartTrader] BUY_LIMIT выставлен: ", broker_symbol, " @ ", entry, " | SL: ", sl, " | TP: ", tp);
-               ReportExecution(pair, "BUY_LIMIT", entry, 0.0, "Buy Limit выставлен", sig_id);
+               time_type = ORDER_TIME_SPECIFIED;
+            }
+
+            if(trade.BuyLimit(lot, entry, broker_symbol, sl, tp, time_type, (time_type == ORDER_TIME_SPECIFIED ? exp_time : 0), "SmartTrader Limit"))
+            {
+               Print("✅ [SmartTrader] BUY_LIMIT выставлен: ", broker_symbol, " @ ", entry, " | SL: ", sl, " | TP: ", tp, " | Срок: 24ч");
+               ReportExecution(pair, "BUY_LIMIT", entry, 0.0, "Buy Limit выставлен (24ч)", sig_id);
                if(sig_id > 0) MarkSignalProcessed(sig_id);
             }
             else
@@ -504,10 +575,18 @@ void ParseAndExecuteOrders(string json)
          double bid = SymbolInfoDouble(broker_symbol, SYMBOL_BID);
          if(is_limit && entry > 0 && entry > bid)
          {
-            if(trade.SellLimit(lot, entry, broker_symbol, sl, tp, ORDER_TIME_GTC, 0, "SmartTrader Limit"))
+            datetime exp_time = TimeCurrent() + 86400; // 24 часа
+            ENUM_ORDER_TYPE_TIME time_type = ORDER_TIME_GTC;
+            long exp_flags = SymbolInfoInteger(broker_symbol, SYMBOL_EXPIRATION_MODE);
+            if((exp_flags & SYMBOL_EXPIRATION_SPECIFIED) != 0)
             {
-               Print("✅ [SmartTrader] SELL_LIMIT выставлен: ", broker_symbol, " @ ", entry, " | SL: ", sl, " | TP: ", tp);
-               ReportExecution(pair, "SELL_LIMIT", entry, 0.0, "Sell Limit выставлен", sig_id);
+               time_type = ORDER_TIME_SPECIFIED;
+            }
+
+            if(trade.SellLimit(lot, entry, broker_symbol, sl, tp, time_type, (time_type == ORDER_TIME_SPECIFIED ? exp_time : 0), "SmartTrader Limit"))
+            {
+               Print("✅ [SmartTrader] SELL_LIMIT выставлен: ", broker_symbol, " @ ", entry, " | SL: ", sl, " | TP: ", tp, " | Срок: 24ч");
+               ReportExecution(pair, "SELL_LIMIT", entry, 0.0, "Sell Limit выставлен (24ч)", sig_id);
                if(sig_id > 0) MarkSignalProcessed(sig_id);
             }
             else
@@ -637,7 +716,7 @@ int CountTotalOpenAndPending()
 }
 
 //+------------------------------------------------------------------+
-//| Перевод открытой позиции в безубыток                             |
+//| Перевод открытой позиции в безубыток с валидацией уровней        |
 //+------------------------------------------------------------------+
 void ApplyBreakevenIfEligible(string symbol)
 {
@@ -646,15 +725,54 @@ void ApplyBreakevenIfEligible(string symbol)
       if(StringCompare(PositionGetSymbol(i), symbol, false) == 0 && PositionGetInteger(POSITION_MAGIC) == InpMagicNumber)
       {
          ulong ticket = PositionGetTicket(i);
+         if(ticket <= 0) continue;
+
          double open_price = PositionGetDouble(POSITION_PRICE_OPEN);
          double curr_sl    = PositionGetDouble(POSITION_SL);
          double tp         = PositionGetDouble(POSITION_TP);
-         
-         // Если SL еще не на точке входа
-         if(MathAbs(curr_sl - open_price) > Point())
+         ENUM_POSITION_TYPE pos_type = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
+
+         double point = SymbolInfoDouble(symbol, SYMBOL_POINT);
+         long stops_level = SymbolInfoInteger(symbol, SYMBOL_TRADE_STOPS_LEVEL);
+         double min_stop_dist = stops_level * point;
+
+         // Если SL уже в безубытке или надежнее в плюсе, не модифицируем повторно
+         if(pos_type == POSITION_TYPE_BUY && curr_sl >= open_price - point) continue;
+         if(pos_type == POSITION_TYPE_SELL && curr_sl > 0 && curr_sl <= open_price + point) continue;
+
+         // Проверяем текущую рыночную цену (Bid/Ask)
+         MqlTick tick;
+         if(!SymbolInfoTick(symbol, tick)) continue;
+
+         bool can_modify = false;
+         if(pos_type == POSITION_TYPE_BUY)
          {
-            trade.PositionModify(ticket, open_price, tp);
-            Print("🛡 [SmartTrader] Позиция ", symbol, " переведена в БЕЗУБЫТОК (SL = Entry: ", open_price, ")");
+            // Для BUY: текущий Bid должен быть строго выше точки входа как минимум на min_stop_dist
+            if(tick.bid > open_price + min_stop_dist)
+               can_modify = true;
+            else
+               Print("⏳ [SmartTrader Breakeven] ", symbol, " BUY: текущий Bid ", tick.bid, " слишком близко к входу ", open_price, " (требуется отступ >= ", min_stop_dist, ")");
+         }
+         else if(pos_type == POSITION_TYPE_SELL)
+         {
+            // Для SELL: текущий Ask должен быть строго ниже точки входа как минимум на min_stop_dist
+            if(tick.ask < open_price - min_stop_dist)
+               can_modify = true;
+            else
+               Print("⏳ [SmartTrader Breakeven] ", symbol, " SELL: текущий Ask ", tick.ask, " слишком близко к входу ", open_price, " (требуется отступ >= ", min_stop_dist, ")");
+         }
+
+         if(can_modify)
+         {
+            if(trade.PositionModify(ticket, open_price, tp))
+            {
+               Print("🛡 [SmartTrader] Позиция ", symbol, " #", ticket, " переведена в БЕЗУБЫТОК (SL = Entry: ", open_price, ")");
+               ReportExecution(symbol, "BREAKEVEN_APPLIED", open_price, 0.0, "SL перенесен в безубыток", 0);
+            }
+            else
+            {
+               Print("⚠️ [SmartTrader] Ошибка модификации безубытка #", ticket, ": ", trade.ResultRetcode(), " - ", trade.ResultRetcodeDescription());
+            }
          }
       }
    }
@@ -719,7 +837,11 @@ void ReportExecution(string symbol, string action, double price, double profit=0
    char post_data[];
    char result_data[];
    string result_headers;
-   StringToCharArray(body, post_data, 0, StringLen(body), CP_UTF8);
+   int bytes_copied = StringToCharArray(body, post_data, 0, WHOLE_ARRAY, CP_UTF8);
+   if(bytes_copied > 0 && post_data[bytes_copied - 1] == 0)
+   {
+      ArrayResize(post_data, bytes_copied - 1);
+   }
    WebRequest("POST", url, headers, 3000, post_data, result_data, result_headers);
 }
 

@@ -732,12 +732,14 @@ async def get_consecutive_sl_count(max_lookback_hours: float = 12.0) -> int:
 
 
 async def get_today_signal_count() -> int:
-    """Считает количество сигналов, созданных сегодня (по UTC). Персистентный счётчик, переживает перезагрузки."""
+    """Считает количество реально исполненных/активных сигналов за сегодня (исключая отменённые MT5)."""
     try:
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         async with aiosqlite.connect(str(DB_PATH)) as db:
             cursor = await db.execute(
-                "SELECT COUNT(*) FROM signals WHERE created_at LIKE ?",
+                """SELECT COUNT(*) FROM signals 
+                   WHERE created_at LIKE ? 
+                   AND status NOT IN ('CANCELLED_BY_MT5', 'CANCELLED_UNCONFIRMED', 'EXPIRED')""",
                 (f"{today}%",),
             )
             count = (await cursor.fetchone())[0]

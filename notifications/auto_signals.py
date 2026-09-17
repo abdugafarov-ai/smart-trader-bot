@@ -92,36 +92,55 @@ class AutoSignalScanner:
         """Проверяет, активна ли торговая сессия для данной пары."""
         return config.is_pair_in_active_session(symbol)
 
-    # ── Correlation Filter ──
+    def _get_currency_exposures(self, symbol: str, direction: str) -> list[str]:
+        """
+        Возвращает список валютных экспозиций для сделки.
+        Например: EURUSD LONG -> ['+EUR', '-USD']
+                  USDJPY LONG -> ['+USD', '-JPY']
+                  USDJPY SHORT -> ['-USD', '+JPY']
+        """
+        sym = symbol.upper().replace("/", "").replace("=X", "")
+        if len(sym) >= 6 and not sym.endswith("USDT"):
+            base, quote = sym[:3], sym[3:6]
+            if direction == "LONG":
+                return [f"+{base}", f"-{quote}"]
+            elif direction == "SHORT":
+                return [f"-{base}", f"+{quote}"]
+        return []
+
+    # ── Correlation Filter (Институциональный контроль валютной концентрации) ──
     async def _check_correlation_limit(self, symbol: str, direction: str) -> bool:
         """
-        Проверяет, не превышен ли лимит коррелированных сигналов.
-        Например: если уже есть 2 LONG на EURUSD и GBPUSD (оба = SHORT USD),
-        то третий LONG на AUDUSD блокируется.
+        Проверяет, не превышен ли лимит концентрации риска по одной валюте (макс. 2 позиции в одну сторону).
+        Например: не более 2 сделок, шортящих USD одновременно (+EUR/-USD, +GBP/-USD).
         """
         try:
+            new_exposures = self._get_currency_exposures(symbol, direction)
+            if not new_exposures:
+                return True
+
             open_signals = await get_active_signals()
             pending = await get_pending_signals()
             all_open = open_signals + pending
 
-            for group_name, group_pairs in config.CORRELATION_GROUPS.items():
-                if symbol not in group_pairs:
-                    continue
+            # Считаем текущие валютные экспозиции по всем открытым ордерам
+            exposure_counts: dict[str, int] = {}
+            for sig in all_open:
+                s_sym = sig.get('symbol', '')
+                s_dir = sig.get('direction', '')
+                for exp in self._get_currency_exposures(s_sym, s_dir):
+                    exposure_counts[exp] = exposure_counts.get(exp, 0) + 1
 
-                # Считаем открытые ордера в этой группе с тем же направлением
-                same_dir_count = 0
-                for sig in all_open:
-                    sig_symbol = sig.get('symbol', '')
-                    sig_dir = sig.get('direction', '')
-                    if sig_symbol in group_pairs and sig_dir == direction:
-                        same_dir_count += 1
+            # Проверяем, не превысит ли новый ордер лимит по любой валюте
+            max_allowed = getattr(config, 'MAX_CORRELATED_SIGNALS', 2)
+            for exp in new_exposures:
+                current_cnt = exposure_counts.get(exp, 0)
+                if current_cnt >= max_allowed:
+                    logger.info("Currency correlation limit: %s %s blocked (%d/%d on %s)",
+                                symbol, direction, current_cnt, max_allowed, exp)
+                    return False
 
-                if same_dir_count >= config.MAX_CORRELATED_SIGNALS:
-                    logger.info("Correlation limit: %s %s blocked (%d/%d in group %s)",
-                               symbol, direction, same_dir_count, config.MAX_CORRELATED_SIGNALS, group_name)
-                    return False  # Blocked
-
-            return True  # Allowed
+            return True
         except Exception as e:
             logger.error("Correlation check error: %s", e)
             return True
