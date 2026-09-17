@@ -307,32 +307,62 @@ async def bridge_post_report(request: web.Request) -> web.Response:
         sig_id = int(data.get("signal_id") or 0)
 
         from db.database import (
-            confirm_signal_by_broker, reject_signal_by_broker, close_signal_by_broker
+            confirm_signal_by_broker, reject_signal_by_broker, close_signal_by_broker,
+            activate_filled_signal, expire_signal_by_broker
         )
+        ticket = int(data.get("ticket") or data.get("order") or 0)
 
-        # 1. Ордер успешно открыт или выставлен лимит
-        if action in ("BUY", "SELL", "BUY_LIMIT", "SELL_LIMIT", "OPENED"):
-            await confirm_signal_by_broker(symbol, action, price, signal_id=sig_id)
-            order_desc = "BUY (Покупка)" if "BUY" in action else "SELL (Продажа)"
-            if "LIMIT" in action:
-                msg = (
-                    f"⏳ <b>ЛИМИТНЫЙ ОРДЕР ВЫСТАВЛЕН В MT5</b>\n"
-                    f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                    f"📊 <b>{symbol}</b> | {order_desc}\n"
-                    f"📍 Цена: <code>{price:.5f}</code>\n"
-                    f"💼 <i>Отложенный ордер размещен в биржевом стакане MetaTrader 5.</i>"
-                )
-            else:
-                msg = (
-                    f"🚀 <b>ОРДЕР ИСПОЛНЕН В METATRADER 5</b>\n"
-                    f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                    f"📊 <b>{symbol}</b> | {order_desc}\n"
-                    f"📍 Цена входа: <code>{price:.5f}</code>\n"
-                    f"💼 <i>Сделка подтверждена брокером и реально открыта в терминале!</i>"
-                )
+        # 1. Лимитный ордер выставлен в стакан
+        if action in ("BUY_LIMIT", "SELL_LIMIT"):
+            await confirm_signal_by_broker(symbol, action, price, ticket=ticket, signal_id=sig_id)
+            order_desc = "BUY LIMIT (Покупка)" if "BUY" in action else "SELL LIMIT (Продажа)"
+            msg = (
+                f"⏳ <b>ЛИМИТНЫЙ ОРДЕР ВЫСТАВЛЕН В MT5</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"📊 <b>{symbol}</b> | {order_desc}\n"
+                f"📍 Цена: <code>{price:.5f}</code>\n"
+                f"💼 <i>Отложенный ордер размещен в биржевом стакане MetaTrader 5.</i>"
+            )
             await _send_telegram_notification(msg)
 
-        # 2. Вход отклонен роботом (R:R < 1.8, превышен лимит или ошибка терминала)
+        # 2. Лимитный ордер исполнился брокером (DEAL_ENTRY_IN -> позиция в рынке)
+        elif action in ("ORDER_FILLED", "LIMIT_FILLED"):
+            await activate_filled_signal(symbol, price, ticket=ticket, signal_id=sig_id)
+            msg = (
+                f"🚀 <b>ЛИМИТНЫЙ ОРДЕР СРАБОТАЛ (В РЫНКЕ)</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"📊 <b>{symbol}</b>\n"
+                f"📍 Цена фактического входа: <code>{price:.5f}</code>\n"
+                f"💼 <i>Цена коснулась уровня лимита. Позиция открыта в MetaTrader 5!</i>"
+            )
+            await _send_telegram_notification(msg)
+
+        # 3. Лимитный ордер снят брокером или истек по таймауту
+        elif action in ("LIMIT_EXPIRED", "ORDER_CANCELED", "ORDER_CANCELLED", "EXPIRED"):
+            await expire_signal_by_broker(symbol, signal_id=sig_id, reason=reason)
+            msg = (
+                f"⏰ <b>ЛИМИТНЫЙ ОРДЕР СНЯТ / ИСТЁК В MT5</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"📊 <b>{symbol}</b>\n"
+                f"ℹ️ Причина: <code>{reason or 'Истек срок ожидания (снят)'}</code>\n"
+                f"💼 <i>Ордер удален из биржевого стакана. Торговый слот освобожден.</i>"
+            )
+            await _send_telegram_notification(msg)
+
+        # 4. Рыночный ордер сразу открыт
+        elif action in ("BUY", "SELL", "OPENED"):
+            await confirm_signal_by_broker(symbol, action, price, ticket=ticket, signal_id=sig_id)
+            order_desc = "BUY (Покупка)" if "BUY" in action else "SELL (Продажа)"
+            msg = (
+                f"🚀 <b>ОРДЕР ИСПОЛНЕН В METATRADER 5</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"📊 <b>{symbol}</b> | {order_desc}\n"
+                f"📍 Цена входа: <code>{price:.5f}</code>\n"
+                f"💼 <i>Сделка подтверждена брокером и реально открыта в терминале!</i>"
+            )
+            await _send_telegram_notification(msg)
+
+        # 5. Вход отклонен роботом (R:R < 1.8, превышен лимит или ошибка терминала)
         elif action.startswith("REJECTED"):
             await reject_signal_by_broker(symbol, reason, signal_id=sig_id)
             if "RR" in action:

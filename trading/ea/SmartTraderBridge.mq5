@@ -282,7 +282,7 @@ void ExportBrokerRates()
       {
          MqlRates rates[];
          ArraySetAsSeries(rates, true);
-         int copied = CopyRates(sym, tfs[t], 0, 100, rates);
+         int copied = CopyRates(sym, tfs[t], 0, 300, rates);
          if(copied > 0)
          {
             string fname = "candles_" + standard_sym + "_" + tf_names[t] + ".csv";
@@ -431,10 +431,17 @@ void ParseAndExecuteOrders(string json)
       // Получаем точное имя символа у брокера (с учетом суффиксов .pro, m, _i)
       string broker_symbol = GetBrokerSymbol(pair);
 
-      // Извлекаем фрагмент вокруг пары (защита от отрицательного индекса в MQL5)
-      int search_start = (int)MathMax(0, pos - 100);
-      int block_start = StringFind(json, "{", search_start);
-      int block_end   = StringFind(json, "}", pos);
+      // Извлекаем фрагмент вокруг пары (обратный поиск { от pos)
+      int block_start = -1;
+      for(int k = pos; k >= 0; k--)
+      {
+         if(StringGetCharacter(json, k) == '{')
+         {
+            block_start = k;
+            break;
+         }
+      }
+      int block_end = StringFind(json, "}", pos);
       if(block_start < 0 || block_end < 0 || block_start > pos) continue;
 
       string block = StringSubstr(json, block_start, block_end - block_start + 1);
@@ -869,6 +876,37 @@ void OnTradeTransaction(const MqlTradeTransaction& trans, const MqlTradeRequest&
                string comment = HistoryDealGetString(deal_ticket, DEAL_COMMENT);
                Print("📢 [SmartTrader Bridge] Закрыта сделка ", sym, " #", deal_ticket, " | Профит: ", profit, " USD | Цена: ", close_price);
                ReportExecution(sym, "DEAL_CLOSED", close_price, profit, comment, 0);
+            }
+            else if(entry_type == DEAL_ENTRY_IN)
+            {
+               double open_price = HistoryDealGetDouble(deal_ticket, DEAL_PRICE);
+               string sym = HistoryDealGetString(deal_ticket, DEAL_SYMBOL);
+               ulong order_ticket = HistoryDealGetInteger(deal_ticket, DEAL_ORDER);
+               string comment = HistoryDealGetString(deal_ticket, DEAL_COMMENT);
+               Print("🚀 [SmartTrader Bridge] Лимитный ордер сработал (ORDER_FILLED): ", sym, " #", deal_ticket, " order #", order_ticket, " @ ", open_price);
+               ReportExecution(sym, "ORDER_FILLED", open_price, 0.0, comment, 0);
+            }
+         }
+      }
+   }
+   else if(trans.type == TRADE_TRANSACTION_HISTORY_ADD)
+   {
+      ulong order_ticket = trans.order;
+      if(order_ticket > 0 && HistoryOrderSelect(order_ticket))
+      {
+         long magic = HistoryOrderGetInteger(order_ticket, ORDER_MAGIC);
+         if(magic == InpMagicNumber)
+         {
+            ENUM_ORDER_STATE state = (ENUM_ORDER_STATE)HistoryOrderGetInteger(order_ticket, ORDER_STATE);
+            ENUM_ORDER_TYPE otype = (ENUM_ORDER_TYPE)HistoryOrderGetInteger(order_ticket, ORDER_TYPE);
+            if(otype == ORDER_TYPE_BUY_LIMIT || otype == ORDER_TYPE_SELL_LIMIT)
+            {
+               if(state == ORDER_STATE_EXPIRED || state == ORDER_STATE_CANCELED)
+               {
+                  string sym = HistoryOrderGetString(order_ticket, ORDER_SYMBOL);
+                  Print("⏰ [SmartTrader Bridge] Лимитный ордер удален/истек (LIMIT_EXPIRED): ", sym, " #", order_ticket);
+                  ReportExecution(sym, "LIMIT_EXPIRED", 0.0, 0.0, "LIMIT_EXPIRED_OR_CANCELED", 0);
+               }
             }
          }
       }

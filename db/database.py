@@ -173,9 +173,10 @@ async def activate_signal(signal_id: int):
 
 
 async def confirm_signal_by_broker(symbol: str, action: str, price: float, ticket: int = 0, signal_id: int = 0) -> dict | None:
-    """Подтверждает исполнение ордера терминалом MT5."""
+    """Подтверждает прием ордера терминалом MT5 (для лимитов оставляет PENDING, для маркет ордеров OPEN)."""
     try:
         now_iso = datetime.now(timezone.utc).isoformat()
+        is_limit = "LIMIT" in action.upper()
         async with aiosqlite.connect(str(DB_PATH)) as db:
             db.row_factory = aiosqlite.Row
             if signal_id > 0:
@@ -190,19 +191,106 @@ async def confirm_signal_by_broker(symbol: str, action: str, price: float, ticke
             row = await cursor.fetchone()
             if row:
                 sig = dict(row)
-                await db.execute(
-                    """UPDATE signals
-                       SET status = 'OPEN', broker_confirmed = 1, broker_ticket = ?,
-                           activated_at = COALESCE(activated_at, ?),
-                           entry_price = CASE WHEN entry_price IS NULL OR entry_price = 0 THEN ? ELSE entry_price END
-                       WHERE id = ?""",
-                    (ticket, now_iso, price, sig['id'])
-                )
+                if is_limit:
+                    # Лимитный ордер выставлен в MT5: статус PENDING, но подтвержден брокером
+                    await db.execute(
+                        """UPDATE signals
+                           SET status = 'PENDING', broker_confirmed = 1,
+                               broker_ticket = CASE WHEN ? > 0 THEN ? ELSE broker_ticket END,
+                               entry_price = CASE WHEN entry_price IS NULL OR entry_price = 0 THEN ? ELSE entry_price END
+                           WHERE id = ?""",
+                        (ticket, ticket, price, sig['id'])
+                    )
+                else:
+                    # Рыночный ордер сразу открыт
+                    await db.execute(
+                        """UPDATE signals
+                           SET status = 'OPEN', broker_confirmed = 1,
+                               broker_ticket = CASE WHEN ? > 0 THEN ? ELSE broker_ticket END,
+                               activated_at = COALESCE(activated_at, ?),
+                               entry_price = CASE WHEN entry_price IS NULL OR entry_price = 0 THEN ? ELSE entry_price END
+                           WHERE id = ?""",
+                        (ticket, ticket, now_iso, price, sig['id'])
+                    )
                 await db.commit()
                 return sig
             return None
     except Exception as e:
         logger.error("confirm_signal_by_broker error: %s", e)
+        return None
+
+
+async def activate_filled_signal(symbol: str, price: float, ticket: int = 0, signal_id: int = 0) -> dict | None:
+    """Активирует лимитный ордер (переводит PENDING -> OPEN), когда цена коснулась лимита и брокер открыл позицию."""
+    try:
+        now_iso = datetime.now(timezone.utc).isoformat()
+        async with aiosqlite.connect(str(DB_PATH)) as db:
+            db.row_factory = aiosqlite.Row
+            if signal_id > 0:
+                cursor = await db.execute("SELECT * FROM signals WHERE id = ?", (signal_id,))
+            else:
+                cursor = await db.execute(
+                    """SELECT * FROM signals
+                       WHERE symbol = ? AND status = 'PENDING'
+                       ORDER BY id DESC LIMIT 1""",
+                    (symbol,)
+                )
+            row = await cursor.fetchone()
+            if row:
+                sig = dict(row)
+                await db.execute(
+                    """UPDATE signals
+                       SET status = 'OPEN', broker_confirmed = 1,
+                           broker_ticket = CASE WHEN ? > 0 THEN ? ELSE broker_ticket END,
+                           activated_at = ?,
+                           entry_price = CASE WHEN ? > 0 THEN ? ELSE entry_price END
+                       WHERE id = ?""",
+                    (ticket, ticket, now_iso, price, price, sig['id'])
+                )
+                await db.commit()
+                sig['status'] = 'OPEN'
+                sig['activated_at'] = now_iso
+                if price > 0:
+                    sig['entry_price'] = price
+                return sig
+            return None
+    except Exception as e:
+        logger.error("activate_filled_signal error: %s", e)
+        return None
+
+
+async def expire_signal_by_broker(symbol: str, signal_id: int = 0, reason: str = "") -> dict | None:
+    """Отмечает ордер как EXPIRED, если лимит был снят или истек срок действия в MT5."""
+    try:
+        now_iso = datetime.now(timezone.utc).isoformat()
+        async with aiosqlite.connect(str(DB_PATH)) as db:
+            db.row_factory = aiosqlite.Row
+            if signal_id > 0:
+                cursor = await db.execute("SELECT * FROM signals WHERE id = ?", (signal_id,))
+            else:
+                cursor = await db.execute(
+                    """SELECT * FROM signals
+                       WHERE symbol = ? AND status = 'PENDING'
+                       ORDER BY id DESC LIMIT 1""",
+                    (symbol,)
+                )
+            row = await cursor.fetchone()
+            if row:
+                sig = dict(row)
+                res_text = reason or "Истёк срок ожидания входа (снят брокером)"
+                await db.execute(
+                    """UPDATE signals
+                       SET status = 'EXPIRED', closed_at = ?, pnl_pips = 0.0, result = ?
+                       WHERE id = ?""",
+                    (now_iso, res_text, sig['id'])
+                )
+                await db.commit()
+                sig['status'] = 'EXPIRED'
+                sig['result'] = res_text
+                return sig
+            return None
+    except Exception as e:
+        logger.error("expire_signal_by_broker error: %s", e)
         return None
 
 
