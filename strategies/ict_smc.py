@@ -482,7 +482,7 @@ class ICTSMCStrategy(BaseStrategy):
             liq_target = self._find_liquidity_target(swing_highs, swing_lows, direction, entry, sl)
             if liq_target:
                 tp1 = max(entry + target_mult * risk, liq_target - tp_buffer)
-                tp2 = entry + 3.0 * risk - tp_buffer
+                tp2 = max(tp1 + 1.0 * risk, entry + 3.0 * risk)
                 details.append(f"🎯 TP1 на ликвидности (front-run swing high): {self._format_price(tp1, symbol)}")
             else:
                 tp1 = entry + target_mult * risk
@@ -540,7 +540,7 @@ class ICTSMCStrategy(BaseStrategy):
             liq_target = self._find_liquidity_target(swing_highs, swing_lows, direction, entry, sl)
             if liq_target:
                 tp1 = min(entry - target_mult * risk, liq_target + tp_buffer)
-                tp2 = entry - 3.0 * risk + tp_buffer
+                tp2 = min(tp1 - 1.0 * risk, entry - 3.0 * risk)
                 details.append(f"🎯 TP1 на ликвидности (front-run swing low): {self._format_price(tp1, symbol)}")
             else:
                 tp1 = entry - target_mult * risk

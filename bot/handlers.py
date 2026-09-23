@@ -60,12 +60,31 @@ async def safe_edit(callback: CallbackQuery, text: str, reply_markup=None, parse
 
     try:
         return await msg.answer(text, reply_markup=reply_markup, parse_mode=parse_mode)
-    except Exception:
+    except Exception as e_html:
         try:
-            return await msg.answer(text, reply_markup=reply_markup, parse_mode=parse_mode)
+            logger.warning("safe_edit HTML parse failed (%s), falling back to plain text", e_html)
+            return await msg.answer(text, reply_markup=reply_markup, parse_mode=None)
         except Exception as e:
             logger.error("safe_edit message send failed: %s", e)
             return None
+
+def split_message_text(text: str, max_chunk: int = 4000) -> list[str]:
+    """Разбивает длинный текст по строкам/абзацам, не разрывая HTML-теги."""
+    if len(text) <= max_chunk:
+        return [text]
+    chunks = []
+    lines = text.split("\n")
+    cur = ""
+    for line in lines:
+        if len(cur) + len(line) + 1 > max_chunk:
+            if cur:
+                chunks.append(cur)
+            cur = line
+        else:
+            cur = f"{cur}\n{line}" if cur else line
+    if cur:
+        chunks.append(cur)
+    return chunks or [text]
 
 from utils.emoji_markers import get_random_marker
 
@@ -529,19 +548,42 @@ async def cb_menu_actions(callback: CallbackQuery):
     elif action == "autotrade":
         from trading.execution_bridge import bridge_manager
         from bot.keyboards import autotrade_keyboard
+        from db.database import get_bot_setting
+        trading_mode = await get_bot_setting("trading_mode", "micro")
         status_emoji = "🟢 ВКЛЮЧЕН (АКТИВЕН)" if bridge_manager.enabled else "🔴 ПРИОСТАНОВЛЕН (ПАУЗА)"
+
+        if trading_mode == "micro":
+            profile_name = "🛡️ Режим «Микро-депозит»"
+            profile_desc = (
+                "• Золото (XAUUSD): ❌ <b>ОТКЛЮЧЕНО</b> (защита депозита)\n"
+                "• Макс. сделок в рынке: <b>1</b> (свободная маржа)\n"
+                "• Макс. стоп-лосс: <b>≤ 18 пипсов</b> (риск ~$1.80)\n"
+                "• Режим сделок: <b>Pure Swing</b> (свободный ход до Take Profit)"
+            )
+            pool_str = "16 валютных пар (без Золота)"
+        else:
+            profile_name = "👑 Режим: Институционал"
+            profile_desc = (
+                "• Золото (XAUUSD): ✅ <b>ВКЛЮЧЕНО</b>\n"
+                "• Макс. сделок в рынке: <b>до 7</b>\n"
+                "• Макс. стоп-лосс: по структуре ICT/SMC\n"
+                "• Режим сделок: <b>Pure Swing</b> (удержание до полного Take Profit)"
+            )
+            pool_str = "17 пар (Форекс + Золото)"
+
         text = (
             f"⚙️ <b>НАСТРОЙКИ АВТОПИЛОТА (MT5 BRIDGE)</b>\n"
             f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
             f"📡 <b>Статус авто-торговли:</b> {status_emoji}\n"
+            f"🎯 <b>Активный профиль:</b> <b>{profile_name}</b>\n"
+            f"{profile_desc}\n\n"
             f"📊 <b>Рабочий лот:</b> <code>{bridge_manager.default_lot}</code>\n"
             f"⚖️ <b>Риск на сделку:</b> <code>{bridge_manager.default_risk}%</code>\n"
-            f"💱 <b>Инструментов в пуле:</b> <code>17 пар (Форекс + Золото)</code>\n"
-            f"🛡 <b>Auto-Breakeven:</b> <code>Включён (в безубыток +0.50$ на 50% TP1)</code>\n\n"
+            f"💱 <b>Инструментов в пуле:</b> <code>{pool_str}</code>\n\n"
             f"Используйте кнопки ниже для быстрого управления 👇\n"
             f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         )
-        await safe_edit(callback, text, reply_markup=autotrade_keyboard(bridge_manager.enabled), parse_mode="HTML")
+        await safe_edit(callback, text, reply_markup=autotrade_keyboard(bridge_manager.enabled, mode=trading_mode), parse_mode="HTML")
     elif action == "main":
         await safe_edit(callback, format_welcome(), reply_markup=main_menu_keyboard(), parse_mode="HTML")
 
@@ -651,6 +693,8 @@ async def cmd_screenshot(message: Message):
 async def cb_autotrade_actions(callback: CallbackQuery):
     from trading.execution_bridge import bridge_manager
     from bot.keyboards import autotrade_keyboard
+    from db.database import get_bot_setting, set_bot_setting
+
     parts = callback.data.split(":")
     action = parts[1]
     if action == "on":
@@ -667,20 +711,52 @@ async def cb_autotrade_actions(callback: CallbackQuery):
         val = float(parts[2])
         bridge_manager.set_risk(val)
         await callback.answer(f"⚖️ Риск установлен: {val}%")
+    elif action == "mode":
+        new_mode = parts[2]  # "micro" or "prop"
+        await set_bot_setting("trading_mode", new_mode)
+        mode_text = "🛡️ Режим «Микро-депозит» активирован!" if new_mode == "micro" else "👑 Режим: Институционал активирован!"
+        await callback.answer(mode_text, show_alert=True)
+    elif action == "mode_noop":
+        cur_mode = parts[2]
+        name = "🛡️ Режим «Микро-депозит»" if cur_mode == "micro" else "👑 Режим: Институционал"
+        await callback.answer(f"✅ {name} уже активен! Для смены нажмите на соседнюю кнопку.", show_alert=False)
+        return
 
+    trading_mode = await get_bot_setting("trading_mode", "micro")
     status_emoji = "🟢 ВКЛЮЧЕН (АКТИВЕН)" if bridge_manager.enabled else "🔴 ПРИОСТАНОВЛЕН (ПАУЗА)"
+
+    if trading_mode == "micro":
+        profile_name = "🛡️ Режим «Микро-депозит»"
+        profile_desc = (
+            "• Золото (XAUUSD): ❌ <b>ОТКЛЮЧЕНО</b> (защита депозита)\n"
+            "• Макс. сделок в рынке: <b>1</b> (свободная маржа)\n"
+            "• Макс. стоп-лосс: <b>≤ 18 пипсов</b> (риск ~$1.80)\n"
+            "• Режим сделок: <b>Pure Swing</b> (свободный ход до Take Profit)"
+        )
+        pool_str = "16 валютных пар (без Золота)"
+    else:
+        profile_name = "👑 Режим: Институционал"
+        profile_desc = (
+            "• Золото (XAUUSD): ✅ <b>ВКЛЮЧЕНО</b>\n"
+            "• Макс. сделок в рынке: <b>до 7</b>\n"
+            "• Макс. стоп-лосс: по структуре ICT/SMC\n"
+            "• Режим сделок: <b>Pure Swing</b> (удержание до полного Take Profit)"
+        )
+        pool_str = "17 пар (Форекс + Золото)"
+
     text = (
         f"⚙️ <b>НАСТРОЙКИ АВТОПИЛОТА (MT5 BRIDGE)</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
         f"📡 <b>Статус авто-торговли:</b> {status_emoji}\n"
+        f"🎯 <b>Активный профиль:</b> <b>{profile_name}</b>\n"
+        f"{profile_desc}\n\n"
         f"📊 <b>Рабочий лот:</b> <code>{bridge_manager.default_lot}</code>\n"
         f"⚖️ <b>Риск на сделку:</b> <code>{bridge_manager.default_risk}%</code>\n"
-        f"💱 <b>Инструментов в пуле:</b> <code>17 пар (Форекс + Золото)</code>\n"
-        f"🛡 <b>Auto-Breakeven:</b> <code>Включён (в безубыток +0.50$ на 50% TP1)</code>\n\n"
+        f"💱 <b>Инструментов в пуле:</b> <code>{pool_str}</code>\n\n"
         f"Используйте кнопки ниже для быстрого управления 👇\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     )
-    await safe_edit(callback, text, reply_markup=autotrade_keyboard(bridge_manager.enabled), parse_mode="HTML")
+    await safe_edit(callback, text, reply_markup=autotrade_keyboard(bridge_manager.enabled, mode=trading_mode), parse_mode="HTML")
 
 
 
@@ -696,11 +772,15 @@ async def cb_symbol(callback: CallbackQuery):
         text = format_multi_tf_analysis(res)
         can_exec = bool(res.overall_direction != "NEUTRAL" and res.entry and res.stop_loss and res.overall_stars >= 3)
         kb = analysis_result_keyboard(symbol, can_execute=can_exec)
-        for i in range(0, len(text), 4000):
+        chunks = split_message_text(text, 4000)
+        for i, chunk in enumerate(chunks):
             if i == 0:
-                await safe_edit(callback, text[i:i+4000], reply_markup=kb, parse_mode="HTML")
+                await safe_edit(callback, chunk, reply_markup=kb, parse_mode="HTML")
             else:
-                await callback.message.answer(text[i:i+4000], parse_mode="HTML")
+                try:
+                    await callback.message.answer(chunk, parse_mode="HTML")
+                except Exception:
+                    await callback.message.answer(chunk, parse_mode=None)
     else:
         await safe_edit(callback, "⚠️ Ошибка получения котировок.", reply_markup=back_keyboard(), parse_mode="HTML")
 

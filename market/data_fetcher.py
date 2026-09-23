@@ -97,7 +97,7 @@ class DataFetcher:
     def _get_cache_key(self, symbol: str, timeframe: str) -> str:
         return f"{symbol.upper()}_{timeframe.upper()}"
 
-    async def fetch_ohlcv(self, symbol: str, timeframe: str = 'H4', limit: int = 150) -> pd.DataFrame:
+    async def fetch_ohlcv(self, symbol: str, timeframe: str = 'H4', limit: int = 300) -> pd.DataFrame:
         """
         Получает исторические свечи OHLCV из брокерских и межбанковских источников:
         1. Проверяет кэш
@@ -158,7 +158,7 @@ class DataFetcher:
 
         return pd.DataFrame(columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
 
-    def _read_mt5_bars(self, symbol: str, timeframe: str, limit: int) -> Optional[pd.DataFrame]:
+    def _read_mt5_bars(self, symbol: str, timeframe: str, limit: int = 300) -> Optional[pd.DataFrame]:
         """Читает реальные бары брокера, экспортированные советником MT5."""
         if not os.path.exists(MT5_FILES_DIR):
             return None
@@ -179,7 +179,7 @@ class DataFetcher:
             logger.debug("Failed reading MT5 bars file %s: %s", fpath, e)
             return None
 
-    async def _fetch_crypto_binance(self, symbol: str, timeframe: str, limit: int) -> pd.DataFrame:
+    async def _fetch_crypto_binance(self, symbol: str, timeframe: str, limit: int = 300) -> pd.DataFrame:
         """Получает крипто-свечи с Binance через CCXT."""
         tf = config.TIMEFRAME_MAP_CCXT.get(timeframe, '4h')
         pair = f"{symbol[:-4]}/{symbol[-4:]}" if symbol.endswith('USDT') else symbol
@@ -188,7 +188,7 @@ class DataFetcher:
         df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
         return df
 
-    async def _fetch_gold_binance(self, timeframe: str, limit: int) -> pd.DataFrame:
+    async def _fetch_gold_binance(self, timeframe: str, limit: int = 300) -> pd.DataFrame:
         """
         Получает свечи золота (XAUUSD) через институциональный токен PAXG/USDT на Binance.
         PAXG обеспечен 1:1 физической тройской унцией золота Лондонского стандарта.
@@ -199,7 +199,7 @@ class DataFetcher:
         df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
         return df
 
-    async def _fetch_forex_kraken(self, symbol: str, timeframe: str, limit: int) -> pd.DataFrame:
+    async def _fetch_forex_kraken(self, symbol: str, timeframe: str, limit: int = 300) -> pd.DataFrame:
         """
         Получает Forex свечи через CCXT Kraken.
         Kraken предоставляет бесплатный, высокоточный публичный поток котировок без ключей.

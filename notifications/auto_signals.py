@@ -148,16 +148,21 @@ class AutoSignalScanner:
     # ── Concurrent Active Orders Limit ──
     async def _check_concurrent_limit(self) -> bool:
         """
-        Проверяет, не превышен ли глобальный лимит одновременно активных/отложенных ордеров.
-        Если уже активно MAX_CONCURRENT_ORDERS ордеров, новые не создаются, пока текущие не закроются.
+        Проверяет, не превышен ли лимит одновременно активных/отложенных ордеров.
+        В режиме 'micro' разрешен максимум 1 ордер.
+        В режиме 'prop' разрешено до MAX_CONCURRENT_ORDERS (7) ордеров.
         """
         try:
+            from db.database import get_bot_setting
+            trading_mode = await get_bot_setting("trading_mode", "micro")
+            max_orders = config.MICRO_MAX_CONCURRENT_ORDERS if trading_mode == "micro" else config.MAX_CONCURRENT_ORDERS
+
             open_signals = await get_active_signals()
             pending = await get_pending_signals()
             total_active = len(open_signals) + len(pending)
-            if total_active >= config.MAX_CONCURRENT_ORDERS:
-                logger.info("Concurrent order limit reached (%d/%d active/pending). New signals paused until orders close.",
-                            total_active, config.MAX_CONCURRENT_ORDERS)
+            if total_active >= max_orders:
+                logger.info("Concurrent order limit reached (%d/%d active/pending, mode: %s). New signals paused until orders close.",
+                            total_active, max_orders, trading_mode.upper())
                 return False
             return True
         except Exception as e:
@@ -185,6 +190,7 @@ class AutoSignalScanner:
         from bot.handlers import run_multi_tf_analysis
         from utils.formatters import format_notification
         from market.data_fetcher import DataFetcher
+        from db.database import get_bot_setting
 
         if DataFetcher.is_weekend():
             logger.info("Weekend: markets closed. Scanner paused.")
@@ -196,13 +202,16 @@ class AutoSignalScanner:
             logger.info("Smart Weekly Window active: %s. New signals paused.", window_reason)
             return
 
+        # Текущий профиль торговли (micro vs prop)
+        trading_mode = await get_bot_setting("trading_mode", "micro")
+
         # Kill Zone check
         kz = config.get_current_kill_zone()
         in_kill_zone = kz is not None
         if in_kill_zone:
             logger.info("Active Kill Zone: %s — high priority scanning", kz)
 
-        # ── Проверка лимита одновременно открытых ордеров (MAX_CONCURRENT_ORDERS) ──
+        # ── Проверка лимита одновременно открытых ордеров ──
         if not await self._check_concurrent_limit():
             return
 
@@ -222,10 +231,15 @@ class AutoSignalScanner:
 
         news_blocked = await self._get_news_blocked_pairs()
         scan_list = self.symbols
-        logger.info("Scanning %d pairs (Kill Zone: %s | Strict Mode: %s)...", len(scan_list), kz or "OFF", "ON" if drawdown_mode else "OFF")
+        logger.info("Scanning %d pairs (Mode: %s | Kill Zone: %s | Strict Mode: %s)...",
+                    len(scan_list), trading_mode.upper(), kz or "OFF", "ON" if drawdown_mode else "OFF")
 
         for symbol in scan_list:
             try:
+                # ── ФИЛЬТР 0: Исключение пар для режима Микро ($12) ──
+                if trading_mode == "micro" and symbol in getattr(config, "MICRO_EXCLUDED_PAIRS", ["XAUUSD"]):
+                    continue
+
                 # ── ФИЛЬТР 1: Сессия ──
                 if not self._is_pair_active(symbol):
                     self.signals_skipped_by_session += 1
@@ -264,12 +278,30 @@ class AutoSignalScanner:
 
                 if result.overall_stars >= min_stars and (result.risk_reward_1 or 0) >= 2.0:
 
-                    # ── ФИЛЬТР 6: Корреляция ──
+                    # ── ФИЛЬТР МИКРО-СЧЁТА: Ограничение размера стоп-лосса (Max SL <= 18 pips) ──
+                    if result.entry and result.stop_loss:
+                        sl_dist = abs(result.entry - result.stop_loss)
+                        sym_clean = symbol.upper().replace("/", "").replace("=X", "")
+                        if "JPY" in sym_clean:
+                            sl_pips = sl_dist / 0.01
+                        elif sym_clean.startswith("XAU"):
+                            sl_pips = sl_dist / 0.1
+                        else:
+                            sl_pips = sl_dist / 0.0001
+
+                        if trading_mode == "micro" and sl_pips > config.MICRO_MAX_SL_PIPS:
+                            logger.info(
+                                "Micro Mode ($12): %s SL is %.1f pips (exceeds max allowed %.1f pips / $%.2f risk). Setup skipped.",
+                                symbol, sl_pips, config.MICRO_MAX_SL_PIPS, sl_pips * 0.1
+                            )
+                            continue
+
+                    # ── ФИЛЬТР 7: Корреляция ──
                     if not await self._check_correlation_limit(symbol, result.overall_direction):
                         self.signals_skipped_by_correlation += 1
                         continue
 
-                    # ── ФИЛЬТР 7: Защита от расширения спреда (Spread Spike Guard) ──
+                    # ── ФИЛЬТР 8: Защита от расширения спреда (Spread Spike Guard) ──
                     from trading.execution_bridge import bridge_manager
                     spread_ok, cur_spread, max_allowed = bridge_manager.is_spread_acceptable(symbol)
                     if not spread_ok:
@@ -377,7 +409,7 @@ class AutoSignalScanner:
             for warn_minutes in config.NEWS_WARN_BEFORE_MINUTES:
                 events = await calendar.get_upcoming_high_impact(within_minutes=warn_minutes + 5)
                 for event in events:
-                    if event.minutes_until <= warn_minutes:
+                    if 0 <= event.minutes_until <= warn_minutes:
                         warn_key = f"{event.title}_{event.date_str}_{warn_minutes}"
                         if warn_key not in self._news_warned:
                             self._news_warned.add(warn_key)

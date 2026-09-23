@@ -77,7 +77,7 @@ async def main():
             except Exception as e:
                 logging.error(f"Error sending startup msg: {e}")
 
-        # Регистрация меню команд в Telegram
+        # Регистрация меню команд и описания в Telegram
         try:
             from aiogram.types import BotCommand
             await bot.set_my_commands([
@@ -95,9 +95,24 @@ async def main():
                 BotCommand(command="reset_stats", description="🧹 Сбросить статистику на 0"),
                 BotCommand(command="help", description="📖 Справочник и документация"),
             ])
-            logging.info("Bot commands registered successfully in Telegram Menu.")
+
+            await bot.set_my_short_description(
+                "Автономный торговый комплекс: SMC/ICT анализ 17 пар и авто-торговля в MetaTrader 5 со строгим риск-менеджментом."
+            )
+
+            await bot.set_my_description(
+                "Автономный торговый комплекс Smart Trader с интеграцией в MetaTrader 5:\n\n"
+                "• 17 торговых инструментов (Forex мажоры, кроссы и Золото XAUUSD)\n"
+                "• Институциональная стратегия Smart Money / ICT (BOS, OB, FVG, OTE)\n"
+                "• Авто-выставление лимитных ордеров со Stop Loss и Take Profit (R:R 1:2.5 – 1:4.0)\n"
+                "• Режим Pure Swing: сделки дышат без копеечных выбиваний по безубытку\n"
+                "• Режимы счёта: «Микро-депозит» (лот 0.01 от $12) и «Институционал»\n"
+                "• Онлайн-пульт MT5: баланс, эквити, скриншоты экрана и кнопка «Паника»."
+            )
+
+            logging.info("Bot commands and descriptions registered successfully in Telegram.")
         except Exception as e:
-            logging.error("Failed to set bot commands: %s", e)
+            logging.error("Failed to set bot commands/descriptions: %s", e)
 
         # Фоновые задачи
         global _background_tasks

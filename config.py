@@ -160,6 +160,11 @@ MAX_CORRELATED_SIGNALS = 2  # Max simultaneous signals in one correlation group
 # ── Order Limits (Лимит одновременно открытых ордеров) ────
 MAX_CONCURRENT_ORDERS = 7  # Максимум одновременно активных позиций + отложенных ордеров
 
+# ── Micro Account Protection Mode ($12 - $100) ────────────
+MICRO_MAX_CONCURRENT_ORDERS = 1      # Строго 1 сделка в рынке одновременно
+MICRO_MAX_SL_PIPS = 18.0             # Максимальный стоп-лосс в пипсах (макс. риск ~$1.80 на 0.01 лота)
+MICRO_EXCLUDED_PAIRS = ["XAUUSD"]    # Золото исключено для защиты от разрушительной волатильности
+
 # ── Daily Limits ──────────────────────────────────────────
 MAX_SIGNALS_PER_DAY = 7    # Максимум 7 сигналов в сутки
 SIGNAL_COOLDOWN_HOURS = 1  # 1 час между сигналами на одну пару (динамичнее)

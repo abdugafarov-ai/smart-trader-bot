@@ -99,8 +99,12 @@ class EconomicCalendar:
 
         return None
 
-    async def get_upcoming_high_impact(self, within_minutes: int = 120) -> list[EconomicEvent]:
-        """Возвращает предстоящие High Impact события в пределах N минут."""
+    async def get_upcoming_high_impact(self, within_minutes: int = 120, post_minutes: int = 20) -> list[EconomicEvent]:
+        """
+        Возвращает события High Impact за период:
+        от post_minutes ПОСЛЕ новости (кулдаун волатильности)
+        до within_minutes ДО новости.
+        """
         events = await self.fetch_events()
         now = datetime.now(timezone.utc)
         result = []
@@ -115,7 +119,7 @@ class EconomicCalendar:
                 continue
             
             minutes_until = int((dt - now).total_seconds() / 60)
-            if 0 <= minutes_until <= within_minutes:
+            if -post_minutes <= minutes_until <= within_minutes:
                 country = item.get("country", "")
                 affected_pairs = config.get_affected_pairs(country)
                 

@@ -16,6 +16,14 @@
 | ⚡ **Scalping** | EMA кроссоверы, RSI дивергенции, VWAP отскоки |
 | 📊 **Volume Analysis** | Volume Profile, кумулятивная дельта, кульминации |
 
+### 🤖 Авто-трейдинг и MetaTrader 5 Bridge
+- 🔌 **MetaTrader 5 Bridge** (`SmartTraderBridge.mq5` / `.ex5`) — прямое соединение советника MT5 с ботом по локальному HTTP API.
+- 🎯 **Pure Swing режим** — автоматическое сопровождение сделок до полного Take Profit (R:R 1:2.5 – 1:4.0) со строгим Stop Loss без преждевременных выбиваний по копеечному безубытку.
+- 🛡 **Режим «Микро-депозит»** — безопасная работа для счетов от $12 с фиксированным лотом 0.01 и контролем свободной маржи.
+- 👑 **Режим «Институционал»** — расширенное портфолио сделок по 17 инструментам включая Золото (XAUUSD).
+- 📸 **Живые скриншоты** (`/screenshot`) — получение снимка окна MT5 с открытыми графиками и сделками прямо в Telegram.
+- 🛑 **Паника (Kill-Switch)** — мгновенное закрытие всех открытых позиций в MT5 одной кнопкой при форс-мажоре.
+
 ### 📈 Анализ
 - 🔄 **Мульти-таймфрейм** — M15, H1, H4, D1
 - 📍 **Entry / 🛑 Stop / 🎯 TP1 & TP2 / 📐 R:R** в каждом сигнале
@@ -74,47 +82,57 @@ python main.py
 
 ```
 smart_trader_bot/
-├── main.py                    # Точка входа
-├── config.py                  # Конфигурация
-├── requirements.txt           # Зависимости
+├── main.py                    # Точка входа и регистрация меню
+├── config.py                  # Конфигурация и управление окружением
+├── requirements.txt           # Зависимости проекта
 ├── .env.example               # Шаблон настроек
 │
-├── bot/                       # Telegram-интерфейс
-│   ├── handlers.py            # Обработчики команд
-│   ├── keyboards.py           # Inline-клавиатуры
-│   ├── guide.py               # Интерактивный гайд
-│   └── middleware.py          # Контроль доступа
+├── bot/                       # Telegram-интерфейс (aiogram 3.x)
+│   ├── handlers.py            # Обработчики команд и callback'ов
+│   ├── keyboards.py           # Inline-клавиатуры и пульты управления
+│   ├── guide.py               # Интерактивный гайд для новых пользователей
+│   └── middleware.py          # Контроль доступа и валидация
 │
 ├── strategies/                # Торговые стратегии
 │   ├── base.py                # Базовый класс + dataclasses
-│   ├── ict_smc.py             # ICT / Smart Money Concepts
+│   ├── ict_smc.py             # ICT / Smart Money Concepts (BOS, OB, FVG, OTE)
 │   ├── supply_demand.py       # Supply & Demand
 │   ├── wyckoff.py             # Wyckoff Method
 │   ├── breakout_retest.py     # Breakout + Retest
 │   ├── scalping.py            # Scalping
 │   └── volume_analysis.py     # Volume Analysis
 │
+├── trading/                   # Интеграция с MetaTrader 5
+│   ├── execution_bridge.py    # Координатор торгового моста
+│   └── ea/
+│       ├── SmartTraderBridge.mq5 # Исходный код советника MQL5
+│       └── SmartTraderBridge.ex5 # Скомпилированный советник MT5
+│
 ├── market/                    # Рыночные данные
 │   ├── data_fetcher.py        # OHLCV (MT5 Bridge + CCXT)
 │   └── indicators.py          # Технические индикаторы
 │
-├── notifications/             # Уведомления
-│   ├── auto_signals.py        # Авто-сканер сигналов
+├── notifications/             # Уведомления и сканирование
+│   ├── auto_signals.py        # Авто-сканер сигналов v3
 │   └── weekly_report.py       # Еженедельный отчёт
 │
 ├── news/                      # Экономический календарь
-│   └── economic_calendar.py   # Forex Factory API
+│   └── economic_calendar.py   # Forex Factory API (High-Impact фильтр)
 │
 ├── sessions/                  # Торговые сессии
-│   └── trading_sessions.py    # Лондон/Нью-Йорк/Токио
+│   └── trading_sessions.py    # Расписание мировых торговых сессий
 │
 ├── db/                        # База данных
-│   ├── database.py            # SQLite менеджер
+│   ├── database.py            # SQLite менеджер сигналов и настроек
 │   ├── signal_tracker.py      # Отслеживание TP/SL
-│   └── users.py               # Управление пользователями
+│   └── users.py               # Управление доступом пользователей
+│
+├── webapp/                    # Локальный HTTP сервер моста MT5
+│   └── server.py              # API для передачи ордеров и телеметрии
 │
 └── utils/                     # Утилиты
-    └── formatters.py          # Форматирование сообщений
+    ├── formatters.py          # Bloomberg-терминал форматирование
+    └── screenshot.py          # Утилита снятия снимков экрана MT5
 ```
 
 ---
@@ -123,15 +141,19 @@ smart_trader_bot/
 
 | Команда | Описание |
 |---|---|
-| `/start` | Запуск + интерактивный гайд |
-| `/analyze EURUSD` | Мульти-ТФ анализ пары |
-| `/signals` | Сводка по всем 17 парам |
-| `/stats` | Статистика win-rate |
-| `/history` | История последних сигналов |
-| `/news` | Экономический календарь |
-| `/sessions` | Торговые сессии |
-| `/request` | Подать заявку на доступ |
-| `/users` | Управление пользователями (админ) |
+| `/start` | 🏛 Главное меню терминала |
+| `/terminal` | 🖥 Пульт управления MetaTrader 5 |
+| `/account` | 💼 Баланс, эквити и открытые позиции MT5 |
+| `/screenshot` | 📸 Снимок экрана терминала MT5 в реальном времени |
+| `/stats` | 📊 Честная брокерская статистика & Win-Rate |
+| `/history` | 📜 Журнал закрытых сделок MT5 |
+| `/autotrade` | ⚙️ Настройки автопилота советника MT5 |
+| `/lot 0.01` | 🔹 Задать фиксированный лот |
+| `/risk 1.0` | ⚖️ Задать процент риска на сделку |
+| `/sessions` | ⏰ Расписание торговых сессий |
+| `/news` | 📰 Календарь важных High-Impact новостей |
+| `/reset_stats` | 🧹 Сбросить брокерскую статистику на 0 |
+| `/help` | 📖 Полный справочник и документация |
 
 ---
 

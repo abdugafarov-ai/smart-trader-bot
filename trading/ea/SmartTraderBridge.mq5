@@ -23,6 +23,7 @@ input bool     InpUseAutoRisk  = false;                    // Использов
 input double   InpRiskPercent  = 1.0;                      // Процент риска на сделку (%)
 input double   InpFixedLot     = 0.01;                     // Фиксированный лот (если AutoRisk = false)
 input int      InpSlippage     = 10;                       // Проскальзывание в пунктах
+input bool     InpUseAutoBE    = false;                    // Использовать авто-безубыток (ОТКЛЮЧЕНО: Pure Swing)
 
 //--- Глобальные переменные
 ulong    processed_signals[];
@@ -34,7 +35,7 @@ string   common_pairs[] = {
 };
 
 string GetBrokerSymbol(string standard_pair);
-void   ReportExecution(string symbol, string action, double price, double profit=0.0, string reason="", int signal_id=0);
+void   ReportExecution(string symbol, string action, double price, double profit=0.0, string reason="", int signal_id=0, ulong ticket=0);
 void   SetOptimalFillingMode(string symbol);
 void   CleanupStalePendingOrders();
 
@@ -118,6 +119,7 @@ void OnDeinit(const int reason)
 void OnTimer()
 {
    PollOrdersFromServer();
+   ManageOpenPositions(); // Институциональный мониторинг и авто-безубыток открытых сделок
 
    export_timer_counter++;
    if(export_timer_counter % 5 == 0) // каждые 15 секунд
@@ -282,7 +284,7 @@ void ExportBrokerRates()
       {
          MqlRates rates[];
          ArraySetAsSeries(rates, true);
-         int copied = CopyRates(sym, tfs[t], 0, 300, rates);
+         int copied = CopyRates(sym, tfs[t], 0, 350, rates);
          if(copied > 0)
          {
             string fname = "candles_" + standard_sym + "_" + tf_names[t] + ".csv";
@@ -404,7 +406,7 @@ void CleanupStalePendingOrders()
             Print("⏰ [SmartTrader] Отложенный ордер #", ticket, " (", sym, ") устарел (>24ч). Авто-удаление...");
             if(trade.OrderDelete(ticket))
             {
-               ReportExecution(sym, "LIMIT_EXPIRED", 0.0, 0.0, "Истек срок 24ч (авто-очистка советником)", 0);
+               ReportExecution(sym, "LIMIT_EXPIRED", 0.0, 0.0, "Истек срок 24ч (авто-очистка советником)", 0, ticket);
             }
          }
       }
@@ -456,13 +458,6 @@ void ParseAndExecuteOrders(string json)
       // Если сигнал уже обработан этим советником ранее (открыт или отклонен):
       if(sig_id > 0 && IsSignalProcessed(sig_id))
       {
-         if(HasOpenPosition(broker_symbol))
-         {
-            if(StringFind(block, "\"breakeven_applied\":true") >= 0 || StringFind(block, "\"breakeven_applied\": true") >= 0)
-            {
-               ApplyBreakevenIfEligible(broker_symbol);
-            }
-         }
          continue;
       }
 
@@ -470,14 +465,6 @@ void ParseAndExecuteOrders(string json)
       if(HasOpenPosition(broker_symbol) || HasPendingOrder(broker_symbol))
       {
          if(sig_id > 0) MarkSignalProcessed(sig_id);
-         // Проверяем перенос в безубыток для открытых
-         if(HasOpenPosition(broker_symbol))
-         {
-            if(StringFind(block, "\"breakeven_applied\":true") >= 0 || StringFind(block, "\"breakeven_applied\": true") >= 0)
-            {
-               ApplyBreakevenIfEligible(broker_symbol);
-            }
-         }
          continue;
       }
 
@@ -493,16 +480,19 @@ void ParseAndExecuteOrders(string json)
       // Извлекаем SL, TP и Entry
       double entry = ExtractDouble(block, "\"entry\":");
       double sl    = ExtractDouble(block, "\"stop_loss\":");
-      double tp    = ExtractDouble(block, "\"tp1\":");
+      double tp1   = ExtractDouble(block, "\"tp1\":");
+      double tp2   = ExtractDouble(block, "\"tp2\":");
+      double tp    = (tp1 > 0) ? tp1 : tp2;
       if(sl <= 0 || tp <= 0) continue;
 
       bool is_limit = (StringFind(block, "LIMIT") >= 0);
 
-      // Рассчитываем лот
+      // Рассчитываем лот с учетом реальной точки входа
       double lot = InpFixedLot;
       if(InpUseAutoRisk)
       {
-         lot = CalculateRiskLot(broker_symbol, sl);
+         double entry_ref = is_limit ? entry : (is_long ? SymbolInfoDouble(broker_symbol, SYMBOL_ASK) : SymbolInfoDouble(broker_symbol, SYMBOL_BID));
+         lot = CalculateRiskLot(broker_symbol, entry_ref, sl);
       }
 
       // Автоматическое определение режима заполнения для брокера
@@ -524,8 +514,9 @@ void ParseAndExecuteOrders(string json)
 
             if(trade.BuyLimit(lot, entry, broker_symbol, sl, tp, time_type, (time_type == ORDER_TIME_SPECIFIED ? exp_time : 0), "SmartTrader Limit"))
             {
-               Print("✅ [SmartTrader] BUY_LIMIT выставлен: ", broker_symbol, " @ ", entry, " | SL: ", sl, " | TP: ", tp, " | Срок: 24ч");
-               ReportExecution(pair, "BUY_LIMIT", entry, 0.0, "Buy Limit выставлен (24ч)", sig_id);
+               ulong order_ticket = trade.ResultOrder();
+               Print("✅ [SmartTrader] BUY_LIMIT выставлен: ", broker_symbol, " #", order_ticket, " @ ", entry, " | SL: ", sl, " | TP: ", tp, " | Срок: 24ч");
+               ReportExecution(pair, "BUY_LIMIT", entry, 0.0, "Buy Limit выставлен (24ч)", sig_id, order_ticket);
                if(sig_id > 0) MarkSignalProcessed(sig_id);
             }
             else
@@ -538,9 +529,19 @@ void ParseAndExecuteOrders(string json)
          }
          else
          {
+            // Проверка: цена не должна быть выше TP
+            if(tp <= ask)
+            {
+               string err_tp = StringFormat("Цена уже ушла за TP (Ask=%.5f >= TP=%.5f)", ask, tp);
+               Print("⛔ [SmartTrader] ОТМЕНА: ", broker_symbol, ". ", err_tp);
+               ReportExecution(pair, "REJECTED_ERROR", ask, 0.0, err_tp, sig_id);
+               if(sig_id > 0) MarkSignalProcessed(sig_id);
+               continue;
+            }
+
             // Проверка реального R:R от рыночной цены перед входом по рынку
             double real_risk = MathAbs(ask - sl);
-            double real_reward = MathAbs(tp - ask);
+            double real_reward = tp - ask; // Строго положительный
             double real_rr = (real_risk > 0) ? (real_reward / real_risk) : 0.0;
             if(real_rr < 1.8)
             {
@@ -552,20 +553,29 @@ void ParseAndExecuteOrders(string json)
             }
 
             // Spread check before execution
-            double spread_points = SymbolInfoInteger(broker_symbol, SYMBOL_SPREAD);
+            double spread_points = (double)SymbolInfoInteger(broker_symbol, SYMBOL_SPREAD);
             double point_val = SymbolInfoDouble(broker_symbol, SYMBOL_POINT);
             double spread_price = spread_points * point_val;
             double max_spread = real_risk * 0.15; // Spread should not exceed 15% of risk
             if(spread_price > max_spread && max_spread > 0)
             {
+               string spread_msg = StringFormat("Спред %.1f п. превышает лимит (15%% от риска)", spread_points);
                Print("⚠️ [SmartTrader] Spread too high for ", broker_symbol, ": ", spread_price, " > max ", max_spread);
+               ReportExecution(pair, "REJECTED_SPREAD", ask, 0.0, spread_msg, sig_id);
+               if(sig_id > 0) MarkSignalProcessed(sig_id);
                continue;
             }
 
             if(trade.Buy(lot, broker_symbol, ask, sl, tp, "SmartTrader Institutional"))
             {
-               Print("✅ [SmartTrader] BUY ордер открыт: ", broker_symbol, " | Лот: ", lot, " | SL: ", sl, " | TP: ", tp, " | R:R: 1:", DoubleToString(real_rr, 2));
-               ReportExecution(pair, "BUY", ask, 0.0, StringFormat("Лот %.2f", lot), sig_id);
+               ulong order_ticket = trade.ResultOrder();
+               ulong deal_ticket = trade.ResultDeal();
+               ulong t_report = (order_ticket > 0) ? order_ticket : deal_ticket;
+               double exec_p = trade.ResultPrice();
+               if(exec_p <= 0) exec_p = ask;
+               double slip = MathAbs(exec_p - ask) / (point_val > 0 ? point_val : 0.0001);
+               Print("✅ [SmartTrader] BUY ордер открыт: ", broker_symbol, " #", t_report, " @ ", exec_p, " (Проскальзывание: ", DoubleToString(slip, 1), " п.) | Лот: ", lot, " | SL: ", sl, " | TP: ", tp, " | R:R: 1:", DoubleToString(real_rr, 2));
+               ReportExecution(pair, "BUY", exec_p, 0.0, StringFormat("Лот %.2f (Slip %.1f pt)", lot, slip), sig_id, t_report);
                if(sig_id > 0) MarkSignalProcessed(sig_id);
             }
             else
@@ -592,8 +602,9 @@ void ParseAndExecuteOrders(string json)
 
             if(trade.SellLimit(lot, entry, broker_symbol, sl, tp, time_type, (time_type == ORDER_TIME_SPECIFIED ? exp_time : 0), "SmartTrader Limit"))
             {
-               Print("✅ [SmartTrader] SELL_LIMIT выставлен: ", broker_symbol, " @ ", entry, " | SL: ", sl, " | TP: ", tp, " | Срок: 24ч");
-               ReportExecution(pair, "SELL_LIMIT", entry, 0.0, "Sell Limit выставлен (24ч)", sig_id);
+               ulong order_ticket = trade.ResultOrder();
+               Print("✅ [SmartTrader] SELL_LIMIT выставлен: ", broker_symbol, " #", order_ticket, " @ ", entry, " | SL: ", sl, " | TP: ", tp, " | Срок: 24ч");
+               ReportExecution(pair, "SELL_LIMIT", entry, 0.0, "Sell Limit выставлен (24ч)", sig_id, order_ticket);
                if(sig_id > 0) MarkSignalProcessed(sig_id);
             }
             else
@@ -606,9 +617,19 @@ void ParseAndExecuteOrders(string json)
          }
          else
          {
+            // Проверка: цена не должна быть ниже TP
+            if(tp >= bid)
+            {
+               string err_tp = StringFormat("Цена уже ушла за TP (Bid=%.5f <= TP=%.5f)", bid, tp);
+               Print("⛔ [SmartTrader] ОТМЕНА: ", broker_symbol, ". ", err_tp);
+               ReportExecution(pair, "REJECTED_ERROR", bid, 0.0, err_tp, sig_id);
+               if(sig_id > 0) MarkSignalProcessed(sig_id);
+               continue;
+            }
+
             // Проверка реального R:R от рыночной цены перед входом по рынку
             double real_risk = MathAbs(sl - bid);
-            double real_reward = MathAbs(bid - tp);
+            double real_reward = bid - tp; // Строго положительный
             double real_rr = (real_risk > 0) ? (real_reward / real_risk) : 0.0;
             if(real_rr < 1.8)
             {
@@ -620,20 +641,29 @@ void ParseAndExecuteOrders(string json)
             }
 
             // Spread check before execution
-            double spread_points = SymbolInfoInteger(broker_symbol, SYMBOL_SPREAD);
+            double spread_points = (double)SymbolInfoInteger(broker_symbol, SYMBOL_SPREAD);
             double point_val = SymbolInfoDouble(broker_symbol, SYMBOL_POINT);
             double spread_price = spread_points * point_val;
             double max_spread = real_risk * 0.15; // Spread should not exceed 15% of risk
             if(spread_price > max_spread && max_spread > 0)
             {
+               string spread_msg = StringFormat("Спред %.1f п. превышает лимит (15%% от риска)", spread_points);
                Print("⚠️ [SmartTrader] Spread too high for ", broker_symbol, ": ", spread_price, " > max ", max_spread);
+               ReportExecution(pair, "REJECTED_SPREAD", bid, 0.0, spread_msg, sig_id);
+               if(sig_id > 0) MarkSignalProcessed(sig_id);
                continue;
             }
 
             if(trade.Sell(lot, broker_symbol, bid, sl, tp, "SmartTrader Institutional"))
             {
-               Print("✅ [SmartTrader] SELL ордер открыт: ", broker_symbol, " | Лот: ", lot, " | SL: ", sl, " | TP: ", tp, " | R:R: 1:", DoubleToString(real_rr, 2));
-               ReportExecution(pair, "SELL", bid, 0.0, StringFormat("Лот %.2f", lot), sig_id);
+               ulong order_ticket = trade.ResultOrder();
+               ulong deal_ticket = trade.ResultDeal();
+               ulong t_report = (order_ticket > 0) ? order_ticket : deal_ticket;
+               double exec_p = trade.ResultPrice();
+               if(exec_p <= 0) exec_p = bid;
+               double slip = MathAbs(exec_p - bid) / (point_val > 0 ? point_val : 0.0001);
+               Print("✅ [SmartTrader] SELL ордер открыт: ", broker_symbol, " #", t_report, " @ ", exec_p, " (Проскальзывание: ", DoubleToString(slip, 1), " п.) | Лот: ", lot, " | SL: ", sl, " | TP: ", tp, " | R:R: 1:", DoubleToString(real_rr, 2));
+               ReportExecution(pair, "SELL", exec_p, 0.0, StringFormat("Лот %.2f (Slip %.1f pt)", lot, slip), sig_id, t_report);
                if(sig_id > 0) MarkSignalProcessed(sig_id);
             }
             else
@@ -723,10 +753,12 @@ int CountTotalOpenAndPending()
 }
 
 //+------------------------------------------------------------------+
-//| Перевод открытой позиции в безубыток с валидацией уровней        |
+//| Синхронизация SL открытой позиции с сервером / безубыток        |
 //+------------------------------------------------------------------+
-void ApplyBreakevenIfEligible(string symbol)
+void SyncPositionSL(string symbol, double target_sl)
 {
+   if(target_sl <= 0) return;
+   SymbolSelect(symbol, true);
    for(int i = PositionsTotal() - 1; i >= 0; i--)
    {
       if(StringCompare(PositionGetSymbol(i), symbol, false) == 0 && PositionGetInteger(POSITION_MAGIC) == InpMagicNumber)
@@ -734,7 +766,6 @@ void ApplyBreakevenIfEligible(string symbol)
          ulong ticket = PositionGetTicket(i);
          if(ticket <= 0) continue;
 
-         double open_price = PositionGetDouble(POSITION_PRICE_OPEN);
          double curr_sl    = PositionGetDouble(POSITION_SL);
          double tp         = PositionGetDouble(POSITION_TP);
          ENUM_POSITION_TYPE pos_type = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
@@ -743,42 +774,163 @@ void ApplyBreakevenIfEligible(string symbol)
          long stops_level = SymbolInfoInteger(symbol, SYMBOL_TRADE_STOPS_LEVEL);
          double min_stop_dist = stops_level * point;
 
-         // Если SL уже в безубытке или надежнее в плюсе, не модифицируем повторно
-         if(pos_type == POSITION_TYPE_BUY && curr_sl >= open_price - point) continue;
-         if(pos_type == POSITION_TYPE_SELL && curr_sl > 0 && curr_sl <= open_price + point) continue;
-
-         // Проверяем текущую рыночную цену (Bid/Ask)
          MqlTick tick;
          if(!SymbolInfoTick(symbol, tick)) continue;
 
          bool can_modify = false;
          if(pos_type == POSITION_TYPE_BUY)
          {
-            // Для BUY: текущий Bid должен быть строго выше точки входа как минимум на min_stop_dist
-            if(tick.bid > open_price + min_stop_dist)
+            // Для BUY: новый SL должен быть выше текущего и ниже цены Bid на min_stop_dist
+            if((curr_sl == 0 || target_sl > curr_sl + point) && tick.bid > target_sl + min_stop_dist)
                can_modify = true;
+            else if(target_sl <= curr_sl)
+               continue;
             else
-               Print("⏳ [SmartTrader Breakeven] ", symbol, " BUY: текущий Bid ", tick.bid, " слишком близко к входу ", open_price, " (требуется отступ >= ", min_stop_dist, ")");
+               Print("⏳ [SmartTrader SL] ", symbol, " BUY: текущий Bid ", tick.bid, " слишком близко к новому SL ", target_sl, " (отступ >= ", min_stop_dist, ")");
          }
          else if(pos_type == POSITION_TYPE_SELL)
          {
-            // Для SELL: текущий Ask должен быть строго ниже точки входа как минимум на min_stop_dist
-            if(tick.ask < open_price - min_stop_dist)
+            // Для SELL: новый SL должен быть ниже текущего и выше цены Ask на min_stop_dist
+            if((curr_sl == 0 || target_sl < curr_sl - point) && tick.ask < target_sl - min_stop_dist)
                can_modify = true;
+            else if(curr_sl > 0 && target_sl >= curr_sl)
+               continue;
             else
-               Print("⏳ [SmartTrader Breakeven] ", symbol, " SELL: текущий Ask ", tick.ask, " слишком близко к входу ", open_price, " (требуется отступ >= ", min_stop_dist, ")");
+               Print("⏳ [SmartTrader SL] ", symbol, " SELL: текущий Ask ", tick.ask, " слишком близко к новому SL ", target_sl, " (отступ >= ", min_stop_dist, ")");
          }
 
          if(can_modify)
          {
-            if(trade.PositionModify(ticket, open_price, tp))
+            if(trade.PositionModify(ticket, target_sl, tp))
             {
-               Print("🛡 [SmartTrader] Позиция ", symbol, " #", ticket, " переведена в БЕЗУБЫТОК (SL = Entry: ", open_price, ")");
-               ReportExecution(symbol, "BREAKEVEN_APPLIED", open_price, 0.0, "SL перенесен в безубыток", 0);
+               Print("🛡 [SmartTrader] Позиция ", symbol, " #", ticket, " SL успешно подтянут на: ", target_sl, " (профит зафиксирован)");
+               ReportExecution(symbol, "SL_UPDATED", target_sl, 0.0, StringFormat("SL зафиксирован на %.2f", target_sl), 0, ticket);
             }
             else
             {
-               Print("⚠️ [SmartTrader] Ошибка модификации безубытка #", ticket, ": ", trade.ResultRetcode(), " - ", trade.ResultRetcodeDescription());
+               Print("⚠️ [SmartTrader] Ошибка модификации SL #", ticket, ": ", trade.ResultRetcode(), " - ", trade.ResultRetcodeDescription());
+            }
+         }
+      }
+   }
+}
+
+void ApplyBreakevenIfEligible(string symbol)
+{
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      if(StringCompare(PositionGetSymbol(i), symbol, false) == 0 && PositionGetInteger(POSITION_MAGIC) == InpMagicNumber)
+      {
+         ulong ticket = PositionGetTicket(i);
+         if(ticket <= 0) continue;
+         double open_price = PositionGetDouble(POSITION_PRICE_OPEN);
+         SyncPositionSL(symbol, open_price);
+      }
+   }
+}
+
+//+------------------------------------------------------------------+
+//| Институциональный менеджер открытых позиций (Auto-BE & Partials) |
+//+------------------------------------------------------------------+
+void ManageOpenPositions()
+{
+   if(!InpUseAutoBE) return; // Pure Swing: алгоритм безубытка полностью ОТКЛЮЧЕН (сделка дышит до полного TP или начального SL)
+
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket <= 0) continue;
+      if(PositionGetInteger(POSITION_MAGIC) != InpMagicNumber) continue;
+
+      string symbol = PositionGetString(POSITION_SYMBOL);
+      double open_price = PositionGetDouble(POSITION_PRICE_OPEN);
+      double curr_sl    = PositionGetDouble(POSITION_SL);
+      double tp         = PositionGetDouble(POSITION_TP);
+      double volume     = PositionGetDouble(POSITION_VOLUME);
+      double profit     = PositionGetDouble(POSITION_PROFIT);
+      ENUM_POSITION_TYPE pos_type = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
+
+      SymbolSelect(symbol, true);
+      double point = SymbolInfoDouble(symbol, SYMBOL_POINT);
+      long stops_level = SymbolInfoInteger(symbol, SYMBOL_TRADE_STOPS_LEVEL);
+      double min_stop_dist = stops_level * point;
+
+      MqlTick tick;
+      if(!SymbolInfoTick(symbol, tick)) continue;
+
+      // 1. Проверка условия перевода в безубыток:
+      // Переводим в безубыток, если цена прошла >= 15% пути до TP или профит превысил 0.25R
+      bool qualify_be = false;
+      double new_be_sl = 0.0;
+
+      if(pos_type == POSITION_TYPE_BUY)
+      {
+         // Если SL уже на уровне входа или выше - уже защищено
+         if(curr_sl >= open_price - point) continue;
+
+         double total_tp_dist = tp - open_price;
+         double current_run   = tick.bid - open_price;
+
+         if(total_tp_dist > 0 && current_run >= total_tp_dist * 0.15)
+            qualify_be = true;
+         else if(curr_sl > 0 && (open_price - curr_sl) > 0 && current_run >= (open_price - curr_sl) * 0.25)
+            qualify_be = true;
+
+         if(qualify_be && tick.bid > open_price + min_stop_dist)
+         {
+            new_be_sl = open_price + 2 * point;
+            if(trade.PositionModify(ticket, new_be_sl, tp))
+            {
+               Print("🛡 [SmartTrader Auto-BE] BUY ", symbol, " #", ticket, " защищен в БЕЗУБЫТОК! SL: ", new_be_sl, " | Профит: $", DoubleToString(profit, 2));
+               ReportExecution(symbol, "AUTO_BREAKEVEN", tick.bid, profit, "Авто-безубыток (0.25R / 15% TP)", 0, ticket);
+
+               // Частичная фиксация прибыли (если объем >= 0.02)
+               double step = SymbolInfoDouble(symbol, SYMBOL_VOLUME_STEP);
+               double min_vol = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MIN);
+               double half_lot = MathFloor((volume * 0.5) / step) * step;
+               if(half_lot >= min_vol && (volume - half_lot) >= min_vol)
+               {
+                  if(trade.PositionClosePartial(ticket, half_lot))
+                  {
+                     Print("💰 [SmartTrader Partial] Закрыто 50% объема (", half_lot, " лота) по ", symbol, " #", ticket);
+                     ReportExecution(symbol, "PARTIAL_CLOSE", tick.bid, profit * 0.5, StringFormat("Фиксация 50%% (%.2f лот)", half_lot), 0, ticket);
+                  }
+               }
+            }
+         }
+      }
+      else if(pos_type == POSITION_TYPE_SELL)
+      {
+         // Если SL уже на уровне входа или ниже - уже защищено
+         if(curr_sl > 0 && curr_sl <= open_price + point) continue;
+
+         double total_tp_dist = open_price - tp;
+         double current_run   = open_price - tick.ask;
+
+         if(total_tp_dist > 0 && current_run >= total_tp_dist * 0.15)
+            qualify_be = true;
+         else if(curr_sl > 0 && (curr_sl - open_price) > 0 && current_run >= (curr_sl - open_price) * 0.25)
+            qualify_be = true;
+
+         if(qualify_be && tick.ask < open_price - min_stop_dist)
+         {
+            new_be_sl = open_price - 2 * point;
+            if(trade.PositionModify(ticket, new_be_sl, tp))
+            {
+               Print("🛡 [SmartTrader Auto-BE] SELL ", symbol, " #", ticket, " защищен в БЕЗУБЫТОК! SL: ", new_be_sl, " | Профит: $", DoubleToString(profit, 2));
+               ReportExecution(symbol, "AUTO_BREAKEVEN", tick.ask, profit, "Авто-безубыток (0.25R / 15% TP)", 0, ticket);
+
+               double step = SymbolInfoDouble(symbol, SYMBOL_VOLUME_STEP);
+               double min_vol = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MIN);
+               double half_lot = MathFloor((volume * 0.5) / step) * step;
+               if(half_lot >= min_vol && (volume - half_lot) >= min_vol)
+               {
+                  if(trade.PositionClosePartial(ticket, half_lot))
+                  {
+                     Print("💰 [SmartTrader Partial] Закрыто 50% объема (", half_lot, " лота) по ", symbol, " #", ticket);
+                     ReportExecution(symbol, "PARTIAL_CLOSE", tick.ask, profit * 0.5, StringFormat("Фиксация 50%% (%.2f лот)", half_lot), 0, ticket);
+                  }
+               }
             }
          }
       }
@@ -788,12 +940,11 @@ void ApplyBreakevenIfEligible(string symbol)
 //+------------------------------------------------------------------+
 //| Расчет объема лота на основе % риска от баланса                 |
 //+------------------------------------------------------------------+
-double CalculateRiskLot(string symbol, double sl_price)
+double CalculateRiskLot(string symbol, double entry_price, double sl_price)
 {
    double balance   = AccountInfoDouble(ACCOUNT_BALANCE);
    double risk_amt  = balance * (InpRiskPercent / 100.0);
-   double ask       = SymbolInfoDouble(symbol, SYMBOL_ASK);
-   double diff      = MathAbs(ask - sl_price);
+   double diff      = MathAbs(entry_price - sl_price);
    if(diff <= 0) return InpFixedLot;
    
    double tick_size = SymbolInfoDouble(symbol, SYMBOL_TRADE_TICK_SIZE);
@@ -831,7 +982,7 @@ double ExtractDouble(string text, string key)
 //+------------------------------------------------------------------+
 //| Отправка подробного отчета серверу                               |
 //+------------------------------------------------------------------+
-void ReportExecution(string symbol, string action, double price, double profit=0.0, string reason="", int signal_id=0)
+void ReportExecution(string symbol, string action, double price, double profit=0.0, string reason="", int signal_id=0, ulong ticket=0)
 {
    string url = InpServerUrl + "/api/v1/bridge/report";
    string headers = "Content-Type: application/json\r\n";
@@ -839,8 +990,8 @@ void ReportExecution(string symbol, string action, double price, double profit=0
    StringReplace(esc_reason, "\"", "'");
    StringReplace(esc_reason, "\r", " ");
    StringReplace(esc_reason, "\n", " ");
-   string body = StringFormat("{\"symbol\":\"%s\",\"action\":\"%s\",\"price\":%.5f,\"profit\":%.2f,\"reason\":\"%s\",\"signal_id\":%d}", 
-                              symbol, action, price, profit, esc_reason, signal_id);
+   string body = StringFormat("{\"symbol\":\"%s\",\"action\":\"%s\",\"price\":%.5f,\"profit\":%.2f,\"reason\":\"%s\",\"signal_id\":%d,\"ticket\":%I64u}", 
+                              symbol, action, price, profit, esc_reason, signal_id, ticket);
    char post_data[];
    char result_data[];
    string result_headers;
@@ -875,7 +1026,7 @@ void OnTradeTransaction(const MqlTradeTransaction& trans, const MqlTradeRequest&
                string sym = HistoryDealGetString(deal_ticket, DEAL_SYMBOL);
                string comment = HistoryDealGetString(deal_ticket, DEAL_COMMENT);
                Print("📢 [SmartTrader Bridge] Закрыта сделка ", sym, " #", deal_ticket, " | Профит: ", profit, " USD | Цена: ", close_price);
-               ReportExecution(sym, "DEAL_CLOSED", close_price, profit, comment, 0);
+               ReportExecution(sym, "DEAL_CLOSED", close_price, profit, comment, 0, deal_ticket);
             }
             else if(entry_type == DEAL_ENTRY_IN)
             {
@@ -884,7 +1035,7 @@ void OnTradeTransaction(const MqlTradeTransaction& trans, const MqlTradeRequest&
                ulong order_ticket = HistoryDealGetInteger(deal_ticket, DEAL_ORDER);
                string comment = HistoryDealGetString(deal_ticket, DEAL_COMMENT);
                Print("🚀 [SmartTrader Bridge] Лимитный ордер сработал (ORDER_FILLED): ", sym, " #", deal_ticket, " order #", order_ticket, " @ ", open_price);
-               ReportExecution(sym, "ORDER_FILLED", open_price, 0.0, comment, 0);
+               ReportExecution(sym, "ORDER_FILLED", open_price, 0.0, comment, 0, (order_ticket > 0 ? order_ticket : deal_ticket));
             }
          }
       }
@@ -905,7 +1056,7 @@ void OnTradeTransaction(const MqlTradeTransaction& trans, const MqlTradeRequest&
                {
                   string sym = HistoryOrderGetString(order_ticket, ORDER_SYMBOL);
                   Print("⏰ [SmartTrader Bridge] Лимитный ордер удален/истек (LIMIT_EXPIRED): ", sym, " #", order_ticket);
-                  ReportExecution(sym, "LIMIT_EXPIRED", 0.0, 0.0, "LIMIT_EXPIRED_OR_CANCELED", 0);
+                  ReportExecution(sym, "LIMIT_EXPIRED", 0.0, 0.0, "LIMIT_EXPIRED_OR_CANCELED", 0, order_ticket);
                }
             }
          }

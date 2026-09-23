@@ -33,3 +33,6 @@ desktop.ini
 
 # Logs
 *.log
+
+# Scratch / Local debugging scripts & credentials
+scratch/

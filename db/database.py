@@ -107,10 +107,51 @@ async def init_db():
         await db.execute("CREATE INDEX IF NOT EXISTS idx_signals_symbol ON signals (symbol);")
         await db.execute("CREATE INDEX IF NOT EXISTS idx_signals_created ON signals (created_at);")
         await db.execute("CREATE INDEX IF NOT EXISTS idx_broker_deals_close_time ON broker_deals (close_time);")
-        await db.execute("CREATE INDEX IF NOT EXISTS idx_broker_deals_symbol ON broker_deals (symbol);")
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS bot_settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+        """)
+
+        # По умолчанию устанавливаем режим micro для депозита $12 (если ещё не задан)
+        await db.execute("""
+            INSERT OR IGNORE INTO bot_settings (key, value, updated_at)
+            VALUES ('trading_mode', 'micro', ?)
+        """, (datetime.now(timezone.utc).isoformat(),))
 
         await db.commit()
-    logger.info("Database initialized with full schema and broker_deals table at %s", DB_PATH)
+    logger.info("Database initialized with full schema, broker_deals, and bot_settings table at %s", DB_PATH)
+
+
+async def get_bot_setting(key: str, default: str = "") -> str:
+    """Получить значение настройки из БД."""
+    try:
+        async with aiosqlite.connect(str(DB_PATH)) as db:
+            async with db.execute("SELECT value FROM bot_settings WHERE key = ?", (key,)) as cursor:
+                row = await cursor.fetchone()
+                if row:
+                    return row[0]
+        return default
+    except Exception as e:
+        logger.error("Error reading bot setting %s: %s", key, e)
+        return default
+
+
+async def set_bot_setting(key: str, value: str):
+    """Сохранить значение настройки в БД."""
+    try:
+        now_iso = datetime.now(timezone.utc).isoformat()
+        async with aiosqlite.connect(str(DB_PATH)) as db:
+            await db.execute("""
+                INSERT INTO bot_settings (key, value, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+            """, (key, str(value), now_iso))
+            await db.commit()
+    except Exception as e:
+        logger.error("Error setting bot setting %s: %s", key, e)
 
 
 async def save_signal(
@@ -690,6 +731,22 @@ async def get_stats() -> dict:
                     d, cnt, w, pnl = row
                     by_direction[d] = {"total": cnt, "wins": w, "profit_usd": round(pnl, 2)}
 
+                # Расчет реального среднего R:R по сигналам
+                cursor = await db.execute(
+                    """SELECT AVG(CASE WHEN risk_reward > 0 THEN risk_reward ELSE 2.0 END) 
+                       FROM signals WHERE status IN ('TP1_HIT', 'TP2_HIT', 'SL_HIT', 'CLOSED')"""
+                )
+                avg_rr_row = await cursor.fetchone()
+                avg_rr = round(float(avg_rr_row[0]), 2) if avg_rr_row and avg_rr_row[0] else 2.0
+
+                # Расчет реальных пунктов (pips) из закрытых сигналов
+                cursor = await db.execute(
+                    """SELECT COALESCE(SUM(pnl_pips), 0.0) 
+                       FROM signals WHERE status IN ('TP1_HIT', 'TP2_HIT', 'SL_HIT', 'CLOSED')"""
+                )
+                pips_row = await cursor.fetchone()
+                total_pips = round(float(pips_row[0]), 1) if pips_row and pips_row[0] else 0.0
+
                 return {
                     "total": deals_count,
                     "open": len(open_positions),
@@ -700,8 +757,8 @@ async def get_stats() -> dict:
                     "expired": 0,
                     "win_rate": round(win_rate, 1),
                     "total_profit_usd": round(total_profit_usd, 2),
-                    "total_pips": round(total_profit_usd * 10, 1),
-                    "avg_rr": 2.1,
+                    "total_pips": total_pips,
+                    "avg_rr": avg_rr,
                     "by_direction": by_direction,
                     "by_symbol": by_symbol,
                     "balance": telemetry.get("balance", 0.0),
@@ -784,7 +841,7 @@ async def get_consecutive_sl_count(max_lookback_hours: float = 12.0) -> int:
         async with aiosqlite.connect(str(DB_PATH)) as db:
             cursor = await db.execute(
                 """SELECT status, closed_at FROM signals 
-                   WHERE status IN ('TP1_HIT', 'TP2_HIT', 'SL_HIT') 
+                   WHERE status IN ('TP1_HIT', 'TP2_HIT', 'SL_HIT', 'BREAKEVEN', 'CLOSED_BE') 
                    ORDER BY closed_at DESC LIMIT 10"""
             )
             rows = await cursor.fetchall()

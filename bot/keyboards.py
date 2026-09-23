@@ -61,7 +61,7 @@ def panic_confirm_keyboard() -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
-def autotrade_keyboard(enabled: bool = True) -> InlineKeyboardMarkup:
+def autotrade_keyboard(enabled: bool = True, mode: str = "micro") -> InlineKeyboardMarkup:
     """Клавиатура быстрого управления авто-торговлей MT5."""
     builder = InlineKeyboardBuilder()
     toggle_text = "🔴 ПРИОСТАНОВИТЬ АВТОПИЛОТ" if enabled else "🟢 ВКЛЮЧИТЬ АВТОПИЛОТ"
@@ -69,6 +69,16 @@ def autotrade_keyboard(enabled: bool = True) -> InlineKeyboardMarkup:
     builder.row(
         InlineKeyboardButton(text=toggle_text, callback_data=toggle_cb)
     )
+    # Отдельные кнопки для выбора профиля (Radio-style)
+    if mode == "micro":
+        btn_micro = InlineKeyboardButton(text="✅ 🛡️ Режим «Микро-депозит»", callback_data="autotrade:mode_noop:micro")
+        btn_prop  = InlineKeyboardButton(text="👑 Режим: Институционал", callback_data="autotrade:mode:prop")
+    else:
+        btn_micro = InlineKeyboardButton(text="🛡️ Режим «Микро-депозит»", callback_data="autotrade:mode:micro")
+        btn_prop  = InlineKeyboardButton(text="✅ 👑 Режим: Институционал", callback_data="autotrade:mode_noop:prop")
+    builder.row(btn_micro)
+    builder.row(btn_prop)
+
     builder.row(
         InlineKeyboardButton(text="🔹 Лот 0.01", callback_data="autotrade:lot:0.01"),
         InlineKeyboardButton(text="🔹 Лот 0.02", callback_data="autotrade:lot:0.02"),

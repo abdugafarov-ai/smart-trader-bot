@@ -241,7 +241,6 @@ async def bridge_get_orders(request: web.Request) -> web.Response:
             cursor = await db.execute(
                 """SELECT * FROM signals 
                    WHERE status IN ('ACTIVE', 'OPEN', 'TP1_PARTIAL', 'PENDING')
-                   AND datetime(created_at) >= datetime('now', '-4 hours')
                    ORDER BY id DESC"""
             )
             rows = await cursor.fetchall()
