@@ -120,39 +120,6 @@ def analysis_result_keyboard(symbol: str, can_execute: bool = False) -> InlineKe
     return builder.as_markup()
 
 
-def symbols_keyboard() -> InlineKeyboardMarkup:
-    """Выбор категории активов."""
-    builder = InlineKeyboardBuilder()
-    builder.row(
-        InlineKeyboardButton(text="💎 Валютные Мажоры (7)", callback_data="cat:majors"),
-        InlineKeyboardButton(text="💱 Валютные Кроссы (9)", callback_data="cat:crosses"),
-    )
-    builder.row(
-        InlineKeyboardButton(text="🥇 Золото Спот (XAUUSD)", callback_data="sym:XAUUSD")
-    )
-    builder.row(InlineKeyboardButton(text="◀️ В Главное Меню", callback_data="menu"))
-    return builder.as_markup()
-
-
-def category_pairs_keyboard(category: str) -> InlineKeyboardMarkup:
-    """Список пар внутри категории."""
-    builder = InlineKeyboardBuilder()
-    
-    pairs = []
-    if category == 'majors':
-        pairs = config.PAIRS_MAJORS
-    elif category == 'crosses':
-        pairs = config.PAIRS_CROSSES
-    elif category == 'commodities':
-        pairs = config.PAIRS_COMMODITIES
-        
-    for sym in pairs:
-        builder.add(InlineKeyboardButton(text=f"📊 {sym}", callback_data=f"sym:{sym}"))
-        
-    builder.adjust(2)
-    builder.row(InlineKeyboardButton(text="◀️ Назад к категориям", callback_data="menu:analyze"))
-    return builder.as_markup()
-
 
 
 

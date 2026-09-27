@@ -14,6 +14,7 @@ CTrade trade;
 //--- Входные параметры советника
 input group "=== НАСТРОЙКИ СЕРВЕРА ==="
 input string   InpServerUrl    = "http://127.0.0.1:8080"; // URL сервера Smart Trader Bot
+input string   InpApiKey       = "stb-default-key-change-me-2026"; // API Key for Bridge
 input int      InpPollInterval = 3;                       // Опрос сервера каждые N секунд
 input ulong    InpMagicNumber  = 888001;                   // Magic Number ордеров
 
@@ -322,6 +323,7 @@ void PollOrdersFromServer()
    long account = AccountInfoInteger(ACCOUNT_LOGIN);
 
    string headers = "Content-Type: application/json\r\nUser-Agent: SmartTrader-MT5\r\nAccept: application/json\r\n";
+   headers += "X-API-Key: " + InpApiKey + "\r\n";
 
    string pos_json = GetActivePositionsSummary();
    string ord_json = GetPendingOrdersSummary();
@@ -986,6 +988,7 @@ void ReportExecution(string symbol, string action, double price, double profit=0
 {
    string url = InpServerUrl + "/api/v1/bridge/report";
    string headers = "Content-Type: application/json\r\n";
+   headers += "X-API-Key: " + InpApiKey + "\r\n";
    string esc_reason = reason;
    StringReplace(esc_reason, "\"", "'");
    StringReplace(esc_reason, "\r", " ");

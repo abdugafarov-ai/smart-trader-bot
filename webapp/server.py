@@ -120,12 +120,19 @@ async def api_events(request: web.Request) -> web.Response:
 # AUTO-TRADING BRIDGE ENDPOINTS (ДЛЯ METATRADER 4/5)
 # ═══════════════════════════════════════════════════════════
 
+def _check_api_key(request):
+    """Проверяет API-ключ в заголовках запроса."""
+    api_key = request.headers.get('X-API-Key', '')
+    if api_key != config.BRIDGE_API_KEY:
+        raise web.HTTPForbidden(text='Invalid API key')
+
 async def bridge_get_orders(request: web.Request) -> web.Response:
     """
     Советник MT4/MT5 опрашивает этот эндпоинт раз в несколько секунд:
     GET /api/v1/bridge/orders
     Возвращает список сигналов, которые нужно открыть или модифицировать.
     """
+    _check_api_key(request)
     try:
         from datetime import datetime, timezone
         from trading.execution_bridge import bridge_manager
@@ -283,6 +290,7 @@ async def bridge_post_report(request: web.Request) -> web.Response:
     POST /api/v1/bridge/report
     Body: {"symbol": "USDJPY", "action": "BUY", "price": 154.68, "profit": 0.0, "reason": "...", "signal_id": 140}
     """
+    _check_api_key(request)
     try:
         try:
             data = await request.json()
@@ -430,7 +438,7 @@ async def start_webapp_server(host: str = None, port: int = None, bot=None) -> w
     global _bot_instance
     if bot:
         _bot_instance = bot
-    host = host or config.WEBAPP_HOST
+    host = "127.0.0.1"
     port = port or config.WEBAPP_PORT
     app = create_webapp_app()
     runner = web.AppRunner(app)

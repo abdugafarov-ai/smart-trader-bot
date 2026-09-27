@@ -9,9 +9,11 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
+import config
+
 SCREENSHOT_CMD = (
-    "XAUTHORITY=/home/trader/.Xauthority DISPLAY=:11.0 "
-    "xwd -display :11.0 -root -silent | xwdtopnm 2>/dev/null | pnmtopng 2>/dev/null"
+    f"XAUTHORITY={config.WINE_XAUTHORITY} DISPLAY={config.WINE_DISPLAY} "
+    f"xwd -display {config.WINE_DISPLAY} -root -silent | xwdtopnm 2>/dev/null | pnmtopng 2>/dev/null"
 )
 
 

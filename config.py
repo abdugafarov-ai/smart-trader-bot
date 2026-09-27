@@ -171,8 +171,6 @@ SIGNAL_COOLDOWN_HOURS = 1  # 1 час между сигналами на одн�
 
 def is_pair_in_active_session(symbol: str) -> bool:
     """Проверяет, торгуется ли пара в текущую сессию."""
-    from datetime import datetime
-    from zoneinfo import ZoneInfo
     current_hour = datetime.now(ZoneInfo('UTC')).hour
     sessions = PAIR_ACTIVE_SESSIONS.get(symbol, [(0, 24)])  # default: always active
     for start_h, end_h in sessions:
@@ -186,8 +184,6 @@ def is_pair_in_active_session(symbol: str) -> bool:
 
 def is_in_kill_zone() -> bool:
     """Проверяет, находимся ли мы в ICT Kill Zone (London/NY Open)."""
-    from datetime import datetime
-    from zoneinfo import ZoneInfo
     current_hour = datetime.now(ZoneInfo('UTC')).hour
     for kz in KILL_ZONES_UTC.values():
         if kz['start'] <= current_hour < kz['end']:
@@ -196,8 +192,6 @@ def is_in_kill_zone() -> bool:
 
 def get_current_kill_zone() -> str | None:
     """Возвращает название текущей Kill Zone или None."""
-    from datetime import datetime
-    from zoneinfo import ZoneInfo
     current_hour = datetime.now(ZoneInfo('UTC')).hour
     for key, kz in KILL_ZONES_UTC.items():
         if kz['start'] <= current_hour < kz['end']:
@@ -272,3 +266,10 @@ def is_weekly_trading_window_open() -> tuple[bool, str]:
     return True, ""
 
 
+# ── VPS/Wine пути ────────────────────────────────────────
+WINE_MT5_PATH = os.getenv('WINE_MT5_PATH', '/home/trader/.wine/drive_c/Program Files/MetaTrader 5')
+WINE_DISPLAY = os.getenv('WINE_DISPLAY', ':11.0')
+WINE_XAUTHORITY = os.getenv('WINE_XAUTHORITY', '/home/trader/.Xauthority')
+
+
+BRIDGE_API_KEY = os.getenv('BRIDGE_API_KEY', 'stb-default-key-change-me-2026')

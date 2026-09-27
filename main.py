@@ -116,10 +116,20 @@ async def main():
 
         # Фоновые задачи
         global _background_tasks
+        
+        def _on_task_done(task: asyncio.Task):
+            """Обработка падения фоновых задач."""
+            _background_tasks.discard(task)
+            if task.cancelled():
+                return
+            exc = task.exception()
+            if exc:
+                logging.critical("🔴 Фоновая задача упала: %s", exc, exc_info=exc)
+                
         for coro in [scanner.start(), tracker.start(), reporter.start()]:
             task = asyncio.create_task(coro)
             _background_tasks.add(task)
-            task.add_done_callback(_background_tasks.discard)
+            task.add_done_callback(_on_task_done)
         
     async def on_shutdown():
         logging.info("Bot shutting down.")

@@ -13,7 +13,7 @@ import config
 logger = logging.getLogger(__name__)
 
 # MT5 Files directory path on VPS
-MT5_FILES_DIR = "/home/trader/.wine/drive_c/Program Files/MetaTrader 5/MQL5/Files"
+MT5_FILES_DIR = f"{config.WINE_MT5_PATH}/MQL5/Files"
 
 # Kraken mapping for Forex pairs
 KRAKEN_SYMBOL_MAP = {

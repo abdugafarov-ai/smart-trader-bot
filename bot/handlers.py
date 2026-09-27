@@ -10,8 +10,7 @@ from strategies import ALL_STRATEGIES, STRATEGY_MAP
 from sessions.trading_sessions import TradingSessions
 from bot.guide import get_guide_step, get_total_steps, GUIDE_STEPS
 from bot.keyboards import (
-    main_menu_keyboard, symbols_keyboard, category_pairs_keyboard,
-    back_keyboard, guide_keyboard, admin_approve_keyboard,
+    main_menu_keyboard, back_keyboard, guide_keyboard, admin_approve_keyboard,
     analysis_result_keyboard, terminal_dashboard_keyboard, panic_confirm_keyboard
 )
 from utils.formatters import (

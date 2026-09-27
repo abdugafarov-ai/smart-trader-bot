@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 class EconomicCalendar:
     _shared_cache_data: list[dict] = []
     _shared_cache_time: datetime | None = None
+    _fetch_lock = asyncio.Lock()
 
     def __init__(self, timezone_str: str = 'Asia/Tashkent'):
         self.timezone_str = timezone_str
@@ -28,39 +29,40 @@ class EconomicCalendar:
         self.url = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
 
     async def fetch_events(self) -> list[dict]:
-        now = datetime.now(timezone.utc)
-        # 1. Если есть общий кэш свежее 60 минут — возвращаем без сетевого запроса
-        if EconomicCalendar._shared_cache_time and (now - EconomicCalendar._shared_cache_time) < timedelta(hours=1) and EconomicCalendar._shared_cache_data:
-            return EconomicCalendar._shared_cache_data
+        async with self._fetch_lock:
+            now = datetime.now(timezone.utc)
+            # 1. Если есть общий кэш свежее 60 минут — возвращаем без сетевого запроса
+            if EconomicCalendar._shared_cache_time and (now - EconomicCalendar._shared_cache_time) < timedelta(hours=1) and EconomicCalendar._shared_cache_data:
+                return EconomicCalendar._shared_cache_data
         
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
-            "Accept": "application/json, text/plain, */*",
-            "Accept-Language": "en-US,en;q=0.9",
-            "Referer": "https://www.forexfactory.com/",
-        }
-        try:
-            timeout = aiohttp.ClientTimeout(total=15)
-            async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.get(self.url, headers=headers) as response:
-                    if response.status == 200:
-                        data = await response.json(content_type=None)
-                        if isinstance(data, list) and len(data) > 0:
-                            EconomicCalendar._shared_cache_data = data
-                            EconomicCalendar._shared_cache_time = now
-                            logger.info("Fetched %d economic events from ForexFactory.", len(data))
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+                "Accept": "application/json, text/plain, */*",
+                "Accept-Language": "en-US,en;q=0.9",
+                "Referer": "https://www.forexfactory.com/",
+            }
+            try:
+                timeout = aiohttp.ClientTimeout(total=15)
+                async with aiohttp.ClientSession(timeout=timeout) as session:
+                    async with session.get(self.url, headers=headers) as response:
+                        if response.status == 200:
+                            data = await response.json(content_type=None)
+                            if isinstance(data, list) and len(data) > 0:
+                                EconomicCalendar._shared_cache_data = data
+                                EconomicCalendar._shared_cache_time = now
+                                logger.info("Fetched %d economic events from ForexFactory.", len(data))
+                            else:
+                                logger.warning("ForexFactory returned empty or invalid data.")
+                            return EconomicCalendar._shared_cache_data
                         else:
-                            logger.warning("ForexFactory returned empty or invalid data.")
-                        return EconomicCalendar._shared_cache_data
-                    else:
-                        logger.warning("Failed to fetch economic calendar: HTTP %s (using cached data)", response.status)
-                        # При 429 или ошибке продлеваем существующий кэш на 30 мин чтобы не спамить
-                        EconomicCalendar._shared_cache_time = now - timedelta(minutes=30)
-                        return EconomicCalendar._shared_cache_data
-        except Exception as e:
-            logger.warning("Error fetching economic calendar: %s", e)
-            EconomicCalendar._shared_cache_time = now - timedelta(minutes=30)
-            return EconomicCalendar._shared_cache_data
+                            logger.warning("Failed to fetch economic calendar: HTTP %s (using cached data)", response.status)
+                            # При 429 или ошибке продлеваем существующий кэш на 30 мин чтобы не спамить
+                            EconomicCalendar._shared_cache_time = now - timedelta(minutes=30)
+                            return EconomicCalendar._shared_cache_data
+            except Exception as e:
+                logger.warning("Error fetching economic calendar: %s", e)
+                EconomicCalendar._shared_cache_time = now - timedelta(minutes=30)
+                return EconomicCalendar._shared_cache_data
 
     def _parse_datetime(self, item: dict) -> datetime | None:
         """

@@ -34,7 +34,11 @@ class AccessControlMiddleware(BaseMiddleware):
             user_id = event.from_user.id if event.from_user else None
             # Пропускаем callback-и для заявок (approve/reject)
             if event.data and event.data.startswith(("admin_approve:", "admin_reject:")):
-                return await handler(event, data)
+                if user_id == config.ADMIN_ID:
+                    return await handler(event, data)
+                else:
+                    await event.answer('❌ Только администратор!', show_alert=True)
+                    return
 
         if user_id is None:
             return await handler(event, data)
