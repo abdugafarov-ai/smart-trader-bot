@@ -625,68 +625,6 @@ async def cb_panic_exec(callback: CallbackQuery):
     await safe_edit(callback, text, reply_markup=terminal_dashboard_keyboard(), parse_mode="HTML")
 
 
-@router.callback_query(F.data == "terminal:screenshot")
-async def cb_terminal_screenshot(callback: CallbackQuery):
-    from utils.screenshot import capture_mt5_screenshot
-    from aiogram.types import BufferedInputFile
-    from bot.keyboards import back_keyboard
-
-    await callback.answer("📸 Захватываю экран MT5...")
-    png_bytes = await capture_mt5_screenshot()
-    if not png_bytes:
-        await callback.message.answer(
-            "⚠️ Не удалось сделать снимок экрана MT5.\nВозможно, виртуальный дисплей перезагружается.",
-            reply_markup=back_keyboard("menu:terminal")
-        )
-        return
-
-    photo = BufferedInputFile(png_bytes, filename="mt5_live.png")
-    await callback.message.answer_photo(
-        photo=photo,
-        caption=(
-            "📸 <b>РЕАЛЬНЫЙ ЭКРАН ТЕРМИНАЛА METATRADER 5</b>\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            "🖥 <i>Прямой снимок из графической сессии VPS (MetaTrader 5 x64).</i>\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-        ),
-        parse_mode="HTML",
-        reply_markup=back_keyboard("menu:terminal")
-    )
-
-
-@router.message(Command("screenshot"))
-async def cmd_screenshot(message: Message):
-    from utils.screenshot import capture_mt5_screenshot
-    from aiogram.types import BufferedInputFile
-    from bot.keyboards import back_keyboard
-
-    msg_wait = await message.answer("📸 <i>Захватываю экран терминала MT5...</i>", parse_mode="HTML")
-    png_bytes = await capture_mt5_screenshot()
-    if not png_bytes:
-        await msg_wait.edit_text(
-            "⚠️ Не удалось сделать снимок экрана MT5.\nПроверьте статус Xvfb на сервере.",
-            reply_markup=back_keyboard("menu:terminal")
-        )
-        return
-
-    photo = BufferedInputFile(png_bytes, filename="mt5_live.png")
-    try:
-        await msg_wait.delete()
-    except Exception:
-        pass
-
-    await message.answer_photo(
-        photo=photo,
-        caption=(
-            "📸 <b>РЕАЛЬНЫЙ ЭКРАН ТЕРМИНАЛА METATRADER 5</b>\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            "🖥 <i>Прямой снимок из графической сессии VPS (MetaTrader 5 x64).</i>\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-        ),
-        parse_mode="HTML",
-        reply_markup=back_keyboard("menu:terminal")
-    )
-
 
 @router.callback_query(F.data.startswith("autotrade:"))
 async def cb_autotrade_actions(callback: CallbackQuery):

@@ -39,7 +39,6 @@ def terminal_dashboard_keyboard() -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.row(
         InlineKeyboardButton(text="🔄 Обновить", callback_data="terminal:refresh"),
-        InlineKeyboardButton(text="📸 Скриншот MT5", callback_data="terminal:screenshot"),
         InlineKeyboardButton(text="⚙️ Автопилот", callback_data="menu:autotrade")
     )
     builder.row(

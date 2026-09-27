@@ -84,7 +84,6 @@ async def main():
                 BotCommand(command="start", description="🏛 Главное меню терминала"),
                 BotCommand(command="terminal", description="🖥 Пульт управления MetaTrader 5"),
                 BotCommand(command="account", description="💼 Баланс и открытые позиции MT5"),
-                BotCommand(command="screenshot", description="📸 Снимок экрана терминала MT5"),
                 BotCommand(command="stats", description="📊 Статистика & Win-Rate брокера"),
                 BotCommand(command="history", description="📜 Журнал последних сделок"),
                 BotCommand(command="autotrade", description="⚙️ Автопилот советника MT5"),
@@ -107,7 +106,7 @@ async def main():
                 "• Авто-выставление лимитных ордеров со Stop Loss и Take Profit (R:R 1:2.5 – 1:4.0)\n"
                 "• Режим Pure Swing: сделки дышат без копеечных выбиваний по безубытку\n"
                 "• Режимы счёта: «Микро-депозит» (лот 0.01 от $12) и «Институционал»\n"
-                "• Онлайн-пульт MT5: баланс, эквити, скриншоты экрана и кнопка «Паника»."
+                "• Онлайн-пульт MT5: баланс, эквити, открытые позиции и кнопка «Паника»."
             )
 
             logging.info("Bot commands and descriptions registered successfully in Telegram.")

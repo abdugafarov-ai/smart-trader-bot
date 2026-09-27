@@ -268,8 +268,6 @@ def is_weekly_trading_window_open() -> tuple[bool, str]:
 
 # ── VPS/Wine пути ────────────────────────────────────────
 WINE_MT5_PATH = os.getenv('WINE_MT5_PATH', '/home/trader/.wine/drive_c/Program Files/MetaTrader 5')
-WINE_DISPLAY = os.getenv('WINE_DISPLAY', ':11.0')
-WINE_XAUTHORITY = os.getenv('WINE_XAUTHORITY', '/home/trader/.Xauthority')
 
 
 BRIDGE_API_KEY = os.getenv('BRIDGE_API_KEY', 'stb-default-key-change-me-2026')
