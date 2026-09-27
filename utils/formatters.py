@@ -167,11 +167,31 @@ def format_notification(result: MultiTFResult) -> str:
     rr1_val = result.risk_reward_1 if result.risk_reward_1 is not None else 0.0
     rr2_val = result.risk_reward_2 if result.risk_reward_2 is not None else 0.0
 
-    action_hint = (
-        "🚀 <b>ВХОД ПРЯМО СЕЙЧАС ПО РЫНКУ!</b>"
-        if "MARKET" in result.order_type
-        else f"⏳ <i>Установите отложенный ордер {order_type_clean} в терминале.</i>"
-    )
+    # Краткое институциональное объяснение логики входа (ICT/SMC)
+    reasons = []
+    if result.tf_analyses:
+        for t in result.tf_analyses:
+            if t.direction == result.overall_direction:
+                for s in t.strategies:
+                    if s.signal and s.signal.details:
+                        for d in s.signal.details:
+                            if any(k in d for k in ("BOS", "CHoCH", "FVG", "OTE", "Order Block", "Тренд", "Kill Zone", "Зона")):
+                                clean_d = d.split("(")[0].strip() if "(" in d and len(d) > 40 else d.strip()
+                                if clean_d not in reasons:
+                                    reasons.append(clean_d)
+                                if len(reasons) >= 2:
+                                    break
+            if len(reasons) >= 2:
+                break
+
+    if not reasons:
+        reasons = [
+            f"Подтвержденный слом структуры ({result.overall_direction}) на младших ТФ",
+            "Откат цены в институциональную зону набора (Discount/OTE)"
+        ]
+
+    reasons.append(f"Математическое преимущество: R:R 1:{rr1_val:.1f}")
+    why_text = "💡 <b>ПОЧЕМУ ВХОДИМ:</b>\n" + "\n".join([f"• {r}" for r in reasons[:3]])
 
     return (
         f"🏛 <b>SMART TERMINAL</b> | <b>{order_type_clean}</b>\n"
@@ -185,7 +205,8 @@ def format_notification(result: MultiTFResult) -> str:
         f"│ 🎯 <b>TP 1:</b>   <code>{format_price(result.take_profit_1, result.symbol)}</code>{pips_tp1_s}{rr1_s}\n"
         f"│ 🎯 <b>TP 2:</b>   <code>{format_price(result.take_profit_2, result.symbol)}</code>{pips_tp2_s}{rr2_s}\n"
         f"└── <b>R:R:</b>    <code>1:{rr1_val:.1f} / 1:{rr2_val:.1f}</code> ────────\n\n"
-        f"⏱ <b>СТРУКТУРА ТФ:</b> {tf_summary}\n"
+        f"⏱ <b>СТРУКТУРА ТФ:</b> {tf_summary}\n\n"
+        f"{why_text}\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         f"{action_hint}\n"
         f"💼 <i>Рекомендуемый риск: 1.0% депозита.</i>"
@@ -265,7 +286,11 @@ def format_signal_result(signal: dict, status: str, close_price: float, pnl_pips
             f"│ 📍 <b>ENTRY:</b>  <code>{entry}</code>\n"
             f"│ 🛑 <b>EXIT:</b>   <code>{close_str}</code>\n"
             f"│ 📉 <b>PNL:</b>    <code>-{abs(pnl_pips):.1f} pips</code>\n"
-            f"└──────────────────────────────────────\n"
+            f"└──────────────────────────────────────\n\n"
+            f"🛑 <b>РАЗБОР СТОПА:</b>\n"
+            f"• Импульсный пробой уровня / снятие ликвидности рынком.\n"
+            f"• Риск строго ограничен 1.0% депозита. Капитал защищен.\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
             f"💼 <i>Убыток строго ограничен 1.0% депозита. Дисциплина сохраняет капитал.</i>"
         )
     else:  # EXPIRED / CANCELLED
@@ -280,6 +305,39 @@ def format_signal_result(signal: dict, status: str, close_price: float, pnl_pips
             f"└──────────────────────────────────────\n"
             f"💡 <i>Удалите неактивный отложенный ордер из терминала.</i>"
         )
+
+
+def format_manual_open(symbol: str, order_type: str, volume: float, price: float) -> str:
+    """Уведомление о ручном открытии сделки пользователем в MT5."""
+    clean_type = order_type.upper()
+    emoji = "🟢" if "BUY" in clean_type else "🔴"
+    price_str = format_price(price, symbol)
+    return (
+        f"👑 <b>Мой повелитель открыл сделку</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"• Пара: <b>{symbol}</b> ({emoji} <b>{clean_type}</b>)\n"
+        f"• Объем: <code>{volume:.2f} лот</code>\n"
+        f"• Цена входа: <code>{price_str}</code>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"⚡ <i>Позиция зафиксирована терминалом и взята на контроль.</i>"
+    )
+
+
+def format_manual_close(symbol: str, profit: float, pnl_pips: float, price: float) -> str:
+    """Уведомление о досрочном ручном закрытии сделки пользователем в MT5."""
+    profit_sign = "+" if profit >= 0 else ""
+    pips_sign = "+" if pnl_pips >= 0 else ""
+    price_str = format_price(price, symbol)
+    profit_emoji = "💵" if profit > 0 else ("🛡" if profit == 0 else "📉")
+    return (
+        f"👑 <b>Мой повелитель решил закрыть сделку</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"• Пара: <b>{symbol}</b>\n"
+        f"• Итог: {profit_emoji} <b>{profit_sign}{profit:.2f} USD</b> ({pips_sign}{pnl_pips:.1f} pips)\n"
+        f"• Цена закрытия: <code>{price_str}</code>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"💼 <i>Сделка закрыта вручную до достижения TP/SL.</i>"
+    )
 
 
 # ── 7. Сводка сигналов (/signals) ────────────────────────────

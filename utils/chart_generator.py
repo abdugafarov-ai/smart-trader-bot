@@ -311,6 +311,249 @@ def generate_signal_chart(
         return None
 
 
+def generate_outcome_chart(
+    df: pd.DataFrame,
+    symbol: str,
+    direction: str,
+    entry: float,
+    stop_loss: float,
+    take_profit: float,
+    close_price: float,
+    status: str = "TP1_HIT",
+    profit_usd: float = 0.0,
+    theme: str = "dark",
+    last_n_candles: int = 55,
+    timeframe: str = "1h",
+) -> Optional[bytes]:
+    """
+    Генерирует свечной график результата закрытой сделки (TP, SL или ручное закрытие).
+    Отображает:
+    - Реальные свечи, прошедшие от момента входа до закрытия
+    - Уровни Entry, Stop Loss и Take Profit с заливкой зон
+    - Метку точки выхода (Exit Price) с бейджем финансового результата
+    - Правые плашки цен в стиле TradingView
+    """
+    try:
+        if df is None or df.empty or len(df) < 5:
+            logger.warning("Not enough data to generate outcome chart for %s", symbol)
+            return None
+
+        df_chart = df.tail(last_n_candles).copy().reset_index(drop=True)
+        n_candles = len(df_chart)
+
+        t = TV_THEMES.get(theme, TV_THEMES["dark"])
+
+        if 'JPY' in symbol:
+            p_fmt = "{:.3f}"
+            pip_mult = 100.0
+        elif 'XAU' in symbol:
+            p_fmt = "{:.2f}"
+            pip_mult = 10.0
+        else:
+            p_fmt = "{:.5f}"
+            pip_mult = 10000.0
+
+        if entry is None or entry <= 0:
+            entry = float(df_chart['close'].iloc[0])
+        if stop_loss is None or stop_loss <= 0:
+            diff = abs(close_price - entry) if abs(close_price - entry) > 0 else (entry * 0.003)
+            stop_loss = entry - diff if direction == "LONG" else entry + diff
+        if take_profit is None or take_profit <= 0:
+            diff = abs(entry - stop_loss) * 2.0
+            take_profit = entry + diff if direction == "LONG" else entry - diff
+
+        pnl_pips = (close_price - entry if direction == "LONG" else entry - close_price) * pip_mult
+        profit_sign = "+" if profit_usd >= 0 else ""
+
+        is_manual = status in ("MANUAL_CLOSE", "MANUAL_CLIENT_CLOSE")
+        is_tp = not is_manual and (status in ("TP", "TP1_HIT", "TP2_HIT") or profit_usd > 0)
+        is_sl = not is_manual and (status in ("SL", "SL_HIT") or profit_usd < 0)
+
+        fig, ax = plt.subplots(figsize=(13, 6.8), dpi=140)
+        fig.patch.set_facecolor(t["bg_color"])
+        ax.set_facecolor(t["bg_color"])
+
+        ax.grid(True, color=t["grid_color"], linestyle='-', linewidth=0.8, alpha=0.7)
+        ax.set_axisbelow(True)
+
+        # ── 1. Зоны прибыли и риска (под свечами) ──
+        x_start = 0
+        x_end = n_candles + 4
+
+        sl_color = t["sl_box"]
+        tp_color = t["tp_box"]
+
+        if direction == "LONG":
+            profit_height = max(0.00001, take_profit - entry)
+            risk_height = max(0.00001, entry - stop_loss)
+            rect_tp = Rectangle(
+                (x_start, entry), x_end - x_start, profit_height,
+                facecolor=tp_color, edgecolor='none', alpha=0.15, zorder=1
+            )
+            rect_sl = Rectangle(
+                (x_start, stop_loss), x_end - x_start, risk_height,
+                facecolor=sl_color, edgecolor='none', alpha=0.15, zorder=1
+            )
+        else:
+            profit_height = max(0.00001, entry - take_profit)
+            risk_height = max(0.00001, stop_loss - entry)
+            rect_tp = Rectangle(
+                (x_start, take_profit), x_end - x_start, profit_height,
+                facecolor=tp_color, edgecolor='none', alpha=0.15, zorder=1
+            )
+            rect_sl = Rectangle(
+                (x_start, entry), x_end - x_start, risk_height,
+                facecolor=sl_color, edgecolor='none', alpha=0.15, zorder=1
+            )
+
+        ax.add_patch(rect_tp)
+        ax.add_patch(rect_sl)
+
+        # Горизонтальные линии уровней сделки
+        ax.plot([x_start, x_end], [entry, entry], color=t["entry_line"], linewidth=1.5, linestyle='--', alpha=0.85, zorder=3)
+        ax.plot([x_start, x_end], [stop_loss, stop_loss], color=sl_color, linewidth=1.4, linestyle='-', alpha=0.9, zorder=3)
+        ax.plot([x_start, x_end], [take_profit, take_profit], color=tp_color, linewidth=1.4, linestyle='-', alpha=0.9, zorder=3)
+
+        # ── 2. Отрисовка японских свечей ──
+        candle_width = 0.60
+        wick_width = 1.0
+
+        for i in range(n_candles):
+            row = df_chart.iloc[i]
+            o, h, l, c = float(row['open']), float(row['high']), float(row['low']), float(row['close'])
+            is_up = c >= o
+            c_color = t["up_candle"] if is_up else t["down_candle"]
+
+            ax.plot([i, i], [l, h], color=c_color, linewidth=wick_width, zorder=4)
+
+            body_bottom = min(o, c)
+            body_height = max(abs(c - o), (h - l) * 0.01)
+
+            rect = Rectangle(
+                (i - candle_width / 2, body_bottom),
+                candle_width, body_height,
+                facecolor=c_color,
+                edgecolor=c_color,
+                linewidth=0.8,
+                zorder=5
+            )
+            ax.add_patch(rect)
+
+        # ── 3. Маркер точки закрытия сделки на последней свече ──
+        last_x = n_candles - 1
+        exit_badge_color = tp_color if is_tp else (sl_color if is_sl else "#e5a50a")
+        
+        ax.scatter([last_x], [close_price], color=exit_badge_color, s=90, zorder=8, edgecolors='#ffffff', linewidth=1.5)
+
+        if is_tp:
+            badge_title = f"[TP] TAKE PROFIT HIT!\n{profit_sign}{profit_usd:.2f} USD (+{abs(pnl_pips):.1f} p)"
+        elif is_sl:
+            badge_title = f"[SL] STOP LOSS HIT\n-{abs(profit_usd):.2f} USD (-{abs(pnl_pips):.1f} p)"
+        elif is_manual:
+            badge_title = f"[MANUAL] MANUAL CLOSE\n{profit_sign}{profit_usd:.2f} USD ({profit_sign}{pnl_pips:.1f} p)"
+        else:
+            badge_title = f"CLOSED: {profit_sign}{profit_usd:.2f} USD"
+
+        ax.annotate(
+            badge_title,
+            xy=(last_x, close_price),
+            xytext=(last_x - 7, close_price),
+            fontsize=9.0, fontweight='bold', color='#ffffff',
+            va='center', ha='right', zorder=9,
+            bbox=dict(boxstyle='round,pad=0.35', facecolor=exit_badge_color, alpha=0.92, edgecolor='#ffffff', linewidth=1.0),
+            arrowprops=dict(arrowstyle='->', color='#ffffff', lw=1.2)
+        )
+
+        # ── 4. Границы осей X и Y ──
+        total_x_span = n_candles + 4
+        ax.set_xlim(-1, total_x_span)
+
+        all_y = list(df_chart['low']) + list(df_chart['high']) + [entry, stop_loss, take_profit, close_price]
+        y_min, y_max = min(all_y), max(all_y)
+        y_padding = max(0.0005, (y_max - y_min) * 0.10)
+        ax.set_ylim(y_min - y_padding, y_max + y_padding)
+
+        ax.spines['top'].set_visible(False)
+        ax.spines['bottom'].set_color(t["axis_color"])
+        ax.spines['left'].set_visible(False)
+        ax.spines['right'].set_color(t["axis_color"])
+
+        ax.yaxis.tick_right()
+        ax.yaxis.set_label_position("right")
+        ax.tick_params(axis='y', colors=t["subtext_color"], labelsize=8.5, length=3)
+        ax.tick_params(axis='x', colors=t["subtext_color"], labelsize=8, length=3)
+
+        # ── 5. Плашки цен на правой шкале ──
+        x_badge = total_x_span
+
+        def add_badge(y_val, text, bg_color, text_color='#ffffff'):
+            ax.text(
+                x_badge, y_val, f" {text} ",
+                color=text_color, fontsize=8.5, fontweight='bold',
+                va='center', ha='left',
+                bbox=dict(boxstyle='square,pad=0.25', facecolor=bg_color, edgecolor='none'),
+                clip_on=False, zorder=10
+            )
+
+        add_badge(stop_loss, f"SL {p_fmt.format(stop_loss)}", sl_color)
+        add_badge(entry, f"ENTRY {p_fmt.format(entry)}", '#5d606b')
+        add_badge(take_profit, f"TP {p_fmt.format(take_profit)}", tp_color)
+        add_badge(close_price, f"EXIT {p_fmt.format(close_price)}", exit_badge_color)
+
+        # ── 6. Заголовок и метаданные ──
+        res_str = "TAKE PROFIT" if is_tp else ("STOP LOSS" if is_sl else "MANUAL CLOSE")
+        title_text = f"{symbol} · {timeframe.upper()} · SMART TRADER BOT · [РЕЗУЛЬТАТ: {res_str}]"
+        ax.text(
+            0.015, 0.965, title_text, transform=ax.transAxes,
+            color=t["text_color"], fontsize=9.5, fontweight='bold', va='top', ha='left'
+        )
+
+        dir_lbl = "LONG" if direction == "LONG" else "SHORT"
+        sub_text = (
+            f"Позиция: {dir_lbl} | Вход: {p_fmt.format(entry)} | Выход: {p_fmt.format(close_price)} | "
+            f"PnL: {profit_sign}{profit_usd:.2f} USD ({profit_sign}{pnl_pips:.1f} pips)"
+        )
+        ax.text(
+            0.015, 0.915, sub_text, transform=ax.transAxes,
+            color=t["subtext_color"], fontsize=8.5, va='top', ha='left'
+        )
+
+        ax.text(
+            0.015, 0.03, "TradingView Style", transform=ax.transAxes,
+            color=t["watermark"], fontsize=12, fontweight='bold', va='bottom', ha='left'
+        )
+
+        # Временные метки X
+        if 'timestamp' in df_chart.columns:
+            step = max(1, n_candles // 6)
+            x_ticks = list(range(0, n_candles, step))
+            x_labels = []
+            for x_idx in x_ticks:
+                ts = df_chart['timestamp'].iloc[x_idx]
+                if isinstance(ts, str):
+                    ts = pd.to_datetime(ts)
+                x_labels.append(ts.strftime('%d %b %H:%M'))
+            ax.set_xticks(x_ticks)
+            ax.set_xticklabels(x_labels, rotation=0, ha='center', fontsize=7.5, color=t["subtext_color"])
+        else:
+            ax.set_xticks([])
+
+        plt.tight_layout()
+
+        buf = io.BytesIO()
+        fig.savefig(buf, format='png', dpi=140, bbox_inches='tight', facecolor=t["bg_color"])
+        plt.close(fig)
+        buf.seek(0)
+
+        logger.info("Outcome chart generated for %s (Status: %s, PnL: %s)", symbol, status, profit_usd)
+        return buf.getvalue()
+
+    except Exception as e:
+        logger.error("Failed to generate outcome chart for %s: %s", symbol, e, exc_info=True)
+        plt.close('all')
+        return None
+
+
 def save_chart_to_file(chart_bytes: bytes, filepath: str) -> bool:
     """Сохраняет график в файл (для отладки)."""
     try:
@@ -321,3 +564,4 @@ def save_chart_to_file(chart_bytes: bytes, filepath: str) -> bool:
     except Exception as e:
         logger.error("Failed to save chart: %s", e)
         return False
+

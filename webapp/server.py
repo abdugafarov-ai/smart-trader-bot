@@ -27,8 +27,8 @@ _executed_orders_log: list[dict] = []
 _bot_instance = None
 
 
-async def _send_telegram_notification(text: str):
-    """Рассылает уведомление об исполнении/закрытии в MT5 всем пользователям бота."""
+async def _send_telegram_notification(text: str, photo_bytes: bytes = None):
+    """Рассылает уведомление об исполнении/закрытии в MT5 всем пользователям бота (с графиком при наличии)."""
     global _bot_instance
     if not _bot_instance:
         return
@@ -39,8 +39,22 @@ async def _send_telegram_notification(text: str):
             recipients.append(config.ADMIN_ID)
         for uid in recipients:
             try:
-                await _bot_instance.send_message(uid, text, parse_mode="HTML")
+                if photo_bytes:
+                    from aiogram.types import BufferedInputFile
+                    await _bot_instance.send_photo(
+                        uid,
+                        photo=BufferedInputFile(photo_bytes, filename="trade_outcome.png"),
+                        caption=text,
+                        parse_mode="HTML"
+                    )
+                else:
+                    await _bot_instance.send_message(uid, text, parse_mode="HTML")
             except Exception as err:
+                if photo_bytes:
+                    try:
+                        await _bot_instance.send_message(uid, text, parse_mode="HTML")
+                    except Exception:
+                        pass
                 logger.error("Failed to send bridge notification to %d: %s", uid, err)
     except Exception as e:
         logger.error("Error sending bridge notification: %s", e)
@@ -177,38 +191,101 @@ async def bridge_get_orders(request: web.Request) -> web.Response:
             if quotes:
                 bridge_manager.update_quotes(quotes)
 
-            # Синхронизация реальных закрытых сделок брокера в базу данных
             if history and isinstance(history, list) and len(history) > 0:
                 try:
-                    from db.database import sync_broker_deals
+                    from db.database import sync_broker_deals, DB_PATH
+                    import aiosqlite
+                    from market.data_fetcher import DataFetcher
+                    from utils.chart_generator import generate_outcome_chart
+                    from utils.formatters import format_manual_close
+
                     new_closed_deals = await sync_broker_deals(history)
                     if new_closed_deals:
+                        fetcher = DataFetcher()
                         for nd in new_closed_deals:
                             profit_val = float(nd.get("profit") or 0.0)
                             profit_sign = "+" if profit_val >= 0 else ""
-                            if profit_val > 0:
-                                emoji = "🏆"
-                                title = "ТЕЙК-ПРОФИТ ВЗЯТ (METATRADER 5)!"
-                            elif profit_val == 0:
-                                emoji = "🛡"
-                                title = "СДЕЛКА ЗАКРЫТА В БЕЗУБЫТОК!"
-                            else:
-                                emoji = "🛑"
-                                title = "СТОП-ЛОСС СРАБОТАЛ (METATRADER 5)!"
+                            sym = nd.get('symbol', '').upper()
+                            deal_type = nd.get('type', 'BUY').upper()
+                            lot = nd.get('lot', 0.01)
+                            close_p = float(nd.get("price") or 0.0)
+                            ticket_no = nd.get("ticket", 0)
+                            comment = str(nd.get("comment") or "")
+                            magic = int(nd.get("magic") or 0)
+                            is_manual = (magic != 888001 and magic != 777001) or "MANUAL" in comment.upper()
 
-                            new_bal_text = f"\n💰 Баланс счёта: <code>{balance:.2f} USD</code>" if balance > 0 else ""
-                            msg = (
-                                f"{emoji} <b>{title}</b>\n"
-                                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                                f"📊 <b>{nd['symbol']}</b> | <code>{nd['type']} {nd['lot']} lot</code>\n"
-                                f"💵 Финансовый результат: <b>{profit_sign}{profit_val:.2f} USD</b>\n"
-                                f"📍 Цена закрытия: <code>{nd['price']}</code>\n"
-                                f"🎫 Билет сделки: <code>#{nd['ticket']}</code>"
-                                f"{new_bal_text}\n"
-                                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                                f"💼 <i>Сделка зафиксирована брокером. Статистика обновлена.</i>"
-                            )
-                            await _send_telegram_notification(msg)
+                            pip_mult = 100.0 if 'JPY' in sym else (10.0 if 'XAU' in sym else 10000.0)
+
+                            # Поиск параметров исходного сигнала
+                            async with aiosqlite.connect(str(DB_PATH)) as db:
+                                db.row_factory = aiosqlite.Row
+                                c = await db.execute("SELECT * FROM signals WHERE symbol = ? ORDER BY id DESC LIMIT 1", (sym,))
+                                sig_row = await c.fetchone()
+                                sig_dict = dict(sig_row) if sig_row else {}
+
+                            entry_p = float(sig_dict.get('entry_price') or close_p)
+                            direction = sig_dict.get('direction', 'LONG') if sig_dict else ('LONG' if 'BUY' in deal_type else 'SHORT')
+                            sl_p = float(sig_dict.get('stop_loss') or 0.0)
+                            tp_p = float(sig_dict.get('take_profit_1') or 0.0)
+                            pnl_pips = (close_p - entry_p if direction == 'LONG' else entry_p - close_p) * pip_mult if entry_p else 0.0
+
+                            if is_manual:
+                                msg = format_manual_close(sym, profit_val, pnl_pips, close_p)
+                                status_str = "MANUAL_CLOSE"
+                            elif profit_val > 0:
+                                msg = (
+                                    f"🏆 <b>ТЕЙК-ПРОФИТ ВЗЯТ (METATRADER 5)!</b>\n"
+                                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                                    f"📊 <b>{sym}</b> | <code>{deal_type} {lot} lot</code>\n"
+                                    f"💵 Результат: <b>+{profit_val:.2f} USD</b> (+{abs(pnl_pips):.1f} pips)\n"
+                                    f"📍 Цена закрытия: <code>{close_p}</code>\n"
+                                    f"🎫 Билет: <code>#{ticket_no}</code>\n"
+                                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                                    f"🎯 <i>Цель полностью достигнута. Прибыль зафиксирована в банке.</i>"
+                                )
+                                status_str = "TP"
+                            elif profit_val < 0:
+                                msg = (
+                                    f"🛑 <b>СТОП-ЛОСС СРАБОТАЛ (METATRADER 5)</b>\n"
+                                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                                    f"📊 <b>{sym}</b> | <code>{deal_type} {lot} lot</code>\n"
+                                    f"📉 Фиксация убытка: <b>-{abs(profit_val):.2f} USD</b> (-{abs(pnl_pips):.1f} pips)\n"
+                                    f"📍 Цена выхода: <code>{close_p}</code>\n"
+                                    f"🎫 Билет: <code>#{ticket_no}</code>\n\n"
+                                    f"🛑 <b>РАЗБОР СТОПА:</b>\n"
+                                    f"• Импульсный пробой уровня / снятие ликвидности рынком.\n"
+                                    f"• Риск строго ограничен 1.0% депозита. Капитал защищен.\n"
+                                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                                    f"💼 <i>Дисциплина и мани-менеджмент сохраняют депозит.</i>"
+                                )
+                                status_str = "SL"
+                            else:
+                                msg = (
+                                    f"🛡 <b>СДЕЛКА ЗАКРЫТА В БЕЗУБЫТОК!</b>\n"
+                                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                                    f"📊 <b>{sym}</b> | <code>{deal_type} {lot} lot</code>\n"
+                                    f"💵 Результат: <b>0.00 USD</b>\n"
+                                    f"📍 Цена закрытия: <code>{close_p}</code>\n"
+                                    f"🎫 Билет: <code>#{ticket_no}</code>\n"
+                                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                                    f"💼 <i>Позиция закрыта в безубыток без риска для баланса.</i>"
+                                )
+                                status_str = "CLOSED"
+
+                            chart_bytes = None
+                            try:
+                                df_c = await fetcher.fetch_ohlcv(sym, "H1", limit=60)
+                                if df_c is not None and not df_c.empty:
+                                    chart_bytes = generate_outcome_chart(
+                                        df=df_c, symbol=sym, direction=direction,
+                                        entry=entry_p, stop_loss=sl_p, take_profit=tp_p,
+                                        close_price=close_p, status=status_str,
+                                        profit_usd=profit_val, timeframe="H1"
+                                    )
+                            except Exception as chart_err:
+                                logger.error("Outcome chart generation error for sync_broker_deals: %s", chart_err)
+
+                            await _send_telegram_notification(msg, photo_bytes=chart_bytes)
                 except Exception as hist_err:
                     logger.error("Failed to sync broker deals from EA: %s", hist_err)
 
@@ -398,21 +475,139 @@ async def bridge_post_report(request: web.Request) -> web.Response:
                 )
             await _send_telegram_notification(msg)
 
-        # 3. Позиция закрыта в MT5 (TP, SL, микро-TP, ручное закрытие)
-        elif action in ("DEAL_CLOSED", "STALE_PROFIT_CLOSE", "CLOSED"):
-            await close_signal_by_broker(symbol, price, profit, reason)
-            profit_sign = "+" if profit >= 0 else ""
-            emoji = "💰" if profit > 0 else ("🛡" if profit == 0 else "🛑")
-            msg = (
-                f"{emoji} <b>СДЕЛКА ЗАКРЫТА В METATRADER 5</b>\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"📊 <b>{symbol}</b>\n"
-                f"💵 Результат: <b>{profit_sign}{profit:.2f} USD</b>\n"
-                f"📍 Цена закрытия: <code>{price:.5f}</code>\n"
-                f"🎯 Детали: <code>{reason}</code>\n"
-                f"💼 <i>Баланс терминала обновлён.</i>"
-            )
+        # Ручное открытие сделки пользователем в MT5
+        elif action == "MANUAL_OPEN":
+            volume = float(data.get("profit") or 0.01)
+            order_type = reason or "BUY"
+            from utils.formatters import format_manual_open
+            msg = format_manual_open(symbol, order_type, volume, price)
             await _send_telegram_notification(msg)
+
+        # Ручное закрытие сделки пользователем в MT5
+        elif action == "MANUAL_CLOSE":
+            sig = await close_signal_by_broker(symbol, price, profit, "MANUAL_CLOSE")
+            pip_mult = 100.0 if 'JPY' in symbol else (10.0 if 'XAU' in symbol else 10000.0)
+            entry = float(sig.get('entry_price') or price) if sig else price
+            direction = sig.get('direction', 'LONG') if sig else 'LONG'
+            sl_val = float(sig.get('stop_loss') or 0.0) if sig else 0.0
+            tp_val = float(sig.get('take_profit_1') or 0.0) if sig else 0.0
+            pnl_pips = (price - entry if direction == 'LONG' else entry - price) * pip_mult if entry else 0.0
+
+            from utils.formatters import format_manual_close
+            msg = format_manual_close(symbol, profit, pnl_pips, price)
+
+            chart_bytes = None
+            try:
+                from market.data_fetcher import DataFetcher
+                from utils.chart_generator import generate_outcome_chart
+                df_c = await DataFetcher().fetch_ohlcv(symbol, "H1", limit=60)
+                if df_c is not None and not df_c.empty:
+                    chart_bytes = generate_outcome_chart(
+                        df=df_c, symbol=symbol, direction=direction,
+                        entry=entry, stop_loss=sl_val, take_profit=tp_val,
+                        close_price=price, status="MANUAL_CLOSE",
+                        profit_usd=profit, timeframe="H1"
+                    )
+            except Exception as chart_err:
+                logger.error("Failed to generate manual close chart: %s", chart_err)
+
+            if ticket > 0:
+                try:
+                    from db.database import DB_PATH
+                    import aiosqlite
+                    async with aiosqlite.connect(str(DB_PATH)) as db:
+                        await db.execute(
+                            """INSERT OR IGNORE INTO broker_deals (ticket, symbol, deal_type, lot, price, profit_usd, close_time, magic, comment, created_at)
+                               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                            (ticket, symbol, direction, 0.01, price, profit, int(datetime.now(timezone.utc).timestamp()), 0, "MANUAL_CLOSE", datetime.now(timezone.utc).isoformat())
+                        )
+                        await db.commit()
+                except Exception:
+                    pass
+
+            await _send_telegram_notification(msg, photo_bytes=chart_bytes)
+
+        # Позиция закрыта в MT5 (TP, SL, безубыток)
+        elif action in ("DEAL_CLOSED", "STALE_PROFIT_CLOSE", "CLOSED"):
+            sig = await close_signal_by_broker(symbol, price, profit, reason)
+            profit_sign = "+" if profit >= 0 else ""
+            is_tp = profit > 0 or "TP" in reason.upper()
+            is_sl = profit < 0 or "SL" in reason.upper()
+            pip_mult = 100.0 if 'JPY' in symbol else (10.0 if 'XAU' in symbol else 10000.0)
+            entry = float(sig.get('entry_price') or price) if sig else price
+            direction = sig.get('direction', 'LONG') if sig else ('LONG' if 'BUY' in reason.upper() else 'SHORT')
+            sl_val = float(sig.get('stop_loss') or 0.0) if sig else 0.0
+            tp_val = float(sig.get('take_profit_1') or 0.0) if sig else 0.0
+            pnl_pips = (price - entry if direction == 'LONG' else entry - price) * pip_mult if entry else 0.0
+
+            if is_tp:
+                msg = (
+                    f"🏆 <b>ТЕЙК-ПРОФИТ ВЗЯТ (METATRADER 5)!</b>\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"📊 <b>{symbol}</b> | <code>{direction}</code>\n"
+                    f"💵 Результат: <b>+{profit:.2f} USD</b> (+{abs(pnl_pips):.1f} pips)\n"
+                    f"📍 Цена закрытия: <code>{price:.5f}</code>\n"
+                    f"🎫 Билет сделки: <code>#{ticket}</code>\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"🎯 <i>Цель полностью достигнута. Прибыль зафиксирована в банке.</i>"
+                )
+            elif is_sl:
+                msg = (
+                    f"🛑 <b>СТОП-ЛОСС СРАБОТАЛ (METATRADER 5)</b>\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"📊 <b>{symbol}</b> | <code>{direction}</code>\n"
+                    f"📉 Фиксация убытка: <b>-{abs(profit):.2f} USD</b> (-{abs(pnl_pips):.1f} pips)\n"
+                    f"📍 Цена выхода: <code>{price:.5f}</code>\n"
+                    f"🎫 Билет сделки: <code>#{ticket}</code>\n\n"
+                    f"🛑 <b>РАЗБОР СТОПА:</b>\n"
+                    f"• Импульсный пробой уровня / снятие ликвидности рынком.\n"
+                    f"• Риск строго ограничен 1.0% депозита. Капитал защищен.\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"💼 <i>Дисциплина и мани-менеджмент сохраняют депозит.</i>"
+                )
+            else:
+                msg = (
+                    f"🛡 <b>СДЕЛКА ЗАКРЫТА В БЕЗУБЫТОК!</b>\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"📊 <b>{symbol}</b> | <code>{direction}</code>\n"
+                    f"💵 Результат: <b>0.00 USD</b>\n"
+                    f"📍 Цена закрытия: <code>{price:.5f}</code>\n"
+                    f"🎫 Билет сделки: <code>#{ticket}</code>\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"💼 <i>Позиция закрыта в безубыток без риска для баланса.</i>"
+                )
+
+            chart_bytes = None
+            try:
+                from market.data_fetcher import DataFetcher
+                from utils.chart_generator import generate_outcome_chart
+                df_c = await DataFetcher().fetch_ohlcv(symbol, "H1", limit=60)
+                if df_c is not None and not df_c.empty:
+                    status_str = "TP" if is_tp else ("SL" if is_sl else "CLOSED")
+                    chart_bytes = generate_outcome_chart(
+                        df=df_c, symbol=symbol, direction=direction,
+                        entry=entry, stop_loss=sl_val, take_profit=tp_val,
+                        close_price=price, status=status_str,
+                        profit_usd=profit, timeframe="H1"
+                    )
+            except Exception as chart_err:
+                logger.error("Failed to generate deal closed chart: %s", chart_err)
+
+            if ticket > 0:
+                try:
+                    from db.database import DB_PATH
+                    import aiosqlite
+                    async with aiosqlite.connect(str(DB_PATH)) as db:
+                        await db.execute(
+                            """INSERT OR IGNORE INTO broker_deals (ticket, symbol, deal_type, lot, price, profit_usd, close_time, magic, comment, created_at)
+                               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                            (ticket, symbol, direction, 0.01, price, profit, int(datetime.now(timezone.utc).timestamp()), 888001, reason, datetime.now(timezone.utc).isoformat())
+                        )
+                        await db.commit()
+                except Exception:
+                    pass
+
+            await _send_telegram_notification(msg, photo_bytes=chart_bytes)
 
         return web.json_response({"status": "ok", "acknowledged": True})
     except Exception as e:

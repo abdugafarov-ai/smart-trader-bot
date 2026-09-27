@@ -1019,26 +1019,66 @@ void OnTradeTransaction(const MqlTradeTransaction& trans, const MqlTradeRequest&
       if(deal_ticket > 0 && HistoryDealSelect(deal_ticket))
       {
          long magic = HistoryDealGetInteger(deal_ticket, DEAL_MAGIC);
+         ENUM_DEAL_ENTRY entry_type = (ENUM_DEAL_ENTRY)HistoryDealGetInteger(deal_ticket, DEAL_ENTRY);
+         ENUM_DEAL_REASON reason = (ENUM_DEAL_REASON)HistoryDealGetInteger(deal_ticket, DEAL_REASON);
+         string sym = HistoryDealGetString(deal_ticket, DEAL_SYMBOL);
+         double price = HistoryDealGetDouble(deal_ticket, DEAL_PRICE);
+         double profit = HistoryDealGetDouble(deal_ticket, DEAL_PROFIT);
+         double volume = HistoryDealGetDouble(deal_ticket, DEAL_VOLUME);
+         string comment = HistoryDealGetString(deal_ticket, DEAL_COMMENT);
+         ENUM_DEAL_TYPE dtype = (ENUM_DEAL_TYPE)HistoryDealGetInteger(deal_ticket, DEAL_TYPE);
+         string dir_str = (dtype == DEAL_TYPE_BUY) ? "BUY" : "SELL";
+
          if(magic == InpMagicNumber)
          {
-            ENUM_DEAL_ENTRY entry_type = (ENUM_DEAL_ENTRY)HistoryDealGetInteger(deal_ticket, DEAL_ENTRY);
             if(entry_type == DEAL_ENTRY_OUT || entry_type == DEAL_ENTRY_INOUT)
             {
-               double profit = HistoryDealGetDouble(deal_ticket, DEAL_PROFIT);
-               double close_price = HistoryDealGetDouble(deal_ticket, DEAL_PRICE);
-               string sym = HistoryDealGetString(deal_ticket, DEAL_SYMBOL);
-               string comment = HistoryDealGetString(deal_ticket, DEAL_COMMENT);
-               Print("📢 [SmartTrader Bridge] Закрыта сделка ", sym, " #", deal_ticket, " | Профит: ", profit, " USD | Цена: ", close_price);
-               ReportExecution(sym, "DEAL_CLOSED", close_price, profit, comment, 0, deal_ticket);
+               string lower_comment = comment;
+               StringToLower(lower_comment);
+               bool is_tp = (reason == DEAL_REASON_TP) || (StringFind(lower_comment, "tp") >= 0) || (StringFind(lower_comment, "take") >= 0);
+               bool is_sl = (reason == DEAL_REASON_SL) || (StringFind(lower_comment, "sl") >= 0) || (StringFind(lower_comment, "stop") >= 0);
+               bool is_manual_client = (reason == DEAL_REASON_CLIENT || reason == DEAL_REASON_MOBILE || reason == DEAL_REASON_WEB);
+
+               if(is_manual_client && !is_tp && !is_sl)
+               {
+                  Print("👑 [SmartTrader Bridge] Пользователь вручную закрыл сделку робота ", sym, " #", deal_ticket, " | Профит: ", profit);
+                  ReportExecution(sym, "MANUAL_CLOSE", price, profit, "MANUAL_CLIENT_CLOSE", 0, deal_ticket);
+               }
+               else if(is_tp)
+               {
+                  Print("🏆 [SmartTrader Bridge] Тейк-профит сработал: ", sym, " #", deal_ticket, " | Профит: ", profit);
+                  ReportExecution(sym, "DEAL_CLOSED", price, profit, "TP_HIT", 0, deal_ticket);
+               }
+               else if(is_sl)
+               {
+                  Print("🛑 [SmartTrader Bridge] Стоп-лосс сработал: ", sym, " #", deal_ticket, " | Убыток: ", profit);
+                  ReportExecution(sym, "DEAL_CLOSED", price, profit, "SL_HIT", 0, deal_ticket);
+               }
+               else
+               {
+                  Print("📢 [SmartTrader Bridge] Закрыта сделка ", sym, " #", deal_ticket, " | Профит: ", profit, " USD | Цена: ", price);
+                  ReportExecution(sym, "DEAL_CLOSED", price, profit, comment, 0, deal_ticket);
+               }
             }
             else if(entry_type == DEAL_ENTRY_IN)
             {
-               double open_price = HistoryDealGetDouble(deal_ticket, DEAL_PRICE);
-               string sym = HistoryDealGetString(deal_ticket, DEAL_SYMBOL);
                ulong order_ticket = HistoryDealGetInteger(deal_ticket, DEAL_ORDER);
-               string comment = HistoryDealGetString(deal_ticket, DEAL_COMMENT);
-               Print("🚀 [SmartTrader Bridge] Лимитный ордер сработал (ORDER_FILLED): ", sym, " #", deal_ticket, " order #", order_ticket, " @ ", open_price);
-               ReportExecution(sym, "ORDER_FILLED", open_price, 0.0, comment, 0, (order_ticket > 0 ? order_ticket : deal_ticket));
+               Print("🚀 [SmartTrader Bridge] Лимитный ордер сработал (ORDER_FILLED): ", sym, " #", deal_ticket, " order #", order_ticket, " @ ", price);
+               ReportExecution(sym, "ORDER_FILLED", price, 0.0, comment, 0, (order_ticket > 0 ? order_ticket : deal_ticket));
+            }
+         }
+         else
+         {
+            // Ручные действия пользователя в терминале MT5
+            if(entry_type == DEAL_ENTRY_IN)
+            {
+               Print("👑 [SmartTrader Bridge] Пользователь открыл сделку вручную: ", sym, " ", dir_str, " лот ", volume, " @ ", price);
+               ReportExecution(sym, "MANUAL_OPEN", price, volume, dir_str, 0, deal_ticket);
+            }
+            else if(entry_type == DEAL_ENTRY_OUT || entry_type == DEAL_ENTRY_INOUT)
+            {
+               Print("👑 [SmartTrader Bridge] Пользователь закрыл сделку вручную: ", sym, " | Профит: ", profit, " USD @ ", price);
+               ReportExecution(sym, "MANUAL_CLOSE", price, profit, "MANUAL_CLIENT_CLOSE", 0, deal_ticket);
             }
          }
       }
