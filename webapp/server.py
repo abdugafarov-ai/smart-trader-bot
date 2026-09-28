@@ -23,7 +23,8 @@ logger = logging.getLogger(__name__)
 # Очередь команд для MetaTrader советника
 # id -> order_dict
 _bridge_command_queue: list[dict] = []
-_executed_orders_log: list[dict] = []
+_executed_orders_log: list[dict] = []  # Capped at 500 entries to prevent memory leak
+_MAX_ORDERS_LOG = 500
 _bot_instance = None
 
 
@@ -219,9 +220,9 @@ async def bridge_get_orders(request: web.Request) -> web.Response:
                             # Поиск параметров исходного сигнала
                             async with aiosqlite.connect(str(DB_PATH)) as db:
                                 db.row_factory = aiosqlite.Row
-                                c = await db.execute("SELECT * FROM signals WHERE symbol = ? ORDER BY id DESC LIMIT 1", (sym,))
-                                sig_row = await c.fetchone()
-                                sig_dict = dict(sig_row) if sig_row else {}
+                                async with db.execute("SELECT * FROM signals WHERE symbol = ? ORDER BY id DESC LIMIT 1", (sym,)) as c:
+                                    sig_row = await c.fetchone()
+                                    sig_dict = dict(sig_row) if sig_row else {}
 
                             entry_p = float(sig_dict.get('entry_price') or close_p)
                             direction = sig_dict.get('direction', 'LONG') if sig_dict else ('LONG' if 'BUY' in deal_type else 'SHORT')
@@ -382,6 +383,9 @@ async def bridge_post_report(request: web.Request) -> web.Response:
             **data,
             "received_at": datetime.now(timezone.utc).isoformat()
         })
+        # Prevent memory leak: trim log to last N entries
+        if len(_executed_orders_log) > _MAX_ORDERS_LOG:
+            del _executed_orders_log[:len(_executed_orders_log) - _MAX_ORDERS_LOG]
 
         symbol = data.get("symbol", "")
         action = data.get("action", "").upper()

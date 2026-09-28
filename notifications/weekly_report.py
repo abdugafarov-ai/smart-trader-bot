@@ -130,7 +130,8 @@ class WeeklyReporter:
                 )
                 total_profit_usd = (await cursor.fetchone())[0]
 
-                win_rate = (tp_hits / total * 100) if total > 0 else 0.0
+                # Win Rate рассчитывается аналогично database.py (доля прибыльных и безубыточных сделок)
+                win_rate = ((total - sl_hits) / total * 100) if total > 0 else 0.0
 
                 # Лучшая сделка
                 cursor = await db.execute(
