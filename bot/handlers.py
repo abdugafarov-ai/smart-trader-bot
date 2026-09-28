@@ -2,6 +2,7 @@ from aiogram import Router, F
 from aiogram.filters import CommandStart, Command
 from aiogram.types import Message, CallbackQuery
 import logging
+import asyncio
 logger = logging.getLogger(__name__)
 
 from market.data_fetcher import DataFetcher

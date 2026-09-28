@@ -279,7 +279,7 @@ class AutoSignalScanner:
                 if result.overall_stars >= min_stars and (result.risk_reward_1 or 0) >= 2.0:
 
                     # ── ФИЛЬТР МИКРО-СЧЁТА: Ограничение размера стоп-лосса (Max SL <= 18 pips) ──
-                    if result.entry and result.stop_loss:
+                    if result.entry is not None and result.stop_loss is not None:
                         sl_dist = abs(result.entry - result.stop_loss)
                         sym_clean = symbol.upper().replace("/", "").replace("=X", "")
                         if "JPY" in sym_clean:

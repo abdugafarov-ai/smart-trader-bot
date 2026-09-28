@@ -228,6 +228,8 @@ class BaseStrategy(ABC):
         чтобы забирать быструю прибыль внутри сессии и не висеть днями в боковике.
         Возвращает: (entry, stop_loss, tp1, tp2)
         """
+        if df is None or df.empty:
+            return 0.0, 0.0, 0.0, 0.0
         current = df.iloc[-1]
         price = current['close']
 

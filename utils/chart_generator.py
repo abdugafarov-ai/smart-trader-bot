@@ -154,7 +154,7 @@ def generate_signal_chart(
 
         if direction == "LONG":
             # Зеленая зона сверху (Entry -> TP1)
-            profit_height = tp1 - entry
+            profit_height = max(0.00001, tp1 - entry)
             rect_tp = Rectangle(
                 (x_start, entry), box_width, profit_height,
                 facecolor=tp_color, edgecolor=tp_color, alpha=0.28, linewidth=1.2, zorder=4
@@ -162,7 +162,7 @@ def generate_signal_chart(
             ax.add_patch(rect_tp)
 
             # Красная зона снизу (SL -> Entry)
-            risk_height = entry - stop_loss
+            risk_height = max(0.00001, entry - stop_loss)
             rect_sl = Rectangle(
                 (x_start, stop_loss), box_width, risk_height,
                 facecolor=sl_color, edgecolor=sl_color, alpha=0.28, linewidth=1.2, zorder=4
@@ -174,7 +174,7 @@ def generate_signal_chart(
 
         else:  # SHORT
             # Красная зона сверху (Entry -> SL)
-            risk_height = stop_loss - entry
+            risk_height = max(0.00001, stop_loss - entry)
             rect_sl = Rectangle(
                 (x_start, entry), box_width, risk_height,
                 facecolor=sl_color, edgecolor=sl_color, alpha=0.28, linewidth=1.2, zorder=4
@@ -182,7 +182,7 @@ def generate_signal_chart(
             ax.add_patch(rect_sl)
 
             # Зеленая зона снизу (TP1 -> Entry)
-            profit_height = entry - tp1
+            profit_height = max(0.00001, entry - tp1)
             rect_tp = Rectangle(
                 (x_start, tp1), box_width, profit_height,
                 facecolor=tp_color, edgecolor=tp_color, alpha=0.28, linewidth=1.2, zorder=4

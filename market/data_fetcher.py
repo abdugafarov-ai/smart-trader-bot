@@ -170,11 +170,13 @@ class DataFetcher:
             df = pd.read_csv(fpath)
             if df.empty or 'close' not in df.columns:
                 return None
-            df['timestamp'] = pd.to_datetime(df['timestamp'])
-            for col in ['open', 'high', 'low', 'close', 'volume']:
+            if 'volume' not in df.columns:
+                df['volume'] = 100.0
+            for col in ['open', 'high', 'low', 'close']:
                 df[col] = pd.to_numeric(df[col], errors='coerce')
-            df = df.dropna().tail(limit).reset_index(drop=True)
-            return df
+            df['volume'] = pd.to_numeric(df['volume'], errors='coerce').fillna(100.0)
+            df = df.dropna(subset=['open', 'high', 'low', 'close']).tail(limit).reset_index(drop=True)
+            return df if not df.empty else None
         except Exception as e:
             logger.debug("Failed reading MT5 bars file %s: %s", fpath, e)
             return None

@@ -181,7 +181,10 @@ async def get_all_users_filtered(filter_type: str = "all") -> list[dict]:
                         result.append(d)
                     else:
                         try:
-                            if datetime.fromisoformat(exp) >= now:
+                            exp_dt = datetime.fromisoformat(exp)
+                            if exp_dt.tzinfo is None:
+                                exp_dt = exp_dt.replace(tzinfo=timezone.utc)
+                            if exp_dt >= now:
                                 result.append(d)
                         except Exception:
                             result.append(d)
@@ -191,17 +194,22 @@ async def get_all_users_filtered(filter_type: str = "all") -> list[dict]:
                 cursor = await db.execute(
                     "SELECT * FROM users WHERE status IN ('revoked', 'expired') ORDER BY last_seen DESC"
                 )
-                rows = await cursor.fetchall()
+                rows = list(await cursor.fetchall())
+                seen_ids = {r["telegram_id"] for r in rows}
                 # Also include approved but expired
                 cur_app = await db.execute("SELECT * FROM users WHERE status = 'approved'")
                 for r in await cur_app.fetchall():
                     d = dict(r)
                     exp = d.get("expires_at")
                     is_life = d.get("is_lifetime")
-                    if not is_life and exp:
+                    if not is_life and exp and d["telegram_id"] not in seen_ids:
                         try:
-                            if datetime.fromisoformat(exp) < now and d not in rows:
+                            exp_dt = datetime.fromisoformat(exp)
+                            if exp_dt.tzinfo is None:
+                                exp_dt = exp_dt.replace(tzinfo=timezone.utc)
+                            if exp_dt < now:
                                 rows.append(r)
+                                seen_ids.add(d["telegram_id"])
                         except Exception:
                             pass
                 return [dict(r) for r in rows if r["telegram_id"] != config.ADMIN_ID]

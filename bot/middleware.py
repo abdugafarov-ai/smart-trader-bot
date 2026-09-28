@@ -35,8 +35,8 @@ class AccessControlMiddleware(BaseMiddleware):
                 return await handler(event, data)
         elif isinstance(event, CallbackQuery):
             user_id = event.from_user.id if event.from_user else None
-            # Пропускаем callback-и для заявок и триалов клиентов
-            if event.data and (event.data.startswith("req:") or event.data in ("menu:support", "menu")):
+            # Пропускаем callback-и для заявок, триалов и информации о подписке
+            if event.data and (event.data.startswith("req:") or event.data in ("menu:support", "menu", "menu:my_sub")):
                 if user_id:
                     asyncio.create_task(log_user_activity(user_id))
                 return await handler(event, data)

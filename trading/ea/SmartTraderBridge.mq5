@@ -80,6 +80,15 @@ void MarkSignalProcessed(int sig_id)
 {
    if(sig_id <= 0) return;
    int sz = ArraySize(processed_signals);
+   // Ограничиваем массив 200 записями (FIFO) для предотвращения утечки памяти
+   if(sz >= 200)
+   {
+      // Сдвигаем массив: удаляем первые 50 элементов
+      for(int i = 0; i < sz - 50; i++)
+         processed_signals[i] = processed_signals[i + 50];
+      sz = sz - 50;
+      ArrayResize(processed_signals, sz);
+   }
    ArrayResize(processed_signals, sz + 1);
    processed_signals[sz] = (ulong)sig_id;
 }

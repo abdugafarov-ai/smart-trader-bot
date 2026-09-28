@@ -115,6 +115,14 @@ async def init_db():
             )
         """)
 
+        # system_settings — хранит stats_reset_time и другие системные значения
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS system_settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            )
+        """)
+
         # По умолчанию устанавливаем режим micro для депозита $12 (если ещё не задан)
         await db.execute("""
             INSERT OR IGNORE INTO bot_settings (key, value, updated_at)
@@ -685,56 +693,86 @@ async def get_stats() -> dict:
         pending_orders = telemetry.get("orders") or []
 
         reset_ts = await get_stats_reset_time()
-        time_cond = f"WHERE close_time >= {reset_ts}" if reset_ts else ""
-        and_time = f"AND close_time >= {reset_ts}" if reset_ts else ""
 
         async with aiosqlite.connect(str(DB_PATH)) as db:
-            cursor = await db.execute(f"SELECT COUNT(*) FROM broker_deals {time_cond}")
+            if reset_ts:
+                cursor = await db.execute("SELECT COUNT(*) FROM broker_deals WHERE close_time >= ?", (reset_ts,))
+            else:
+                cursor = await db.execute("SELECT COUNT(*) FROM broker_deals")
             deals_count = (await cursor.fetchone())[0]
 
             if deals_count > 0:
-                cursor = await db.execute(f"SELECT COUNT(*) FROM broker_deals WHERE profit_usd > 0 {and_time}")
+                if reset_ts:
+                    cursor = await db.execute("SELECT COUNT(*) FROM broker_deals WHERE profit_usd > 0 AND close_time >= ?", (reset_ts,))
+                else:
+                    cursor = await db.execute("SELECT COUNT(*) FROM broker_deals WHERE profit_usd > 0")
                 wins = (await cursor.fetchone())[0]
 
-                cursor = await db.execute(f"SELECT COUNT(*) FROM broker_deals WHERE profit_usd < 0 {and_time}")
+                if reset_ts:
+                    cursor = await db.execute("SELECT COUNT(*) FROM broker_deals WHERE profit_usd < 0 AND close_time >= ?", (reset_ts,))
+                else:
+                    cursor = await db.execute("SELECT COUNT(*) FROM broker_deals WHERE profit_usd < 0")
                 losses = (await cursor.fetchone())[0]
 
-                cursor = await db.execute(f"SELECT COUNT(*) FROM broker_deals WHERE profit_usd == 0 {and_time}")
+                if reset_ts:
+                    cursor = await db.execute("SELECT COUNT(*) FROM broker_deals WHERE profit_usd == 0 AND close_time >= ?", (reset_ts,))
+                else:
+                    cursor = await db.execute("SELECT COUNT(*) FROM broker_deals WHERE profit_usd == 0")
                 breakevens = (await cursor.fetchone())[0]
 
-                cursor = await db.execute(f"SELECT COALESCE(SUM(profit_usd), 0.0) FROM broker_deals {time_cond}")
+                if reset_ts:
+                    cursor = await db.execute("SELECT COALESCE(SUM(profit_usd), 0.0) FROM broker_deals WHERE close_time >= ?", (reset_ts,))
+                else:
+                    cursor = await db.execute("SELECT COALESCE(SUM(profit_usd), 0.0) FROM broker_deals")
                 total_profit_usd = (await cursor.fetchone())[0]
 
                 # Win Rate рассчитывается как доля безубыточных и прибыльных сделок (non-losing trades)
                 win_rate = ((deals_count - losses) / deals_count * 100) if deals_count > 0 else 0.0
 
-                where_clause = f"WHERE close_time >= {reset_ts}" if reset_ts else ""
-                cursor = await db.execute(
-                    f"""SELECT symbol, COUNT(*) as cnt,
-                              SUM(CASE WHEN profit_usd > 0 THEN 1 ELSE 0 END) as w,
-                              SUM(profit_usd) as pnl
-                       FROM broker_deals {where_clause} GROUP BY symbol ORDER BY pnl DESC"""
-                )
+                if reset_ts:
+                    cursor = await db.execute(
+                        """SELECT symbol, COUNT(*) as cnt,
+                                  SUM(CASE WHEN profit_usd > 0 THEN 1 ELSE 0 END) as w,
+                                  SUM(profit_usd) as pnl
+                           FROM broker_deals WHERE close_time >= ? GROUP BY symbol ORDER BY pnl DESC""",
+                        (reset_ts,)
+                    )
+                else:
+                    cursor = await db.execute(
+                        """SELECT symbol, COUNT(*) as cnt,
+                                  SUM(CASE WHEN profit_usd > 0 THEN 1 ELSE 0 END) as w,
+                                  SUM(profit_usd) as pnl
+                           FROM broker_deals GROUP BY symbol ORDER BY pnl DESC"""
+                    )
                 by_symbol = {}
                 for row in await cursor.fetchall():
                     s, cnt, w, pnl = row
                     by_symbol[s] = {"total": cnt, "wins": w, "profit_usd": round(pnl, 2)}
 
-                cursor = await db.execute(
-                    f"""SELECT deal_type, COUNT(*) as cnt,
-                              SUM(CASE WHEN profit_usd > 0 THEN 1 ELSE 0 END) as w,
-                              SUM(profit_usd) as pnl
-                       FROM broker_deals {where_clause} GROUP BY deal_type"""
-                )
+                if reset_ts:
+                    cursor = await db.execute(
+                        """SELECT deal_type, COUNT(*) as cnt,
+                                  SUM(CASE WHEN profit_usd > 0 THEN 1 ELSE 0 END) as w,
+                                  SUM(profit_usd) as pnl
+                           FROM broker_deals WHERE close_time >= ? GROUP BY deal_type""",
+                        (reset_ts,)
+                    )
+                else:
+                    cursor = await db.execute(
+                        """SELECT deal_type, COUNT(*) as cnt,
+                                  SUM(CASE WHEN profit_usd > 0 THEN 1 ELSE 0 END) as w,
+                                  SUM(profit_usd) as pnl
+                           FROM broker_deals GROUP BY deal_type"""
+                    )
                 by_direction = {}
                 for row in await cursor.fetchall():
                     d, cnt, w, pnl = row
                     by_direction[d] = {"total": cnt, "wins": w, "profit_usd": round(pnl, 2)}
 
-                # Расчет реального среднего R:R по сигналам
+                # Расчет реального среднего R:R по сигналам (включая BREAKEVEN)
                 cursor = await db.execute(
                     """SELECT AVG(CASE WHEN risk_reward > 0 THEN risk_reward ELSE 2.0 END) 
-                       FROM signals WHERE status IN ('TP1_HIT', 'TP2_HIT', 'SL_HIT', 'CLOSED')"""
+                       FROM signals WHERE status IN ('TP1_HIT', 'TP2_HIT', 'SL_HIT', 'CLOSED', 'BREAKEVEN', 'CLOSED_BE')"""
                 )
                 avg_rr_row = await cursor.fetchone()
                 avg_rr = round(float(avg_rr_row[0]), 2) if avg_rr_row and avg_rr_row[0] else 2.0
@@ -742,7 +780,7 @@ async def get_stats() -> dict:
                 # Расчет реальных пунктов (pips) из закрытых сигналов
                 cursor = await db.execute(
                     """SELECT COALESCE(SUM(pnl_pips), 0.0) 
-                       FROM signals WHERE status IN ('TP1_HIT', 'TP2_HIT', 'SL_HIT', 'CLOSED')"""
+                       FROM signals WHERE status IN ('TP1_HIT', 'TP2_HIT', 'SL_HIT', 'CLOSED', 'BREAKEVEN', 'CLOSED_BE')"""
                 )
                 pips_row = await cursor.fetchone()
                 total_pips = round(float(pips_row[0]), 1) if pips_row and pips_row[0] else 0.0

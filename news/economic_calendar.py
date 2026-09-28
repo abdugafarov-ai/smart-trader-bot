@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 class EconomicCalendar:
     _shared_cache_data: list[dict] = []
     _shared_cache_time: datetime | None = None
+    _last_failed_time: datetime | None = None
     _fetch_lock = asyncio.Lock()
 
     def __init__(self, timezone_str: str = 'Asia/Tashkent'):
@@ -33,6 +34,10 @@ class EconomicCalendar:
             now = datetime.now(timezone.utc)
             # 1. Если есть общий кэш свежее 60 минут — возвращаем без сетевого запроса
             if EconomicCalendar._shared_cache_time and (now - EconomicCalendar._shared_cache_time) < timedelta(hours=1) and EconomicCalendar._shared_cache_data:
+                return EconomicCalendar._shared_cache_data
+
+            # 2. Если недавняя попытка завершилась ошибкой — не спамим сервер чаще чем раз в 10 минут
+            if EconomicCalendar._last_failed_time and (now - EconomicCalendar._last_failed_time) < timedelta(minutes=10):
                 return EconomicCalendar._shared_cache_data
         
             headers = {
@@ -50,18 +55,19 @@ class EconomicCalendar:
                             if isinstance(data, list) and len(data) > 0:
                                 EconomicCalendar._shared_cache_data = data
                                 EconomicCalendar._shared_cache_time = now
+                                EconomicCalendar._last_failed_time = None
                                 logger.info("Fetched %d economic events from ForexFactory.", len(data))
                             else:
                                 logger.warning("ForexFactory returned empty or invalid data.")
+                                EconomicCalendar._last_failed_time = now
                             return EconomicCalendar._shared_cache_data
                         else:
                             logger.warning("Failed to fetch economic calendar: HTTP %s (using cached data)", response.status)
-                            # При 429 или ошибке продлеваем существующий кэш на 30 мин чтобы не спамить
-                            EconomicCalendar._shared_cache_time = now - timedelta(minutes=30)
+                            EconomicCalendar._last_failed_time = now
                             return EconomicCalendar._shared_cache_data
             except Exception as e:
                 logger.warning("Error fetching economic calendar: %s", e)
-                EconomicCalendar._shared_cache_time = now - timedelta(minutes=30)
+                EconomicCalendar._last_failed_time = now
                 return EconomicCalendar._shared_cache_data
 
     def _parse_datetime(self, item: dict) -> datetime | None:

@@ -432,8 +432,11 @@ class ICTSMCStrategy(BaseStrategy):
 
         if direction == "LONG":
             candidates = []
-            if ote_entry and ote_entry < current_price and (current_price - ote_entry) <= max_entry_dist:
-                candidates.append(ote_entry)
+            if ote_entry:
+                if fib_0705 <= current_price <= fib_0618:
+                    candidates.append(current_price)
+                elif ote_entry < current_price and (current_price - ote_entry) <= max_entry_dist:
+                    candidates.append(ote_entry)
             if ob_zone:
                 # Вход на вершине бычьего OB (первое касание) или 50%
                 ob_entry = ob_zone[0] if ob_zone[0] < current_price else (ob_zone[0] + ob_zone[1]) / 2
@@ -474,7 +477,7 @@ class ICTSMCStrategy(BaseStrategy):
                 risk = entry - sl
 
             # ═══ УЛУЧШЕНИЕ 5: TP на ликвидности + Front-run буфер (3-5 пипсов) ═══
-            pip_unit = 0.01 if 'JPY' in symbol else (0.1 if 'XAU' in symbol else 0.0001)
+            pip_unit = 0.01 if 'JPY' in symbol else (0.1 if 'XAU' in symbol else (1.0 if ('BTC' in symbol or 'ETH' in symbol) else 0.0001))
             tp_buffer = max(3.5 * pip_unit, 0.12 * atr)
 
             adx_low = bool('adx' in df.columns and pd.notna(df['adx'].iloc[-1]) and df['adx'].iloc[-1] < 25.0)
@@ -490,8 +493,11 @@ class ICTSMCStrategy(BaseStrategy):
 
         else:  # SHORT
             candidates = []
-            if ote_entry and ote_entry > current_price and (ote_entry - current_price) <= max_entry_dist:
-                candidates.append(ote_entry)
+            if ote_entry:
+                if fib_0618 <= current_price <= fib_0705:
+                    candidates.append(current_price)
+                elif ote_entry > current_price and (ote_entry - current_price) <= max_entry_dist:
+                    candidates.append(ote_entry)
             if ob_zone:
                 # Вход на нижней границе медвежьего OB (первое касание) или 50%
                 ob_entry = ob_zone[1] if ob_zone[1] > current_price else (ob_zone[0] + ob_zone[1]) / 2
@@ -532,7 +538,7 @@ class ICTSMCStrategy(BaseStrategy):
                 risk = sl - entry
 
             # TP на ликвидности + Front-run буфер (3-5 пипсов)
-            pip_unit = 0.01 if 'JPY' in symbol else (0.1 if 'XAU' in symbol else 0.0001)
+            pip_unit = 0.01 if 'JPY' in symbol else (0.1 if 'XAU' in symbol else (1.0 if ('BTC' in symbol or 'ETH' in symbol) else 0.0001))
             tp_buffer = max(3.5 * pip_unit, 0.12 * atr)
 
             adx_low = bool('adx' in df.columns and pd.notna(df['adx'].iloc[-1]) and df['adx'].iloc[-1] < 25.0)

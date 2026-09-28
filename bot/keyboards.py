@@ -140,7 +140,10 @@ def admin_users_crm_keyboard(users: list[dict], tab: str = "all", page: int = 1,
             is_expired = False
             if expires_at:
                 try:
-                    if datetime.fromisoformat(expires_at) < now:
+                    exp_dt = datetime.fromisoformat(expires_at)
+                    if exp_dt.tzinfo is None:
+                        exp_dt = exp_dt.replace(tzinfo=timezone.utc)
+                    if exp_dt < now:
                         is_expired = True
                 except Exception:
                     pass
