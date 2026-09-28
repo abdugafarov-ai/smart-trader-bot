@@ -82,7 +82,10 @@ async def main():
             from aiogram.types import BotCommand
             await bot.set_my_commands([
                 BotCommand(command="start", description="🏛 Главное меню терминала"),
+                BotCommand(command="request", description="💎 Тарифы и заявка на доступ"),
                 BotCommand(command="terminal", description="🖥 Пульт управления MetaTrader 5"),
+                BotCommand(command="crm", description="👥 Управление клиентами (CRM)"),
+                BotCommand(command="broadcast", description="📢 Рассылка объявлений клиентам"),
                 BotCommand(command="account", description="💼 Баланс и открытые позиции MT5"),
                 BotCommand(command="stats", description="📊 Статистика & Win-Rate брокера"),
                 BotCommand(command="history", description="📜 Журнал последних сделок"),
@@ -91,7 +94,7 @@ async def main():
                 BotCommand(command="risk", description="⚖️ Задать риск: /risk 1.0"),
                 BotCommand(command="sessions", description="⏰ Расписание торговых сессий"),
                 BotCommand(command="news", description="📰 Календарь важных новостей"),
-                BotCommand(command="reset_stats", description="🧹 Сбросить статистику на 0"),
+                BotCommand(command="reset_drawdown", description="🛡️ Сбросить защиту просадки"),
                 BotCommand(command="help", description="📖 Справочник и документация"),
             ])
 
@@ -113,6 +116,47 @@ async def main():
         except Exception as e:
             logging.error("Failed to set bot commands/descriptions: %s", e)
 
+        # Фоновый воркер удержания (напоминания об окончании подписки за 3 дня и 1 день)
+        async def run_subscription_retention_worker():
+            from db.users import get_reminder_candidates, mark_reminder_sent
+            while True:
+                try:
+                    candidates = await get_reminder_candidates()
+                    for u in candidates:
+                        uid = u.get("telegram_id")
+                        rem_type = u.get("reminder_type")
+                        days_left = u.get("days_left", 1)
+                        tariff = u.get("tariff") or "PRO"
+
+                        if rem_type == "3d":
+                            msg = (
+                                "⏳ <b>НАПОМИНАНИЕ О ПОДПИСКЕ SMART TRADER</b>\n"
+                                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                                f"Уважаемый трейдер! До окончания действия вашего тарифа <b>{tariff}</b> осталось <b>{days_left} дня</b>.\n\n"
+                                "Чтобы не потерять доступ к сигналам и аналитике, рекомендуем заблаговременно продлить подписку.\n\n"
+                                "💳 Для продления перейдите в раздел <b>«Моя Подписка»</b> или напишите администратору."
+                            )
+                        else:  # 1d
+                            msg = (
+                                "⚠️ <b>ВНИМАНИЕ: ПОСЛЕДНИЙ ДЕНЬ ПОДПИСКИ</b>\n"
+                                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                                f"Срок действия вашего тарифа <b>{tariff}</b> истекает менее чем через <b>24 часа</b>!\n\n"
+                                "После истечения доступ к сигналам будет автоматически приостановлен.\n\n"
+                                "💳 Нажмите <b>«Моя Подписка»</b> в главном меню для продления."
+                            )
+
+                        try:
+                            await bot.send_message(uid, msg, parse_mode="HTML")
+                            await mark_reminder_sent(uid, rem_type)
+                            logging.info("Subscription reminder (%s) sent to user %d", rem_type, uid)
+                        except Exception as e:
+                            logging.warning("Failed to send subscription reminder to %d: %s", uid, e)
+                except Exception as err:
+                    logging.error("Subscription retention worker error: %s", err)
+
+                # Проверяем каждый час
+                await asyncio.sleep(3600)
+
         # Фоновые задачи
         global _background_tasks
         
@@ -125,7 +169,7 @@ async def main():
             if exc:
                 logging.critical("🔴 Фоновая задача упала: %s", exc, exc_info=exc)
                 
-        for coro in [scanner.start(), tracker.start(), reporter.start()]:
+        for coro in [scanner.start(), tracker.start(), reporter.start(), run_subscription_retention_worker()]:
             task = asyncio.create_task(coro)
             _background_tasks.add(task)
             task.add_done_callback(_on_task_done)

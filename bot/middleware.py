@@ -16,7 +16,7 @@ class AccessControlMiddleware(BaseMiddleware):
     """Middleware: пропускает только одобренных пользователей с активным тарифом и админа."""
 
     # Команды, доступные всем (даже неодобренным)
-    PUBLIC_COMMANDS = {"/start", "/request"}
+    PUBLIC_COMMANDS = {"/start", "/request", "/help"}
 
     async def __call__(
         self,
@@ -35,8 +35,14 @@ class AccessControlMiddleware(BaseMiddleware):
                 return await handler(event, data)
         elif isinstance(event, CallbackQuery):
             user_id = event.from_user.id if event.from_user else None
-            # Пропускаем callback-и для заявок (approve/reject)
-            if event.data and event.data.startswith(("admin_approve:", "admin_reject:")):
+            # Пропускаем callback-и для заявок и триалов клиентов
+            if event.data and (event.data.startswith("req:") or event.data in ("menu:support", "menu")):
+                if user_id:
+                    asyncio.create_task(log_user_activity(user_id))
+                return await handler(event, data)
+
+            # Пропускаем callback-и админа для заявок (approve/reject)
+            if event.data and event.data.startswith(("admin_approve", "admin_reject")):
                 if user_id == config.ADMIN_ID:
                     return await handler(event, data)
                 else:

@@ -347,18 +347,21 @@ class AutoSignalScanner:
                     )
 
                     from bot.keyboards import signal_inline_keyboard
-                    msg = format_notification(result)
+                    msg_admin = format_notification(result, is_admin=True)
+                    msg_client = format_notification(result, is_admin=False)
 
                     # Добавляем Kill Zone метку
                     if in_kill_zone:
-                        msg = f"⚡ <b>KILL ZONE: {kz}</b>\n\n" + msg
+                        msg_admin = f"⚡ <b>KILL ZONE: {kz}</b>\n\n" + msg_admin
+                        msg_client = f"⚡ <b>KILL ZONE: {kz}</b>\n\n" + msg_client
 
                     kb = signal_inline_keyboard(symbol)
 
                     if chart_bytes:
-                        await self._send_chart_to_all(chart_bytes, msg, symbol, reply_markup=kb)
+                        await self._send_chart_to_all(chart_bytes, caption=msg_client, symbol=symbol,
+                                                     reply_markup=kb, caption_admin=msg_admin)
                     else:
-                        await self._send_to_all(msg, reply_markup=kb)
+                        await self._send_to_all(msg_client, reply_markup=kb, text_admin=msg_admin)
 
                     self.last_signals[symbol] = (result.overall_direction, result.overall_stars)
                     logger.info("Signal #%d/%d sent: %s %s [%s] ⭐%d | KZ=%s | chart=%s",
@@ -419,24 +422,26 @@ class AutoSignalScanner:
         except Exception as e:
             logger.error("News check error: %s", e, exc_info=True)
 
-    async def _send_chart_to_all(self, chart_bytes: bytes, caption: str, symbol: str, reply_markup=None):
+    async def _send_chart_to_all(self, chart_bytes: bytes, caption: str, symbol: str, reply_markup=None, caption_admin: str = None):
         recipients = await self._get_notification_recipients()
         photo = BufferedInputFile(chart_bytes, filename=f"signal_{symbol}.png")
         for uid in recipients:
+            cap = caption_admin if (uid == config.ADMIN_ID and caption_admin) else caption
             try:
-                await self.bot.send_photo(uid, photo=photo, caption=caption,
+                await self.bot.send_photo(uid, photo=photo, caption=cap,
                                           parse_mode="HTML", reply_markup=reply_markup)
             except Exception as e:
                 logger.error("Failed to send chart to %d: %s", uid, e)
                 try:
-                    await self.bot.send_message(uid, caption, parse_mode="HTML", reply_markup=reply_markup)
+                    await self.bot.send_message(uid, cap, parse_mode="HTML", reply_markup=reply_markup)
                 except Exception as e2:
                     logger.error("Fallback text also failed for %d: %s", uid, e2)
 
-    async def _send_to_all(self, text: str, reply_markup=None):
+    async def _send_to_all(self, text: str, reply_markup=None, text_admin: str = None):
         recipients = await self._get_notification_recipients()
         for uid in recipients:
+            t = text_admin if (uid == config.ADMIN_ID and text_admin) else text
             try:
-                await self.bot.send_message(uid, text, parse_mode="HTML", reply_markup=reply_markup)
+                await self.bot.send_message(uid, t, parse_mode="HTML", reply_markup=reply_markup)
             except Exception as e:
                 logger.error("Failed to send to %d: %s", uid, e)

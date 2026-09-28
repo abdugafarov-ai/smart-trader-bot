@@ -28,8 +28,8 @@ _MAX_ORDERS_LOG = 500
 _bot_instance = None
 
 
-async def _send_telegram_notification(text: str, photo_bytes: bytes = None):
-    """Рассылает уведомление об исполнении/закрытии в MT5 всем пользователям бота (с графиком при наличии)."""
+async def _send_telegram_notification(text: str, photo_bytes: bytes = None, text_admin: str = None):
+    """Рассылает уведомление об исполнении/закрытии всем пользователям бота (с графиком при наличии)."""
     global _bot_instance
     if not _bot_instance:
         return
@@ -39,21 +39,22 @@ async def _send_telegram_notification(text: str, photo_bytes: bytes = None):
         if config.ADMIN_ID and config.ADMIN_ID not in recipients:
             recipients.append(config.ADMIN_ID)
         for uid in recipients:
+            msg_to_send = text_admin if (uid == config.ADMIN_ID and text_admin) else text
             try:
                 if photo_bytes:
                     from aiogram.types import BufferedInputFile
                     await _bot_instance.send_photo(
                         uid,
                         photo=BufferedInputFile(photo_bytes, filename="trade_outcome.png"),
-                        caption=text,
+                        caption=msg_to_send,
                         parse_mode="HTML"
                     )
                 else:
-                    await _bot_instance.send_message(uid, text, parse_mode="HTML")
+                    await _bot_instance.send_message(uid, msg_to_send, parse_mode="HTML")
             except Exception as err:
                 if photo_bytes:
                     try:
-                        await _bot_instance.send_message(uid, text, parse_mode="HTML")
+                        await _bot_instance.send_message(uid, msg_to_send, parse_mode="HTML")
                     except Exception:
                         pass
                 logger.error("Failed to send bridge notification to %d: %s", uid, err)
@@ -404,51 +405,79 @@ async def bridge_post_report(request: web.Request) -> web.Response:
         if action in ("BUY_LIMIT", "SELL_LIMIT"):
             await confirm_signal_by_broker(symbol, action, price, ticket=ticket, signal_id=sig_id)
             order_desc = "BUY LIMIT (Покупка)" if "BUY" in action else "SELL LIMIT (Продажа)"
-            msg = (
+            msg_admin = (
                 f"⏳ <b>ЛИМИТНЫЙ ОРДЕР ВЫСТАВЛЕН В MT5</b>\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
                 f"📊 <b>{symbol}</b> | {order_desc}\n"
                 f"📍 Цена: <code>{price:.5f}</code>\n"
                 f"💼 <i>Отложенный ордер размещен в биржевом стакане MetaTrader 5.</i>"
             )
-            await _send_telegram_notification(msg)
+            msg_client = (
+                f"⏳ <b>СИГНАЛ ВЫСТАВЛЕН: ОЖИДАНИЕ ВХОДА</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"📊 <b>{symbol}</b> | {order_desc}\n"
+                f"📍 Рекомендуемая цена лимита: <code>{price:.5f}</code>\n"
+                f"💼 <i>Выставьте отложенный ордер в своём терминале по указанной цене.</i>"
+            )
+            await _send_telegram_notification(msg_client, text_admin=msg_admin)
 
         # 2. Лимитный ордер исполнился брокером (DEAL_ENTRY_IN -> позиция в рынке)
         elif action in ("ORDER_FILLED", "LIMIT_FILLED"):
             await activate_filled_signal(symbol, price, ticket=ticket, signal_id=sig_id)
-            msg = (
+            msg_admin = (
                 f"🚀 <b>ЛИМИТНЫЙ ОРДЕР СРАБОТАЛ (В РЫНКЕ)</b>\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
                 f"📊 <b>{symbol}</b>\n"
                 f"📍 Цена фактического входа: <code>{price:.5f}</code>\n"
                 f"💼 <i>Цена коснулась уровня лимита. Позиция открыта в MetaTrader 5!</i>"
             )
-            await _send_telegram_notification(msg)
+            msg_client = (
+                f"⚡ <b>СИГНАЛ АКТИВИРОВАН: ВХОД В РЫНОК</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"📊 <b>{symbol}</b>\n"
+                f"📍 Цена входа: <code>{price:.5f}</code>\n"
+                f"💼 <i>Цена коснулась уровня. Позиция в рынке. Сопровождайте сделку до Take Profit!</i>"
+            )
+            await _send_telegram_notification(msg_client, text_admin=msg_admin)
 
         # 3. Лимитный ордер снят брокером или истек по таймауту
         elif action in ("LIMIT_EXPIRED", "ORDER_CANCELED", "ORDER_CANCELLED", "EXPIRED"):
             await expire_signal_by_broker(symbol, signal_id=sig_id, reason=reason)
-            msg = (
+            msg_admin = (
                 f"⏰ <b>ЛИМИТНЫЙ ОРДЕР СНЯТ / ИСТЁК В MT5</b>\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
                 f"📊 <b>{symbol}</b>\n"
                 f"ℹ️ Причина: <code>{reason or 'Истек срок ожидания (снят)'}</code>\n"
                 f"💼 <i>Ордер удален из биржевого стакана. Торговый слот освобожден.</i>"
             )
-            await _send_telegram_notification(msg)
+            msg_client = (
+                f"⏰ <b>СИГНАЛ ОТМЕНЁН / ИСТЁК СРОК ОЖИДАНИЯ</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"📊 <b>{symbol}</b>\n"
+                f"ℹ️ Причина: <code>{reason or 'Цена не дошла до лимита в отведённое время'}</code>\n"
+                f"💼 <i>Отмените отложенный ордер в своём терминале.</i>"
+            )
+            await _send_telegram_notification(msg_client, text_admin=msg_admin)
 
         # 4. Рыночный ордер сразу открыт
         elif action in ("BUY", "SELL", "OPENED"):
             await confirm_signal_by_broker(symbol, action, price, ticket=ticket, signal_id=sig_id)
             order_desc = "BUY (Покупка)" if "BUY" in action else "SELL (Продажа)"
-            msg = (
+            msg_admin = (
                 f"🚀 <b>ОРДЕР ИСПОЛНЕН В METATRADER 5</b>\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
                 f"📊 <b>{symbol}</b> | {order_desc}\n"
                 f"📍 Цена входа: <code>{price:.5f}</code>\n"
                 f"💼 <i>Сделка подтверждена брокером и реально открыта в терминале!</i>"
             )
-            await _send_telegram_notification(msg)
+            msg_client = (
+                f"🚀 <b>СИГНАЛ: ВХОД ПО РЫНКУ</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"📊 <b>{symbol}</b> | {order_desc}\n"
+                f"📍 Цена входа: <code>{price:.5f}</code>\n"
+                f"💼 <i>Позиция открыта. Установите Take Profit и Stop Loss согласно сигналу!</i>"
+            )
+            await _send_telegram_notification(msg_client, text_admin=msg_admin)
 
         # 5. Вход отклонен роботом (R:R < 1.8, превышен лимит или ошибка терминала)
         elif action.startswith("REJECTED"):
