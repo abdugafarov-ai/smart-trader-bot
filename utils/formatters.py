@@ -5,6 +5,7 @@ Smart Trader Bot — Formatters.
 """
 
 import html
+from datetime import datetime, timezone
 from strategies.base import IndicatorResult, StrategyResult, MultiTFResult, EconomicEvent
 from market.data_fetcher import DataFetcher
 
@@ -561,20 +562,134 @@ def format_history(signals: list[dict]) -> str:
 
 # ── 11. Приветствие и Справка ────────────────────────────────
 
-def format_welcome() -> str:
-    """Приветственное сообщение терминала."""
+def format_welcome(is_admin: bool = False) -> str:
+    """Приветственное сообщение терминала с адаптацией под роль пользователя."""
+    if is_admin:
+        return (
+            "🏛 <b>SMART TRADER TERMINAL | ПУЛЬТ АДМИНИСТРАТОРА</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "🤖 <b>Автономный торговый комплекс с интеграцией MetaTrader 5</b>\n\n"
+            "<b>ВАШИ АДМИНИСТРАТИВНЫЕ ВОЗМОЖНОСТИ:</b>\n"
+            "• <b>Центральный пульт MT5:</b> Мониторинг баланса, эквити, позиций и кнопка экстренной Паники.\n"
+            "• <b>Управление Автопилотом:</b> Настройка лота, процента риска и режима счёта («Микро» / «Институционал»).\n"
+            "• <b>CRM & База клиентов:</b> Управление доступом, тарифами, сроками и мгновенное отключение (Kick).\n"
+            "• <b>Аналитика & Отчёты:</b> 17 инструментов, Win-Rate, журнал закрытых сделок и макро-календарь.\n\n"
+            "<i>Выберите необходимый раздел управления ниже 👇</i>"
+        )
     return (
-        "🏛 <b>SMART TRADER TERMINAL | ГЛАВНОЕ МЕНЮ</b>\n"
+        "🏛 <b>SMART TRADER | ИНСТИТУЦИОНАЛЬНЫЕ СИГНАЛЫ</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "🤖 <b>Автономный торговый комплекс с интеграцией MetaTrader 5</b>\n\n"
-        "<b>ЧТО РЕАЛЬНО РАБОТАЕТ В СИСТЕМЕ:</b>\n"
-        "• <b>17 инструментов:</b> Валютные мажоры, кроссы и Золото (XAUUSD).\n"
-        "• <b>Стратегия ICT / Smart Money:</b> Анализ сломов структуры (BOS), ордер-блоков (OB), имбалансов (FVG) и зон OTE.\n"
-        "• <b>Авто-исполнение в MT5:</b> Выставление безопасных лимитных ордеров в стакан брокера без проскальзывания.\n"
-        "• <b>Режим Pure Swing:</b> Сделки свободно дышат до полного Take Profit (1:2.5 – 1:4.0). Никаких копеечных выбиваний по безубытку.\n"
-        "• <b>Управление рисками:</b> Выбор режима счёта («Микро-депозит» от $12 с лотом 0.01 / «Институционал»).\n"
-        "• <b>Контроль в реальном времени:</b> Мониторинг баланса, эквити, позиций в стакане и экстренная кнопка «Паника».\n\n"
-        "<i>Используйте кнопки меню ниже для управления терминалом 👇</i>"
+        "👋 <b>Добро пожаловать в закрытый аналитический терминал!</b>\n\n"
+        "Вам предоставлен доступ к эксклюзивным сигналам высшего качества:\n"
+        "• <b>17 инструментов:</b> Forex Majors, Crosses и Золото (XAUUSD).\n"
+        "• <b>Методология ICT / Smart Money:</b> Анализ ликвидности крупного капитала (OB, FVG, OTE).\n"
+        "• <b>Математическое преимущество:</b> Строгий Risk:Reward от 1:2.0 до 1:4.0.\n"
+        "• <b>Макроэкономическая защита:</b> Фильтрация перед выходом ключевых новостей.\n"
+        "• <b>Прозрачная статистика:</b> Честный учёт результатов по всем закрытым сделкам.\n\n"
+        "<i>Используйте кнопки меню ниже для перехода к разделам 👇</i>"
+    )
+
+
+def format_crm_user_card(user: dict) -> str:
+    """Форматирует детальную карточку пользователя в CRM для администратора."""
+    uid = user.get("telegram_id")
+    first_name = user.get("first_name") or "—"
+    username = f"@{user['username']}" if user.get("username") else "отсутствует"
+    status = user.get("status") or "pending"
+    tariff = user.get("tariff") or "PRO"
+    requested_at = (user.get("requested_at") or "—")[:16].replace("T", " ")
+    approved_at = (user.get("approved_at") or "—")[:16].replace("T", " ")
+    last_seen = (user.get("last_seen") or "—")[:19].replace("T", " ")
+    activity_cnt = user.get("activity_count") or 0
+    expires_at = user.get("expires_at")
+    
+    now = datetime.now(timezone.utc)
+    if status == "approved":
+        is_exp = False
+        if expires_at:
+            try:
+                exp_dt = datetime.fromisoformat(expires_at)
+                is_exp = exp_dt < now
+            except Exception:
+                pass
+        status_text = "⚠️ <b>ИСТЁК</b> (требуется продление)" if is_exp else "🟢 <b>АКТИВЕН</b>"
+    elif status == "revoked":
+        status_text = "🔴 <b>ОТКЛЮЧЕН (REVOKED)</b>"
+    elif status == "pending":
+        status_text = "⏳ <b>ОЖИДАЕТ ОДОБРЕНИЯ</b>"
+    elif status == "rejected":
+        status_text = "❌ <b>ОТКЛОНЁН</b>"
+    else:
+        status_text = f"⚪ <b>{status.upper()}</b>"
+
+    exp_text = "Бессрочно"
+    days_left_text = "—"
+    if expires_at:
+        try:
+            exp_dt = datetime.fromisoformat(expires_at)
+            days = (exp_dt - now).days
+            exp_text = exp_dt.strftime("%d.%m.%Y")
+            days_left_text = f"{days} дн." if days >= 0 else "0 дн. (истек)"
+        except Exception:
+            exp_text = str(expires_at)[:10]
+
+    return (
+        "👤 <b>КАРТОЧКА КЛИЕНТА | CRM ПАНЕЛЬ</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"🆔 <b>Telegram ID:</b> <code>{uid}</code>\n"
+        f"👤 <b>Имя:</b> <code>{first_name}</code>\n"
+        f"📛 <b>Username:</b> {username}\n"
+        f"📡 <b>Статус доступа:</b> {status_text}\n"
+        f"💎 <b>Тарифный план:</b> <code>{tariff}</code>\n"
+        f"📅 <b>Подписка до:</b> <code>{exp_text}</code> (осталось: <b>{days_left_text}</b>)\n\n"
+        "⏱ <b>ИСТОРИЯ РЕГИСТРАЦИИ:</b>\n"
+        f"• Подача заявки: <code>{requested_at} UTC</code>\n"
+        f"• Дата активации: <code>{approved_at} UTC</code>\n\n"
+        "🕵️‍♂️ <b>СКРЫТАЯ АКТИВНОСТЬ:</b>\n"
+        f"• Последний визит: <code>{last_seen} UTC</code>\n"
+        f"• Всего действий в боте: <b>{activity_cnt}</b>\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "<i>Используйте кнопки ниже для отключения доступа или продления тарифа 👇</i>"
+    )
+
+
+def format_my_subscription(user: dict) -> str:
+    """Форматирует карточку подписки для клиента."""
+    tariff = user.get("tariff") or "PRO"
+    expires_at = user.get("expires_at")
+    
+    now = datetime.now(timezone.utc)
+    status_str = "🟢 Активна"
+    days_left_str = "—"
+    exp_formatted = "Бессрочно"
+    
+    if expires_at:
+        try:
+            exp_dt = datetime.fromisoformat(expires_at)
+            days = (exp_dt - now).days
+            exp_formatted = exp_dt.strftime("%d.%m.%Y")
+            if exp_dt < now:
+                status_str = "🔴 Истекла"
+                days_left_str = "0 дн. (требуется продление)"
+            else:
+                days_left_str = f"{max(0, days)} дн."
+        except Exception:
+            exp_formatted = str(expires_at)[:10]
+
+    return (
+        "💎 <b>МОЯ ПОДПИСКА И ТАРИФНЫЙ ПЛАН</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"📦 <b>Текущий тариф:</b> <code>{tariff} INSTITUTIONAL</code>\n"
+        f"📡 <b>Статус доступа:</b> <b>{status_str}</b>\n"
+        f"📅 <b>Срок действия:</b> до <code>{exp_formatted}</code>\n"
+        f"⏳ <b>Осталось дней:</b> <code>{days_left_str}</code>\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "✨ <b>В ВАШ ТАРИФ ВКЛЮЧЕНО:</b>\n"
+        "• Мгновенные сигналы SMC / ICT по 17 инструментам.\n"
+        "• Чёткие уровни Entry, Stop Loss, Take Profit 1 и 2.\n"
+        "• Контроль Risk:Reward (от 1:2.0) и фильтр новостей.\n"
+        "• Интерактивная статистика и история сделок.\n\n"
+        "<i>Для продления тарифа или перехода на VIP нажмите кнопку ниже 👇</i>"
     )
 
 

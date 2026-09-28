@@ -10,14 +10,18 @@ from strategies import ALL_STRATEGIES, STRATEGY_MAP
 from sessions.trading_sessions import TradingSessions
 from bot.guide import get_guide_step, get_total_steps, GUIDE_STEPS
 from bot.keyboards import (
-    main_menu_keyboard, back_keyboard, guide_keyboard, admin_approve_keyboard,
-    analysis_result_keyboard, terminal_dashboard_keyboard, panic_confirm_keyboard
+    main_menu_keyboard, admin_menu_keyboard, client_menu_keyboard,
+    back_keyboard, guide_keyboard, admin_approve_keyboard,
+    analysis_result_keyboard, terminal_dashboard_keyboard, panic_confirm_keyboard,
+    autotrade_keyboard, admin_users_crm_keyboard, admin_user_card_keyboard,
+    client_subscription_keyboard, client_support_keyboard
 )
 from utils.formatters import (
     format_indicators, format_strategy, format_multi_tf_analysis,
     format_notification, format_signals_summary, format_news_alert,
     format_welcome, format_help,
-    format_stats, format_history
+    format_stats, format_history,
+    format_crm_user_card, format_my_subscription
 )
 from strategies.base import (
     FullAnalysisResult, MultiTFResult, TimeframeAnalysis
@@ -282,18 +286,30 @@ async def run_full_analysis(symbol: str, timeframe: str) -> FullAnalysisResult:
 @router.message(CommandStart())
 async def cmd_start(message: Message):
     user_id = message.from_user.id
-    from bot.keyboards import main_menu_keyboard
 
-    # Админ — всегда пропускаем в Главное Меню
+    # Админ — всегда в Пульт Администратора
     if user_id == config.ADMIN_ID:
-        await message.answer(format_welcome(), reply_markup=main_menu_keyboard(), parse_mode="HTML")
+        await message.answer(format_welcome(is_admin=True), reply_markup=admin_menu_keyboard(), parse_mode="HTML")
         return
 
     from db.users import get_user_status
     status = await get_user_status(user_id)
 
     if status == "approved":
-        await message.answer(format_welcome(), reply_markup=main_menu_keyboard(), parse_mode="HTML")
+        await message.answer(format_welcome(is_admin=False), reply_markup=client_menu_keyboard(), parse_mode="HTML")
+    elif status == "revoked":
+        await message.answer(
+            "🔒 <b>Доступ к терминалу приостановлен администратором.</b>\n\n"
+            "Действие тарифа завершено или доступ был деактивирован.\n"
+            "Для возобновления подписки обратитесь к администратору.",
+            parse_mode="HTML"
+        )
+    elif status == "expired":
+        await message.answer(
+            "⏳ <b>Срок действия вашей подписки истёк.</b>\n\n"
+            "Для продления доступа обратитесь к администратору.",
+            parse_mode="HTML"
+        )
     elif status == "pending":
         await message.answer(
             "⏳ <b>Ваша заявка на рассмотрении.</b>\n"
@@ -310,7 +326,7 @@ async def cmd_start(message: Message):
     else:
         await message.answer(
             "🏛 <b>ДОБРО ПОЖАЛОВАТЬ В SMART TRADER TERMINAL</b>\n\n"
-            "🔒 <b>Доступ к институциональному терминалу закрыт.</b>\n"
+            "🔒 <b>Доступ к институциональным сигналам ограничен.</b>\n"
             "Отправьте команду <code>/request</code>, чтобы подать заявку на доступ.\n\n"
             "Администратор рассмотрит вашу кандидатуру.",
             parse_mode="HTML"
@@ -377,6 +393,9 @@ async def cmd_history(message: Message):
 
 @router.message(Command("reset_stats"))
 async def cmd_reset_stats(message: Message):
+    if message.from_user.id != config.ADMIN_ID:
+        await message.answer("❌ Доступно только администратору.", parse_mode=None)
+        return
     from db.database import reset_all_stats
     await reset_all_stats()
     await message.answer(
@@ -393,6 +412,9 @@ async def cmd_reset_stats(message: Message):
 
 @router.message(Command("autotrade"))
 async def cmd_autotrade(message: Message):
+    if message.from_user.id != config.ADMIN_ID:
+        await message.answer("❌ Доступно только администратору.", parse_mode=None)
+        return
     parts = message.text.split()
     from trading.execution_bridge import bridge_manager
     if len(parts) > 1:
@@ -425,6 +447,9 @@ async def cmd_autotrade(message: Message):
 
 @router.message(Command("risk"))
 async def cmd_risk(message: Message):
+    if message.from_user.id != config.ADMIN_ID:
+        await message.answer("❌ Доступно только администратору.", parse_mode=None)
+        return
     parts = message.text.split()
     if len(parts) > 1:
         try:
@@ -439,6 +464,9 @@ async def cmd_risk(message: Message):
 
 @router.message(Command("lot"))
 async def cmd_lot(message: Message):
+    if message.from_user.id != config.ADMIN_ID:
+        await message.answer("❌ Доступно только администратору.", parse_mode=None)
+        return
     parts = message.text.split()
     if len(parts) > 1:
         try:
@@ -454,6 +482,9 @@ async def cmd_lot(message: Message):
 @router.message(Command("terminal"))
 @router.message(Command("account"))
 async def cmd_terminal(message: Message):
+    if message.from_user.id != config.ADMIN_ID:
+        await message.answer("❌ Доступно только администратору.", parse_mode=None)
+        return
     from trading.execution_bridge import bridge_manager
     from bot.keyboards import terminal_dashboard_keyboard
     text = bridge_manager.format_terminal_dashboard()
@@ -461,7 +492,10 @@ async def cmd_terminal(message: Message):
 
 @router.callback_query(F.data == "menu")
 async def cb_menu(callback: CallbackQuery):
-    await safe_edit(callback, "🏛 <b>ГЛАВНОЕ МЕНЮ ТЕРМИНАЛА:</b>", reply_markup=main_menu_keyboard(), parse_mode="HTML")
+    is_admin = (callback.from_user.id == config.ADMIN_ID)
+    kb = admin_menu_keyboard() if is_admin else client_menu_keyboard()
+    title = "🏛 <b>ГЛАВНОЕ МЕНЮ ТЕРМИНАЛА (ADMIN):</b>" if is_admin else "🏛 <b>ГЛАВНОЕ МЕНЮ:</b>"
+    await safe_edit(callback, title, reply_markup=kb, parse_mode="HTML")
 
 @router.callback_query(F.data.startswith("guide:"))
 async def cb_guide(callback: CallbackQuery):
@@ -537,6 +571,9 @@ async def cb_menu_actions(callback: CallbackQuery):
         text = format_history(signals)
         await safe_edit(callback, text, reply_markup=back_keyboard(), parse_mode="HTML")
     elif action == "terminal":
+        if callback.from_user.id != config.ADMIN_ID:
+            await callback.answer("❌ Доступно только администратору!", show_alert=True)
+            return
         from trading.execution_bridge import bridge_manager
         from bot.keyboards import terminal_dashboard_keyboard
         text = bridge_manager.format_terminal_dashboard()
@@ -544,7 +581,50 @@ async def cb_menu_actions(callback: CallbackQuery):
     elif action == "help":
         from bot.keyboards import help_menu_keyboard
         await safe_edit(callback, format_help(), reply_markup=help_menu_keyboard(), parse_mode="HTML")
+    elif action == "my_sub":
+        from db.users import get_user
+        u_data = await get_user(callback.from_user.id)
+        if not u_data:
+            u_data = {"telegram_id": callback.from_user.id, "tariff": "PRO", "status": "approved"}
+        text = format_my_subscription(u_data)
+        await safe_edit(callback, text, reply_markup=client_subscription_keyboard(), parse_mode="HTML")
+    elif action == "support":
+        username = config.ADMIN_USERNAME
+        admin_link = f"@{username}" if username else f"ID: {config.ADMIN_ID}"
+        text = (
+            "💬 <b>СЛУЖБА ПОДДЕРЖКИ & МЕНЕДЖЕР</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "По всем вопросам работы бота, подключения к счёту или продления тарифа обращайтесь к администратору:\n\n"
+            f"👤 <b>Связь с нами:</b> {admin_link}\n\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        )
+        await safe_edit(callback, text, reply_markup=client_support_keyboard(), parse_mode="HTML")
+    elif action == "crm":
+        if callback.from_user.id != config.ADMIN_ID:
+            await callback.answer("❌ Доступно только администратору!", show_alert=True)
+            return
+        from db.users import get_all_users
+        users = await get_all_users()
+        active_cnt = sum(1 for u in users if u.get("status") == "approved" and u.get("telegram_id") != config.ADMIN_ID)
+        revoked_cnt = sum(1 for u in users if u.get("status") in ("revoked", "expired"))
+        pending_cnt = sum(1 for u in users if u.get("status") == "pending")
+        total_clients = len([u for u in users if u.get("telegram_id") != config.ADMIN_ID])
+        text = (
+            "👥 <b>УПРАВЛЕНИЕ КЛИЕНТАМИ И ПОДПИСКАМИ (CRM)</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"📊 <b>Всего клиентов в базе:</b> {total_clients}\n"
+            f"• 🟢 Активных подписок: <b>{active_cnt}</b>\n"
+            f"• 🔴 Отключенных / Истёкших: <b>{revoked_cnt}</b>\n"
+            f"• ⏳ Ожидающих заявок: <b>{pending_cnt}</b>\n\n"
+            "Нажмите на любого клиента ниже, чтобы открыть его карточку, проверить активность, "
+            "<b>отключить доступ (Kick)</b> или продлить срок 👇\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        )
+        await safe_edit(callback, text, reply_markup=admin_users_crm_keyboard(users), parse_mode="HTML")
     elif action == "autotrade":
+        if callback.from_user.id != config.ADMIN_ID:
+            await callback.answer("❌ Доступно только администратору!", show_alert=True)
+            return
         from trading.execution_bridge import bridge_manager
         from bot.keyboards import autotrade_keyboard
         from db.database import get_bot_setting
@@ -584,11 +664,17 @@ async def cb_menu_actions(callback: CallbackQuery):
         )
         await safe_edit(callback, text, reply_markup=autotrade_keyboard(bridge_manager.enabled, mode=trading_mode), parse_mode="HTML")
     elif action == "main":
-        await safe_edit(callback, format_welcome(), reply_markup=main_menu_keyboard(), parse_mode="HTML")
+        is_admin = (callback.from_user.id == config.ADMIN_ID)
+        kb = admin_menu_keyboard() if is_admin else client_menu_keyboard()
+        title = "🏛 <b>ГЛАВНОЕ МЕНЮ ТЕРМИНАЛА (ADMIN):</b>" if is_admin else "🏛 <b>ГЛАВНОЕ МЕНЮ:</b>"
+        await safe_edit(callback, title, reply_markup=kb, parse_mode="HTML")
 
 
 @router.callback_query(F.data == "terminal:refresh")
 async def cb_terminal_refresh(callback: CallbackQuery):
+    if callback.from_user.id != config.ADMIN_ID:
+        await callback.answer("❌ Доступно только администратору!", show_alert=True)
+        return
     from trading.execution_bridge import bridge_manager
     from bot.keyboards import terminal_dashboard_keyboard
     await callback.answer("🔄 Данные из MT5 обновлены!")
@@ -598,6 +684,9 @@ async def cb_terminal_refresh(callback: CallbackQuery):
 
 @router.callback_query(F.data == "terminal:panic_confirm")
 async def cb_panic_confirm(callback: CallbackQuery):
+    if callback.from_user.id != config.ADMIN_ID:
+        await callback.answer("❌ Доступно только администратору!", show_alert=True)
+        return
     from bot.keyboards import panic_confirm_keyboard
     text = (
         "🛑 <b>ЭКСТРЕННАЯ ПАНИКА: ПОДТВЕРЖДЕНИЕ</b>\n"
@@ -611,6 +700,9 @@ async def cb_panic_confirm(callback: CallbackQuery):
 
 @router.callback_query(F.data == "terminal:panic_exec")
 async def cb_panic_exec(callback: CallbackQuery):
+    if callback.from_user.id != config.ADMIN_ID:
+        await callback.answer("❌ Доступно только администратору!", show_alert=True)
+        return
     from trading.execution_bridge import bridge_manager
     from bot.keyboards import terminal_dashboard_keyboard
     await callback.answer("🚨 Запрос отправлен в MT5!", show_alert=True)
@@ -628,6 +720,9 @@ async def cb_panic_exec(callback: CallbackQuery):
 
 @router.callback_query(F.data.startswith("autotrade:"))
 async def cb_autotrade_actions(callback: CallbackQuery):
+    if callback.from_user.id != config.ADMIN_ID:
+        await callback.answer("❌ Доступно только администратору!", show_alert=True)
+        return
     from trading.execution_bridge import bridge_manager
     from bot.keyboards import autotrade_keyboard
     from db.database import get_bot_setting, set_bot_setting
@@ -724,6 +819,9 @@ async def cb_symbol(callback: CallbackQuery):
 
 @router.callback_query(F.data.startswith("exec_mt5:"))
 async def cb_exec_mt5(callback: CallbackQuery):
+    if callback.from_user.id != config.ADMIN_ID:
+        await callback.answer("❌ Только администратор может отправлять ордера в MT5!", show_alert=True)
+        return
     symbol = callback.data.split(":")[1]
     await callback.answer("⏳ Анализирую и отправляю в MT5...", show_alert=False)
     
@@ -842,10 +940,10 @@ async def cb_admin_approve(callback: CallbackQuery):
 
     target_id = int(callback.data.split(":")[1])
     from db.users import approve_user
-    await approve_user(target_id)
+    await approve_user(target_id, days=30, tariff="PRO")
 
     await callback.message.edit_text(
-        callback.message.text + "\n\n✅ ОДОБРЕНО",
+        callback.message.text + "\n\n✅ ОДОБРЕНО (Доступ активирован на 30 дней, тариф PRO)",
         parse_mode=None
     )
 
@@ -853,10 +951,11 @@ async def cb_admin_approve(callback: CallbackQuery):
     try:
         await callback.bot.send_message(
             target_id,
-            "✅ Ваша заявка одобрена!\n\n"
+            "✅ <b>Ваша заявка одобрена!</b>\n\n"
+            "Вам активирован тариф <b>PRO (30 дней)</b>.\n"
             "Добро пожаловать в Smart Trader Bot! 🤖\n"
-            "Отправьте /start чтобы начать.",
-            parse_mode=None
+            "Отправьте /start чтобы открыть меню.",
+            parse_mode="HTML"
         )
     except Exception:
         pass
@@ -889,40 +988,157 @@ async def cb_admin_reject(callback: CallbackQuery):
         pass
 
 
+# ═══════════════════════════════════════════════════════════
+# CRM & УПРАВЛЕНИЕ КЛИЕНТАМИ (ТОЛЬКО АДМИНИСТРАТОР)
+# ═══════════════════════════════════════════════════════════
+
 @router.message(Command("users"))
+@router.message(Command("crm"))
 async def cmd_users(message: Message):
-    """Управление пользователями (только для админа)."""
+    """Панель CRM для администратора."""
     if message.from_user.id != config.ADMIN_ID:
         await message.answer("❌ Только для администратора.", parse_mode=None)
         return
 
-    from db.users import get_pending_users, get_approved_user_ids
-    pending = await get_pending_users()
-    approved_ids = await get_approved_user_ids()
+    from db.users import get_all_users
+    users = await get_all_users()
+    active_cnt = sum(1 for u in users if u.get("status") == "approved" and u.get("telegram_id") != config.ADMIN_ID)
+    revoked_cnt = sum(1 for u in users if u.get("status") in ("revoked", "expired"))
+    pending_cnt = sum(1 for u in users if u.get("status") == "pending")
+    total_clients = len([u for u in users if u.get("telegram_id") != config.ADMIN_ID])
 
     text = (
-        f"👥 УПРАВЛЕНИЕ ПОЛЬЗОВАТЕЛЯМИ\n"
-        f"{'━' * 28}\n\n"
-        f"✅ Одобрено: {len(approved_ids)}\n"
-        f"⏳ Ожидают: {len(pending)}\n\n"
+        "👥 <b>УПРАВЛЕНИЕ КЛИЕНТАМИ И ПОДПИСКАМИ (CRM)</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"📊 <b>Всего клиентов в базе:</b> {total_clients}\n"
+        f"• 🟢 Активных подписок: <b>{active_cnt}</b>\n"
+        f"• 🔴 Отключенных / Истёкших: <b>{revoked_cnt}</b>\n"
+        f"• ⏳ Ожидающих заявок: <b>{pending_cnt}</b>\n\n"
+        "Нажмите на любого клиента ниже, чтобы открыть его карточку, проверить активность, "
+        "<b>отключить доступ (Kick)</b> или продлить срок 👇\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     )
-
-    if pending:
-        text += "📋 Ожидающие заявки:\n"
-        for u in pending:
-            un = f"@{u['username']}" if u.get('username') else 'нет'
-            text += f"   • {u.get('first_name', '?')} ({un}) — ID: {u['telegram_id']}\n"
-    else:
-        text += "📋 Нет ожидающих заявок."
-
-    await message.answer(text, reply_markup=back_keyboard(), parse_mode=None)
+    await message.answer(text, reply_markup=admin_users_crm_keyboard(users), parse_mode="HTML")
 
 
+@router.callback_query(F.data.startswith("crm:"))
+async def cb_crm_actions(callback: CallbackQuery):
+    """Интерактивное управление клиентами в CRM."""
+    if callback.from_user.id != config.ADMIN_ID:
+        await callback.answer("❌ Доступно только администратору!", show_alert=True)
+        return
+
+    parts = callback.data.split(":")
+    action = parts[1]
+
+    if action == "user":
+        target_id = int(parts[2])
+        from db.users import get_user
+        user = await get_user(target_id)
+        if not user:
+            await callback.answer("⚠️ Пользователь не найден!", show_alert=True)
+            return
+
+        is_active = (user.get("status") == "approved")
+        text = format_crm_user_card(user)
+        await safe_edit(callback, text, reply_markup=admin_user_card_keyboard(target_id, is_active), parse_mode="HTML")
+
+    elif action == "revoke":
+        target_id = int(parts[2])
+        from db.users import revoke_user, get_user
+        ok = await revoke_user(target_id)
+        if ok:
+            await callback.answer("🔴 Доступ пользователю отключен!", show_alert=True)
+            # Оповещаем пользователя об отключении
+            try:
+                await callback.bot.send_message(
+                    target_id,
+                    "🔒 <b>Ваш доступ к институциональным сигналам был приостановлен администратором.</b>\n\n"
+                    "Для продления тарифа свяжитесь с поддержкой.",
+                    parse_mode="HTML"
+                )
+            except Exception:
+                pass
+        else:
+            await callback.answer("❌ Ошибка при отключении пользователя.", show_alert=True)
+
+        user = await get_user(target_id)
+        if user:
+            text = format_crm_user_card(user)
+            await safe_edit(callback, text, reply_markup=admin_user_card_keyboard(target_id, is_active=False), parse_mode="HTML")
+
+    elif action == "restore":
+        target_id = int(parts[2])
+        from db.users import restore_user, get_user
+        ok = await restore_user(target_id, days=30)
+        if ok:
+            await callback.answer("🟢 Доступ восстановлен на 30 дней!", show_alert=True)
+            try:
+                await callback.bot.send_message(
+                    target_id,
+                    "🎉 <b>Администратор активировал ваш доступ к Smart Trader Bot на 30 дней!</b>\n\n"
+                    "Отправьте /start чтобы открыть меню.",
+                    parse_mode="HTML"
+                )
+            except Exception:
+                pass
+        else:
+            await callback.answer("❌ Ошибка при восстановлении доступа.", show_alert=True)
+
+        user = await get_user(target_id)
+        if user:
+            text = format_crm_user_card(user)
+            await safe_edit(callback, text, reply_markup=admin_user_card_keyboard(target_id, is_active=True), parse_mode="HTML")
+
+    elif action == "extend":
+        target_id = int(parts[2])
+        days = int(parts[3]) if len(parts) > 3 else 30
+        from db.users import extend_subscription, get_user
+        ok, new_exp = await extend_subscription(target_id, days=days)
+        if ok:
+            exp_date_str = new_exp[:10] if new_exp else "успешно"
+            await callback.answer(f"➕ Подписка продлена на {days} дней (до {exp_date_str})!", show_alert=True)
+            try:
+                await callback.bot.send_message(
+                    target_id,
+                    f"💎 <b>Администратор продлил ваш тариф на {days} дней!</b>\n\n"
+                    f"Подписка активна до: <code>{exp_date_str}</code> 🚀",
+                    parse_mode="HTML"
+                )
+            except Exception:
+                pass
+        else:
+            await callback.answer("❌ Ошибка при продлении подписки.", show_alert=True)
+
+        user = await get_user(target_id)
+        if user:
+            is_active = (user.get("status") == "approved")
+            text = format_crm_user_card(user)
+            await safe_edit(callback, text, reply_markup=admin_user_card_keyboard(target_id, is_active=is_active), parse_mode="HTML")
+
+    elif action == "delete":
+        target_id = int(parts[2])
+        from db.users import delete_user, get_all_users
+        ok = await delete_user(target_id)
+        if ok:
+            await callback.answer("🗑️ Пользователь удален из базы.", show_alert=True)
+        users = await get_all_users()
+        total_clients = len([u for u in users if u.get("telegram_id") != config.ADMIN_ID])
+        text = (
+            "👥 <b>УПРАВЛЕНИЕ КЛИЕНТАМИ И ПОДПИСКАМИ (CRM)</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"📊 <b>Всего клиентов в базе:</b> {total_clients}\n\n"
+            "Выберите клиента для управления 👇"
+        )
+        await safe_edit(callback, text, reply_markup=admin_users_crm_keyboard(users), parse_mode="HTML")
 
 
 @router.message(Command("reset_drawdown"))
 async def cmd_reset_drawdown(message: Message):
     """Ручной сброс блокировки просадки."""
+    if message.from_user.id != config.ADMIN_ID:
+        await message.answer("❌ Только для администратора.", parse_mode=None)
+        return
     try:
         from db.database import set_drawdown_reset_now
         ok = await set_drawdown_reset_now()

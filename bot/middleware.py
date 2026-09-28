@@ -1,18 +1,19 @@
 """
-Smart Trader Bot — Middleware для контроля доступа.
-Проверяет, одобрен ли пользователь, прежде чем обработать команду.
+Smart Trader Bot — Middleware для контроля доступа и аналитики активности.
+Проверяет, одобрен ли пользователь, активна ли подписка, и скрытно фиксирует активность.
 """
 
+import asyncio
 from aiogram import BaseMiddleware
-from aiogram.types import Message, CallbackQuery, Update
+from aiogram.types import Message, CallbackQuery
 from typing import Callable, Awaitable, Any
 
 import config
-from db.users import is_user_approved, get_user_status
+from db.users import is_user_approved, get_user_status, log_user_activity
 
 
 class AccessControlMiddleware(BaseMiddleware):
-    """Middleware: пропускает только одобренных пользователей и админа."""
+    """Middleware: пропускает только одобренных пользователей с активным тарифом и админа."""
 
     # Команды, доступные всем (даже неодобренным)
     PUBLIC_COMMANDS = {"/start", "/request"}
@@ -29,6 +30,8 @@ class AccessControlMiddleware(BaseMiddleware):
             user_id = event.from_user.id if event.from_user else None
             # Проверяем публичные команды
             if event.text and any(event.text.startswith(cmd) for cmd in self.PUBLIC_COMMANDS):
+                if user_id:
+                    asyncio.create_task(log_user_activity(user_id))
                 return await handler(event, data)
         elif isinstance(event, CallbackQuery):
             user_id = event.from_user.id if event.from_user else None
@@ -43,34 +46,61 @@ class AccessControlMiddleware(BaseMiddleware):
         if user_id is None:
             return await handler(event, data)
 
+        # Скрытно фиксируем активность пользователя в базе
+        asyncio.create_task(log_user_activity(user_id))
+
         # Админ всегда пропускается
         if user_id == config.ADMIN_ID:
             return await handler(event, data)
 
-        # Проверяем одобрение
+        # Проверяем одобрение и срок подписки
         if await is_user_approved(user_id):
             return await handler(event, data)
 
-        # Не одобрен — отправляем сообщение
+        # Доступ не активен — проверяем детальный статус
         status = await get_user_status(user_id)
+
         if isinstance(event, Message):
             if status == "pending":
                 await event.answer(
-                    "⏳ Ваша заявка на рассмотрении.\n"
+                    "⏳ <b>Ваша заявка на рассмотрении.</b>\n"
                     "Администратор скоро её проверит.\n\n"
-                    "Ожидайте уведомления! 🔔"
+                    "Ожидайте уведомления! 🔔",
+                    parse_mode="HTML"
+                )
+            elif status == "revoked":
+                await event.answer(
+                    "🔒 <b>Доступ к боту приостановлен администратором.</b>\n\n"
+                    "Действие тарифа завершено или доступ был отключен.\n"
+                    "Для продления подписки обратитесь к администратору.",
+                    parse_mode="HTML"
+                )
+            elif status == "expired":
+                await event.answer(
+                    "⏳ <b>Срок действия вашей подписки истёк.</b>\n\n"
+                    "Для продления доступа обратитесь к администратору.",
+                    parse_mode="HTML"
                 )
             elif status == "rejected":
                 await event.answer(
-                    "❌ Ваша заявка была отклонена.\n"
-                    "Свяжитесь с администратором для уточнения."
+                    "❌ <b>Ваша заявка была отклонена.</b>\n"
+                    "Свяжитесь с администратором для уточнения.",
+                    parse_mode="HTML"
                 )
             else:
                 await event.answer(
-                    "🔒 Доступ к боту ограничен.\n\n"
-                    "Отправьте /request чтобы подать заявку на доступ."
+                    "🔒 <b>Доступ к боту ограничен.</b>\n\n"
+                    "Отправьте /request чтобы подать заявку на доступ.",
+                    parse_mode="HTML"
                 )
         elif isinstance(event, CallbackQuery):
-            await event.answer("🔒 Доступ ограничен. Отправьте /request", show_alert=True)
+            if status == "revoked":
+                await event.answer("🔒 Доступ приостановлен администратором.", show_alert=True)
+            elif status == "expired":
+                await event.answer("⏳ Срок подписки истёк. Обратитесь к админу.", show_alert=True)
+            elif status == "pending":
+                await event.answer("⏳ Заявка на рассмотрении.", show_alert=True)
+            else:
+                await event.answer("🔒 Доступ ограничен. Отправьте /request", show_alert=True)
 
         return  # Не вызываем handler

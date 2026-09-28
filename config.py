@@ -20,6 +20,7 @@ BOT_TOKEN: str = os.getenv("BOT_TOKEN", "")
 # ── Администратор бота (только он одобряет заявки) ────────
 _admin_raw = os.getenv("ADMIN_ID", "")
 ADMIN_ID: int = int(_admin_raw) if _admin_raw.isdigit() else 0
+ADMIN_USERNAME: str = os.getenv("ADMIN_USERNAME", "SmartTraderAdmin")
 
 # ── Биржа ─────────────────────────────────────────────────
 EXCHANGE: str = os.getenv("EXCHANGE", "binance")
