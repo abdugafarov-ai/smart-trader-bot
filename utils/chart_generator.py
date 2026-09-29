@@ -193,21 +193,43 @@ def generate_signal_chart(
             sl_text_y = entry + risk_height * 0.5
 
         # Линии уровней внутри бокса позиции
-        ax.plot([x_start, x_end], [entry, entry], color=t["entry_line"], linewidth=1.6, linestyle='-', zorder=5)
-        ax.plot([x_start, x_end], [stop_loss, stop_loss], color=sl_color, linewidth=1.2, linestyle='-', zorder=5)
-        ax.plot([x_start, x_end], [tp1, tp1], color=tp_color, linewidth=1.2, linestyle='-', zorder=5)
+        ax.plot([x_start, x_end], [entry, entry], color='#ffffff', linewidth=1.4, linestyle='-', zorder=5)
+        ax.plot([x_start, x_end], [stop_loss, stop_loss], color=sl_color, linewidth=1.3, linestyle='-', zorder=5)
+        ax.plot([x_start, x_end], [tp1, tp1], color=tp_color, linewidth=1.3, linestyle='-', zorder=5)
 
-        # Текстовые плашки Target и Stop внутри бокса позиции
+        # Тонкие пунктирные проекции вправо к шкале цен
+        total_x_span = n_candles + future_padding_bars
+        ax.plot([x_end, total_x_span], [entry, entry], color='#5d606b', linewidth=0.9, linestyle=':', alpha=0.6, zorder=1)
+        ax.plot([x_end, total_x_span], [stop_loss, stop_loss], color=sl_color, linewidth=0.9, linestyle=':', alpha=0.6, zorder=1)
+        ax.plot([x_end, total_x_span], [tp1, tp1], color=tp_color, linewidth=0.9, linestyle=':', alpha=0.6, zorder=1)
+
+        # ── Аутентичные синие ручки TradingView [■] (Handle markers) ──
+        handles_x = [x_start, x_end, x_start, x_end, x_start, x_end]
+        handles_y = [tp1, tp1, stop_loss, stop_loss, entry, entry]
+        ax.scatter(handles_x, handles_y, color='#2962ff', s=26, marker='s', edgecolors='#ffffff', linewidth=1.0, zorder=6)
+
+        # ── Информационные плашки TradingView (как на рис. 2) ──
         box_center_x = x_start + box_width / 2
         ax.text(
-            box_center_x, tp_text_y, f"Target: +{reward_pips:.1f} pips\nR:R = 1:{rr:.1f}",
-            color='#ffffff', fontsize=8.5, fontweight='bold', ha='center', va='center', zorder=6,
-            bbox=dict(boxstyle='round,pad=0.25', facecolor=tp_color, alpha=0.75, edgecolor='none')
+            box_center_x, entry,
+            f"Open PnL: 0.00 ({order_type.replace('_', ' ')})\nRisk/reward ratio: {rr:.2f}",
+            color='#ffffff', fontsize=8.2, fontweight='bold', ha='center', va='center', zorder=7,
+            bbox=dict(boxstyle='round,pad=0.35', facecolor='#00897b', edgecolor='#ffffff', linewidth=0.8, alpha=0.95)
+        )
+
+        ax.text(
+            box_center_x, tp1,
+            f" Target: +{reward_pips:.1f} pips ",
+            color='#ffffff', fontsize=8.0, fontweight='bold', ha='center',
+            va='bottom' if direction == "LONG" else 'top', zorder=7,
+            bbox=dict(boxstyle='round,pad=0.25', facecolor=tp_color, edgecolor='none', alpha=0.92)
         )
         ax.text(
-            box_center_x, sl_text_y, f"Stop: -{risk_pips:.1f} pips",
-            color='#ffffff', fontsize=8.5, fontweight='bold', ha='center', va='center', zorder=6,
-            bbox=dict(boxstyle='round,pad=0.25', facecolor=sl_color, alpha=0.75, edgecolor='none')
+            box_center_x, stop_loss,
+            f" Stop: -{risk_pips:.1f} pips ",
+            color='#ffffff', fontsize=8.0, fontweight='bold', ha='center',
+            va='top' if direction == "LONG" else 'bottom', zorder=7,
+            bbox=dict(boxstyle='round,pad=0.25', facecolor=sl_color, edgecolor='none', alpha=0.92)
         )
 
         # ── 3. Линия текущей рыночной цены (Market Price) ──
@@ -376,46 +398,8 @@ def generate_outcome_chart(
         ax.grid(True, color=t["grid_color"], linestyle='-', linewidth=0.8, alpha=0.7)
         ax.set_axisbelow(True)
 
-        # ── 1. Зоны прибыли и риска (под свечами) ──
-        x_start = 0
-        x_end = n_candles + 4
-
-        sl_color = t["sl_box"]
-        tp_color = t["tp_box"]
-
-        if direction == "LONG":
-            profit_height = max(0.00001, take_profit - entry)
-            risk_height = max(0.00001, entry - stop_loss)
-            rect_tp = Rectangle(
-                (x_start, entry), x_end - x_start, profit_height,
-                facecolor=tp_color, edgecolor='none', alpha=0.15, zorder=1
-            )
-            rect_sl = Rectangle(
-                (x_start, stop_loss), x_end - x_start, risk_height,
-                facecolor=sl_color, edgecolor='none', alpha=0.15, zorder=1
-            )
-        else:
-            profit_height = max(0.00001, entry - take_profit)
-            risk_height = max(0.00001, stop_loss - entry)
-            rect_tp = Rectangle(
-                (x_start, take_profit), x_end - x_start, profit_height,
-                facecolor=tp_color, edgecolor='none', alpha=0.15, zorder=1
-            )
-            rect_sl = Rectangle(
-                (x_start, entry), x_end - x_start, risk_height,
-                facecolor=sl_color, edgecolor='none', alpha=0.15, zorder=1
-            )
-
-        ax.add_patch(rect_tp)
-        ax.add_patch(rect_sl)
-
-        # Горизонтальные линии уровней сделки
-        ax.plot([x_start, x_end], [entry, entry], color=t["entry_line"], linewidth=1.5, linestyle='--', alpha=0.85, zorder=3)
-        ax.plot([x_start, x_end], [stop_loss, stop_loss], color=sl_color, linewidth=1.4, linestyle='-', alpha=0.9, zorder=3)
-        ax.plot([x_start, x_end], [take_profit, take_profit], color=tp_color, linewidth=1.4, linestyle='-', alpha=0.9, zorder=3)
-
-        # ── 2. Отрисовка японских свечей ──
-        candle_width = 0.60
+        # ── 1. Отрисовка японских свечей (на всём графике) ──
+        candle_width = 0.58
         wick_width = 1.0
 
         for i in range(n_candles):
@@ -424,7 +408,7 @@ def generate_outcome_chart(
             is_up = c >= o
             c_color = t["up_candle"] if is_up else t["down_candle"]
 
-            ax.plot([i, i], [l, h], color=c_color, linewidth=wick_width, zorder=4)
+            ax.plot([i, i], [l, h], color=c_color, linewidth=wick_width, zorder=2)
 
             body_bottom = min(o, c)
             body_height = max(abs(c - o), (h - l) * 0.01)
@@ -435,34 +419,127 @@ def generate_outcome_chart(
                 facecolor=c_color,
                 edgecolor=c_color,
                 linewidth=0.8,
-                zorder=5
+                zorder=3
             )
             ax.add_patch(rect)
 
-        # ── 3. Маркер точки закрытия сделки на последней свече ──
+        # ── 2. TradingView Position Tool Box (ТОЛЬКО В ДИАПАЗОНЕ СДЕЛКИ!) ──
+        # Ищем индекс свечи входа (entry_idx) назад от точки выхода
         last_x = n_candles - 1
-        exit_badge_color = tp_color if is_tp else (sl_color if is_sl else "#e5a50a")
-        
-        ax.scatter([last_x], [close_price], color=exit_badge_color, s=90, zorder=8, edgecolors='#ffffff', linewidth=1.5)
+        entry_idx = None
+        search_window = min(35, last_x)
+        for i in range(last_x - 1, max(-1, last_x - search_window - 1), -1):
+            row_l = float(df_chart['low'].iloc[i])
+            row_h = float(df_chart['high'].iloc[i])
+            if row_l <= entry <= row_h:
+                entry_idx = i
+                break
 
-        if is_tp:
-            badge_title = f"[TP] TAKE PROFIT HIT!\n{profit_sign}{profit_usd:.2f} USD (+{abs(pnl_pips):.1f} p)"
-        elif is_sl:
-            badge_title = f"[SL] STOP LOSS HIT\n-{abs(profit_usd):.2f} USD (-{abs(pnl_pips):.1f} p)"
-        elif is_manual:
-            badge_title = f"[MANUAL] MANUAL CLOSE\n{profit_sign}{profit_usd:.2f} USD ({profit_sign}{pnl_pips:.1f} p)"
+        if entry_idx is None:
+            recent_diffs = [abs(float(df_chart['close'].iloc[i]) - entry) for i in range(max(0, last_x - search_window), last_x)]
+            if recent_diffs:
+                entry_idx = max(0, last_x - search_window) + int(np.argmin(recent_diffs))
+            else:
+                entry_idx = max(0, last_x - 12)
+
+        # Ограничиваем ширину бокса: минимум 6 свечей для читаемости текста, максимум 28
+        if (last_x - entry_idx) < 5:
+            entry_idx = max(0, last_x - 6)
+        elif (last_x - entry_idx) > 28:
+            entry_idx = last_x - 28
+
+        x_box_start = entry_idx - 0.35
+        x_box_end = last_x + 1.2
+        box_w = x_box_end - x_box_start
+
+        sl_color = t["sl_box"]
+        tp_color = t["tp_box"]
+
+        if direction == "LONG":
+            profit_height = max(0.00001, take_profit - entry)
+            risk_height = max(0.00001, entry - stop_loss)
+            rect_tp = Rectangle(
+                (x_box_start, entry), box_w, profit_height,
+                facecolor=tp_color, edgecolor=tp_color, alpha=0.22, linewidth=1.2, zorder=4
+            )
+            rect_sl = Rectangle(
+                (x_box_start, stop_loss), box_w, risk_height,
+                facecolor=sl_color, edgecolor=sl_color, alpha=0.22, linewidth=1.2, zorder=4
+            )
         else:
-            badge_title = f"CLOSED: {profit_sign}{profit_usd:.2f} USD"
+            risk_height = max(0.00001, stop_loss - entry)
+            profit_height = max(0.00001, entry - take_profit)
+            rect_sl = Rectangle(
+                (x_box_start, entry), box_w, risk_height,
+                facecolor=sl_color, edgecolor=sl_color, alpha=0.22, linewidth=1.2, zorder=4
+            )
+            rect_tp = Rectangle(
+                (x_box_start, take_profit), box_w, profit_height,
+                facecolor=tp_color, edgecolor=tp_color, alpha=0.22, linewidth=1.2, zorder=4
+            )
 
-        ax.annotate(
-            badge_title,
-            xy=(last_x, close_price),
-            xytext=(last_x - 7, close_price),
-            fontsize=9.0, fontweight='bold', color='#ffffff',
-            va='center', ha='right', zorder=9,
-            bbox=dict(boxstyle='round,pad=0.35', facecolor=exit_badge_color, alpha=0.92, edgecolor='#ffffff', linewidth=1.0),
-            arrowprops=dict(arrowstyle='->', color='#ffffff', lw=1.2)
+        ax.add_patch(rect_tp)
+        ax.add_patch(rect_sl)
+
+        total_x_span = n_candles + 5
+
+        # Линии уровней ТОЛЬКО ВНУТРИ БОКСА ПОЗИЦИИ
+        ax.plot([x_box_start, x_box_end], [entry, entry], color='#ffffff', linewidth=1.4, linestyle='-', zorder=5)
+        ax.plot([x_box_start, x_box_end], [stop_loss, stop_loss], color=sl_color, linewidth=1.3, linestyle='-', zorder=5)
+        ax.plot([x_box_start, x_box_end], [take_profit, take_profit], color=tp_color, linewidth=1.3, linestyle='-', zorder=5)
+
+        # Тонкие пунктирные проекции от правого края бокса к шкале цен
+        ax.plot([x_box_end, total_x_span], [entry, entry], color='#5d606b', linewidth=0.9, linestyle=':', alpha=0.6, zorder=1)
+        ax.plot([x_box_end, total_x_span], [stop_loss, stop_loss], color=sl_color, linewidth=0.9, linestyle=':', alpha=0.6, zorder=1)
+        ax.plot([x_box_end, total_x_span], [take_profit, take_profit], color=tp_color, linewidth=0.9, linestyle=':', alpha=0.6, zorder=1)
+
+        # ── 3. Аутентичные синие ручки TradingView [■] (Handle markers) ──
+        handles_x = [x_box_start, x_box_end, x_box_start, x_box_end, x_box_start, x_box_end]
+        handles_y = [take_profit, take_profit, stop_loss, stop_loss, entry, entry]
+        ax.scatter(handles_x, handles_y, color='#2962ff', s=26, marker='s', edgecolors='#ffffff', linewidth=1.0, zorder=6)
+
+        # ── 4. Информационные плашки TradingView ──
+        box_center_x = (x_box_start + x_box_end) / 2
+        rr = profit_height / risk_height if risk_height > 0 else 2.0
+
+        # Центральный бейдж TradingView (Closed PnL + R:R)
+        mid_badge_bg = "#00897b" if profit_usd >= 0 else "#b22834"
+        ax.text(
+            box_center_x, entry,
+            f"Closed PnL: {profit_sign}{profit_usd:.2f} USD ({profit_sign}{pnl_pips:.1f} p)\nRisk/reward ratio: {rr:.2f}",
+            color='#ffffff', fontsize=8.2, fontweight='bold', ha='center', va='center', zorder=7,
+            bbox=dict(boxstyle='round,pad=0.35', facecolor=mid_badge_bg, edgecolor='#ffffff', linewidth=0.8, alpha=0.95)
         )
+
+        # Бейджи Target и Stop
+        reward_pips = abs(take_profit - entry) * pip_mult
+        risk_pips = abs(entry - stop_loss) * pip_mult
+
+        ax.text(
+            box_center_x, take_profit,
+            f" Target: +{reward_pips:.1f} pips ",
+            color='#ffffff', fontsize=8.0, fontweight='bold', ha='center',
+            va='bottom' if direction == "LONG" else 'top', zorder=7,
+            bbox=dict(boxstyle='round,pad=0.25', facecolor=tp_color, edgecolor='none', alpha=0.92)
+        )
+        ax.text(
+            box_center_x, stop_loss,
+            f" Stop: -{risk_pips:.1f} pips ",
+            color='#ffffff', fontsize=8.0, fontweight='bold', ha='center',
+            va='top' if direction == "LONG" else 'bottom', zorder=7,
+            bbox=dict(boxstyle='round,pad=0.25', facecolor=sl_color, edgecolor='none', alpha=0.92)
+        )
+
+        # ── 5. Пунктирная траектория сделки от входа к выходу ──
+        ax.annotate(
+            "",
+            xy=(last_x, close_price),
+            xytext=(entry_idx, entry),
+            arrowprops=dict(arrowstyle="-|>", color="#e0e3eb", linestyle="--", linewidth=1.5, mutation_scale=12),
+            zorder=8
+        )
+        exit_color = tp_color if profit_usd >= 0 else sl_color
+        ax.scatter([last_x], [close_price], color=exit_color, s=85, edgecolors='#ffffff', linewidth=1.6, zorder=9)
 
         # ── 4. Границы осей X и Y ──
         total_x_span = n_candles + 4
@@ -498,7 +575,7 @@ def generate_outcome_chart(
         add_badge(stop_loss, f"SL {p_fmt.format(stop_loss)}", sl_color)
         add_badge(entry, f"ENTRY {p_fmt.format(entry)}", '#5d606b')
         add_badge(take_profit, f"TP {p_fmt.format(take_profit)}", tp_color)
-        add_badge(close_price, f"EXIT {p_fmt.format(close_price)}", exit_badge_color)
+        add_badge(close_price, f"EXIT {p_fmt.format(close_price)}", exit_color)
 
         # ── 6. Заголовок и метаданные ──
         res_str = "TAKE PROFIT" if is_tp else ("STOP LOSS" if is_sl else "MANUAL CLOSE")
