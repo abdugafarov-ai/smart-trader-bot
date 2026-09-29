@@ -12,7 +12,8 @@
 import io
 import logging
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union
+from datetime import datetime
 
 import pandas as pd
 import numpy as np
@@ -324,22 +325,21 @@ def generate_outcome_chart(
     theme: str = "dark",
     last_n_candles: int = 55,
     timeframe: str = "1h",
+    signal_time: Optional[Union[str, datetime]] = None,
 ) -> Optional[bytes]:
     """
-    Генерирует свечной график результата закрытой сделки (TP, SL или ручное закрытие).
-    Отображает:
-    - Реальные свечи, прошедшие от момента входа до закрытия
-    - Уровни Entry, Stop Loss и Take Profit с заливкой зон
-    - Метку точки выхода (Exit Price) с бейджем финансового результата
-    - Правые плашки цен в стиле TradingView
+    Генерирует свечной график результата закрытой сделки в стиле TradingView:
+    - Исторические свечи слева от точки сигнала (до 45 свечей)
+    - Позиционный бокс начинается точно на сигнальной свече (не растягивается на всю историю)
+    - Реальные свечи за время жизни сделки прорисовываются внутри бокса
+    - На закрывающей свече ставится маркер точки выхода (зеленый/красный/синий круг)
+    - Четкие непрозрачные плашки Target / Stop внутри бокса
+    - Правые ценовые бейджи TradingView (TP, EXIT, ENTRY, SL)
     """
     try:
         if df is None or df.empty or len(df) < 5:
             logger.warning("Not enough data to generate outcome chart for %s", symbol)
             return None
-
-        df_chart = df.tail(last_n_candles).copy().reset_index(drop=True)
-        n_candles = len(df_chart)
 
         t = TV_THEMES.get(theme, TV_THEMES["dark"])
 
@@ -354,7 +354,7 @@ def generate_outcome_chart(
             pip_mult = 10000.0
 
         if entry is None or entry <= 0:
-            entry = float(df_chart['close'].iloc[0])
+            entry = float(df['close'].iloc[0])
         if stop_loss is None or stop_loss <= 0:
             diff = abs(close_price - entry) if abs(close_price - entry) > 0 else (entry * 0.003)
             stop_loss = entry - diff if direction == "LONG" else entry + diff
@@ -369,109 +369,141 @@ def generate_outcome_chart(
         is_tp = not is_manual and (status in ("TP", "TP1_HIT", "TP2_HIT") or profit_usd > 0)
         is_sl = not is_manual and (status in ("SL", "SL_HIT") or profit_usd < 0)
 
+        # Определение точки разделения на историю и свечи сделки
+        sig_idx = None
+        if signal_time is not None and 'timestamp' in df.columns:
+            try:
+                sig_dt = pd.to_datetime(signal_time)
+                df_ts = pd.to_datetime(df['timestamp'])
+                diffs = (df_ts - sig_dt).abs()
+                min_diff_idx = diffs.idxmin()
+                if min_diff_idx is not None and min_diff_idx < len(df):
+                    sig_idx = int(min_diff_idx)
+            except Exception as e:
+                logger.debug("Failed to match signal_time %s: %s", signal_time, e)
+
+        total_len = len(df)
+        if sig_idx is None or sig_idx <= 0 or sig_idx >= total_len - 1:
+            n_outcome_default = max(3, min(15, total_len // 3))
+            sig_idx = total_len - n_outcome_default - 1
+
+        hist_start = max(0, sig_idx - 44)
+        df_hist = df.iloc[hist_start : sig_idx + 1].copy().reset_index(drop=True)
+        df_outcome = df.iloc[sig_idx + 1:].copy().reset_index(drop=True)
+        if df_outcome.empty:
+            df_outcome = df.iloc[sig_idx : sig_idx + 1].copy().reset_index(drop=True)
+
+        n_hist = len(df_hist)
+        n_outcome = len(df_outcome)
+
         fig, ax = plt.subplots(figsize=(13, 6.8), dpi=140)
         fig.patch.set_facecolor(t["bg_color"])
         ax.set_facecolor(t["bg_color"])
-
         ax.grid(True, color=t["grid_color"], linestyle='-', linewidth=0.8, alpha=0.7)
         ax.set_axisbelow(True)
 
-        # ── 1. Зоны прибыли и риска (под свечами) ──
-        x_start = 0
-        x_end = n_candles + 4
+        candle_width = 0.58
+        wick_width = 1.0
 
-        sl_color = t["sl_box"]
-        tp_color = t["tp_box"]
+        # ── 1. Отрисовка исторических свечей (слева от бокса) ──
+        for i in range(n_hist):
+            row = df_hist.iloc[i]
+            o, h, l, c = float(row['open']), float(row['high']), float(row['low']), float(row['close'])
+            is_up = c >= o
+            c_color = t["up_candle"] if is_up else t["down_candle"]
+            ax.plot([i, i], [l, h], color=c_color, linewidth=wick_width, zorder=2)
+            b_bot = min(o, c)
+            b_h = max(abs(c - o), (h - l) * 0.01)
+            rect = Rectangle((i - candle_width / 2, b_bot), candle_width, b_h, facecolor=c_color, edgecolor=c_color, linewidth=0.8, zorder=3)
+            ax.add_patch(rect)
+
+        # ── 2. Позиционный бокс (ровно от сигнальной свечи) ──
+        future_padding_bars = max(n_outcome + 4, 15)
+        box_width = future_padding_bars - 2
+        x_box_start = n_hist - 0.5
+        x_box_end = x_box_start + box_width
+        total_x_span = n_hist + future_padding_bars
+
+        reward_pips = abs(take_profit - entry) * pip_mult
+        risk_pips = abs(entry - stop_loss) * pip_mult
+        rr = (reward_pips / risk_pips) if risk_pips > 0 else 2.0
 
         if direction == "LONG":
             profit_height = max(0.00001, take_profit - entry)
             risk_height = max(0.00001, entry - stop_loss)
             rect_tp = Rectangle(
-                (x_start, entry), x_end - x_start, profit_height,
-                facecolor=tp_color, edgecolor='none', alpha=0.15, zorder=1
+                (x_box_start, entry), box_width, profit_height,
+                facecolor=t["tp_box"], edgecolor=t["tp_box"], alpha=0.22, linewidth=1.2, zorder=1
             )
             rect_sl = Rectangle(
-                (x_start, stop_loss), x_end - x_start, risk_height,
-                facecolor=sl_color, edgecolor='none', alpha=0.15, zorder=1
+                (x_box_start, stop_loss), box_width, risk_height,
+                facecolor=t["sl_box"], edgecolor=t["sl_box"], alpha=0.22, linewidth=1.2, zorder=1
             )
+            tp_text_y = entry + profit_height * 0.5
+            sl_text_y = stop_loss + risk_height * 0.5
         else:
             profit_height = max(0.00001, entry - take_profit)
             risk_height = max(0.00001, stop_loss - entry)
             rect_tp = Rectangle(
-                (x_start, take_profit), x_end - x_start, profit_height,
-                facecolor=tp_color, edgecolor='none', alpha=0.15, zorder=1
+                (x_box_start, take_profit), box_width, profit_height,
+                facecolor=t["tp_box"], edgecolor=t["tp_box"], alpha=0.22, linewidth=1.2, zorder=1
             )
             rect_sl = Rectangle(
-                (x_start, entry), x_end - x_start, risk_height,
-                facecolor=sl_color, edgecolor='none', alpha=0.15, zorder=1
+                (x_box_start, entry), box_width, risk_height,
+                facecolor=t["sl_box"], edgecolor=t["sl_box"], alpha=0.22, linewidth=1.2, zorder=1
             )
+            tp_text_y = take_profit + profit_height * 0.5
+            sl_text_y = entry + risk_height * 0.5
 
         ax.add_patch(rect_tp)
         ax.add_patch(rect_sl)
 
-        # Горизонтальные линии уровней сделки
-        ax.plot([x_start, x_end], [entry, entry], color=t["entry_line"], linewidth=1.5, linestyle='--', alpha=0.85, zorder=3)
-        ax.plot([x_start, x_end], [stop_loss, stop_loss], color=sl_color, linewidth=1.4, linestyle='-', alpha=0.9, zorder=3)
-        ax.plot([x_start, x_end], [take_profit, take_profit], color=tp_color, linewidth=1.4, linestyle='-', alpha=0.9, zorder=3)
+        # Линии уровней внутри бокса
+        ax.plot([x_box_start, x_box_end], [entry, entry], color=t["entry_line"], linewidth=1.6, linestyle='-', zorder=2)
+        ax.plot([x_box_start, x_box_end], [stop_loss, stop_loss], color=t["sl_box"], linewidth=1.2, linestyle='-', zorder=2)
+        ax.plot([x_box_start, x_box_end], [take_profit, take_profit], color=t["tp_box"], linewidth=1.2, linestyle='-', zorder=2)
 
-        # ── 2. Отрисовка японских свечей ──
-        candle_width = 0.60
-        wick_width = 1.0
+        # Плашки внутри бокса — 100% solid с micro-border для безупречной читаемости
+        box_center_x = x_box_start + box_width / 2
+        badge_tp_text = f"Target: +{reward_pips:.1f} pips" + "\n" + f"R:R = 1:{rr:.1f}"
+        ax.text(
+            box_center_x, tp_text_y, badge_tp_text,
+            color='#ffffff', fontsize=8.5, fontweight='bold', ha='center', va='center', zorder=10,
+            bbox=dict(boxstyle='round,pad=0.3', facecolor=t["tp_box"], alpha=1.0, edgecolor='#ffffff', linewidth=0.4)
+        )
+        ax.text(
+            box_center_x, sl_text_y, f"Stop: -{risk_pips:.1f} pips",
+            color='#ffffff', fontsize=8.5, fontweight='bold', ha='center', va='center', zorder=10,
+            bbox=dict(boxstyle='round,pad=0.3', facecolor=t["sl_box"], alpha=1.0, edgecolor='#ffffff', linewidth=0.4)
+        )
 
-        for i in range(n_candles):
-            row = df_chart.iloc[i]
+        # ── 3. Отрисовка РЕАЛЬНЫХ СВЕЧЕЙ СДЕЛКИ ВНУТРИ БОКСА ──
+        for j in range(n_outcome):
+            idx = n_hist + j
+            row = df_outcome.iloc[j]
             o, h, l, c = float(row['open']), float(row['high']), float(row['low']), float(row['close'])
             is_up = c >= o
             c_color = t["up_candle"] if is_up else t["down_candle"]
-
-            ax.plot([i, i], [l, h], color=c_color, linewidth=wick_width, zorder=4)
-
-            body_bottom = min(o, c)
-            body_height = max(abs(c - o), (h - l) * 0.01)
-
-            rect = Rectangle(
-                (i - candle_width / 2, body_bottom),
-                candle_width, body_height,
-                facecolor=c_color,
-                edgecolor=c_color,
-                linewidth=0.8,
-                zorder=5
-            )
+            ax.plot([idx, idx], [l, h], color=c_color, linewidth=wick_width, zorder=4)
+            b_bot = min(o, c)
+            b_h = max(abs(c - o), (h - l) * 0.01)
+            rect = Rectangle((idx - candle_width / 2, b_bot), candle_width, b_h, facecolor=c_color, edgecolor=c_color, linewidth=0.8, zorder=5)
             ax.add_patch(rect)
 
-        # ── 3. Маркер точки закрытия сделки на последней свече ──
-        last_x = n_candles - 1
-        exit_badge_color = tp_color if is_tp else (sl_color if is_sl else "#e5a50a")
-        
-        ax.scatter([last_x], [close_price], color=exit_badge_color, s=90, zorder=8, edgecolors='#ffffff', linewidth=1.5)
+        # ── 4. Маркер точки закрытия на последней свече ──
+        last_idx = n_hist + n_outcome - 1
+        exit_badge_color = t["tp_box"] if is_tp else (t["sl_box"] if is_sl else "#2962ff")
+        ax.scatter([last_idx], [close_price], color=exit_badge_color, s=95, edgecolors='#ffffff', linewidth=1.6, zorder=8)
+        ax.plot([x_box_start, last_idx], [close_price, close_price], color=exit_badge_color, linestyle='--', linewidth=1.1, alpha=0.75, zorder=6)
 
-        if is_tp:
-            badge_title = f"[TP] TAKE PROFIT HIT!\n{profit_sign}{profit_usd:.2f} USD (+{abs(pnl_pips):.1f} p)"
-        elif is_sl:
-            badge_title = f"[SL] STOP LOSS HIT\n-{abs(profit_usd):.2f} USD (-{abs(pnl_pips):.1f} p)"
-        elif is_manual:
-            badge_title = f"[MANUAL] MANUAL CLOSE\n{profit_sign}{profit_usd:.2f} USD ({profit_sign}{pnl_pips:.1f} p)"
-        else:
-            badge_title = f"CLOSED: {profit_sign}{profit_usd:.2f} USD"
-
-        ax.annotate(
-            badge_title,
-            xy=(last_x, close_price),
-            xytext=(last_x - 7, close_price),
-            fontsize=9.0, fontweight='bold', color='#ffffff',
-            va='center', ha='right', zorder=9,
-            bbox=dict(boxstyle='round,pad=0.35', facecolor=exit_badge_color, alpha=0.92, edgecolor='#ffffff', linewidth=1.0),
-            arrowprops=dict(arrowstyle='->', color='#ffffff', lw=1.2)
-        )
-
-        # ── 4. Границы осей X и Y ──
-        total_x_span = n_candles + 4
-        ax.set_xlim(-1, total_x_span)
-
-        all_y = list(df_chart['low']) + list(df_chart['high']) + [entry, stop_loss, take_profit, close_price]
+        # ── 5. Границы осей ──
+        all_candles_low = list(df_hist['low']) + list(df_outcome['low'])
+        all_candles_high = list(df_hist['high']) + list(df_outcome['high'])
+        all_y = all_candles_low + all_candles_high + [entry, stop_loss, take_profit, close_price]
         y_min, y_max = min(all_y), max(all_y)
-        y_padding = max(0.0005, (y_max - y_min) * 0.10)
+        y_padding = max(0.0005, (y_max - y_min) * 0.12)
         ax.set_ylim(y_min - y_padding, y_max + y_padding)
+        ax.set_xlim(-1, total_x_span)
 
         ax.spines['top'].set_visible(False)
         ax.spines['bottom'].set_color(t["axis_color"])
@@ -483,25 +515,31 @@ def generate_outcome_chart(
         ax.tick_params(axis='y', colors=t["subtext_color"], labelsize=8.5, length=3)
         ax.tick_params(axis='x', colors=t["subtext_color"], labelsize=8, length=3)
 
-        # ── 5. Плашки цен на правой шкале ──
-        x_badge = total_x_span
-
-        def add_badge(y_val, text, bg_color, text_color='#ffffff'):
+        # ── 6. Правые плашки цен ──
+        def add_price_badge(y_val, text, bg_color, text_color='#ffffff'):
             ax.text(
-                x_badge, y_val, f" {text} ",
+                total_x_span, y_val, f" {text} ",
                 color=text_color, fontsize=8.5, fontweight='bold',
                 va='center', ha='left',
                 bbox=dict(boxstyle='square,pad=0.25', facecolor=bg_color, edgecolor='none'),
                 clip_on=False, zorder=10
             )
 
-        add_badge(stop_loss, f"SL {p_fmt.format(stop_loss)}", sl_color)
-        add_badge(entry, f"ENTRY {p_fmt.format(entry)}", '#5d606b')
-        add_badge(take_profit, f"TP {p_fmt.format(take_profit)}", tp_color)
-        add_badge(close_price, f"EXIT {p_fmt.format(close_price)}", exit_badge_color)
+        add_price_badge(take_profit, p_fmt.format(take_profit), t["tp_box"])
+        add_price_badge(close_price, p_fmt.format(close_price), exit_badge_color)
+        add_price_badge(entry, p_fmt.format(entry), "#4a4e58")
+        add_price_badge(stop_loss, p_fmt.format(stop_loss), t["sl_box"])
 
-        # ── 6. Заголовок и метаданные ──
-        res_str = "TAKE PROFIT" if is_tp else ("STOP LOSS" if is_sl else "MANUAL CLOSE")
+        # ── 7. Заголовок и метаданные ──
+        if is_tp:
+            res_str = "TAKE PROFIT"
+        elif is_sl:
+            res_str = "STOP LOSS"
+        elif is_manual:
+            res_str = "MANUAL CLOSE"
+        else:
+            res_str = "БЕЗУБЫТОК"
+
         title_text = f"{symbol} · {timeframe.upper()} · SMART TRADER BOT · [РЕЗУЛЬТАТ: {res_str}]"
         ax.text(
             0.015, 0.965, title_text, transform=ax.transAxes,
@@ -518,25 +556,38 @@ def generate_outcome_chart(
             color=t["subtext_color"], fontsize=8.5, va='top', ha='left'
         )
 
+        # Водяной знак TradingView
         ax.text(
-            0.015, 0.03, "TradingView Style", transform=ax.transAxes,
+            0.015, 0.03, "17 TradingView", transform=ax.transAxes,
             color=t["watermark"], fontsize=12, fontweight='bold', va='bottom', ha='left'
         )
 
-        # Временные метки X
-        if 'timestamp' in df_chart.columns:
-            step = max(1, n_candles // 6)
-            x_ticks = list(range(0, n_candles, step))
-            x_labels = []
-            for x_idx in x_ticks:
-                ts = df_chart['timestamp'].iloc[x_idx]
-                if isinstance(ts, str):
-                    ts = pd.to_datetime(ts)
-                x_labels.append(ts.strftime('%d %b %H:%M'))
-            ax.set_xticks(x_ticks)
-            ax.set_xticklabels(x_labels, rotation=0, ha='center', fontsize=7.5, color=t["subtext_color"])
-        else:
-            ax.set_xticks([])
+        # ── 8. Временные метки по оси X ──
+        n_total_drawn = n_hist + n_outcome
+        step = max(1, n_total_drawn // 6)
+        x_ticks = list(range(0, n_hist, step))
+        if (n_total_drawn - 1) not in x_ticks:
+            x_ticks.append(n_total_drawn - 1)
+
+        x_labels = []
+        for x_idx in x_ticks:
+            if x_idx < n_hist:
+                ts_val = df_hist['timestamp'].iloc[x_idx] if 'timestamp' in df_hist.columns else None
+            else:
+                out_i = x_idx - n_hist
+                ts_val = df_outcome['timestamp'].iloc[out_i] if 'timestamp' in df_outcome.columns else None
+
+            if ts_val is not None:
+                try:
+                    ts_dt = pd.to_datetime(ts_val)
+                    x_labels.append(ts_dt.strftime('%d %b %H:%M'))
+                except Exception:
+                    x_labels.append(str(ts_val)[:12])
+            else:
+                x_labels.append(str(x_idx))
+
+        ax.set_xticks(x_ticks)
+        ax.set_xticklabels(x_labels, rotation=0, ha='center', fontsize=7.5, color=t["subtext_color"])
 
         plt.tight_layout()
 

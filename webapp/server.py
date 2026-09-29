@@ -533,13 +533,14 @@ async def bridge_post_report(request: web.Request) -> web.Response:
             try:
                 from market.data_fetcher import DataFetcher
                 from utils.chart_generator import generate_outcome_chart
-                df_c = await DataFetcher().fetch_ohlcv(symbol, "H1", limit=60)
+                df_c = await DataFetcher().fetch_ohlcv(symbol, "H1", limit=75)
                 if df_c is not None and not df_c.empty:
                     chart_bytes = generate_outcome_chart(
                         df=df_c, symbol=symbol, direction=direction,
                         entry=entry, stop_loss=sl_val, take_profit=tp_val,
                         close_price=price, status="MANUAL_CLOSE",
-                        profit_usd=profit, timeframe="H1"
+                        profit_usd=profit, timeframe="H1",
+                        signal_time=(sig.get('created_at') or sig.get('activated_at')) if sig else None
                     )
             except Exception as chart_err:
                 logger.error("Failed to generate manual close chart: %s", chart_err)
@@ -614,14 +615,15 @@ async def bridge_post_report(request: web.Request) -> web.Response:
             try:
                 from market.data_fetcher import DataFetcher
                 from utils.chart_generator import generate_outcome_chart
-                df_c = await DataFetcher().fetch_ohlcv(symbol, "H1", limit=60)
+                df_c = await DataFetcher().fetch_ohlcv(symbol, "H1", limit=75)
                 if df_c is not None and not df_c.empty:
                     status_str = "TP" if is_tp else ("SL" if is_sl else "CLOSED")
                     chart_bytes = generate_outcome_chart(
                         df=df_c, symbol=symbol, direction=direction,
                         entry=entry, stop_loss=sl_val, take_profit=tp_val,
                         close_price=price, status=status_str,
-                        profit_usd=profit, timeframe="H1"
+                        profit_usd=profit, timeframe="H1",
+                        signal_time=(sig.get('created_at') or sig.get('activated_at')) if sig else None
                     )
             except Exception as chart_err:
                 logger.error("Failed to generate deal closed chart: %s", chart_err)
