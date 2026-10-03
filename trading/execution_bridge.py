@@ -39,6 +39,15 @@ class ExecutionBridge:
         # Кэш живых котировок от советника MT5: символ -> {"bid": float, "ask": float, "time": datetime}
         self.live_quotes: Dict[str, Dict[str, Any]] = {}
 
+        # Институциональный риск-менеджмент для реального счёта
+        self.max_daily_loss_pct: float = getattr(config, 'MAX_DAILY_DRAWDOWN_PCT', 3.0)
+        self.max_concurrent_positions: int = getattr(config, 'MAX_CONCURRENT_POSITIONS', 3)
+        self.daily_loss_locked: bool = False
+        self.daily_lock_reason: str = ""
+        self.daily_lock_alerted_date: str = ""
+        self.current_trade_date: str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        self.today_stats_cache: Dict[str, Any] = {}
+
     def set_enabled(self, enabled: bool):
         self.enabled = enabled
         logger.info("Auto-Trading Bridge enabled set to: %s", enabled)
@@ -69,8 +78,14 @@ class ExecutionBridge:
             enabled_str = await get_bot_setting("autotrade_enabled", "")
             if enabled_str:
                 self.enabled = (enabled_str.lower() in ("true", "1", "yes"))
-            logger.info("Loaded Bridge settings from DB: lot=%.2f, risk=%.1f%%, lot_mode=%s, enabled=%s",
-                        self.default_lot, self.default_risk, self.lot_mode, self.enabled)
+            daily_loss_str = await get_bot_setting("max_daily_loss_pct", "")
+            if daily_loss_str:
+                self.max_daily_loss_pct = max(0.5, min(15.0, float(daily_loss_str)))
+            max_pos_str = await get_bot_setting("max_concurrent_positions", "")
+            if max_pos_str:
+                self.max_concurrent_positions = max(1, min(10, int(max_pos_str)))
+            logger.info("Loaded Bridge settings from DB: lot=%.2f, risk=%.1f%%, lot_mode=%s, enabled=%s, daily_loss_limit=%.1f%%, max_positions=%d",
+                        self.default_lot, self.default_risk, self.lot_mode, self.enabled, self.max_daily_loss_pct, self.max_concurrent_positions)
         except Exception as e:
             logger.error("Failed to load Bridge settings from DB: %s", e)
 
@@ -191,6 +206,147 @@ class ExecutionBridge:
             "orders_count": len(self.mt5_telemetry["orders"]) if is_online else 0,
         }
 
+    def set_daily_loss_limit(self, pct: float):
+        self.max_daily_loss_pct = max(0.5, min(15.0, pct))
+        logger.info("Auto-Trading Daily Loss Limit set to: %.1f%%", self.max_daily_loss_pct)
+
+    def set_max_positions(self, count: int):
+        self.max_concurrent_positions = max(1, min(10, count))
+        logger.info("Auto-Trading Max Concurrent Positions set to: %d", self.max_concurrent_positions)
+
+    def unlock_daily_loss(self):
+        """Ручной сброс блокировки дневного риска администратором."""
+        self.daily_loss_locked = False
+        self.daily_lock_reason = ""
+        logger.info("Daily loss lock was MANUALLY RESET by admin.")
+
+    def check_daily_loss(self, today_closed_pnl: float, today_deals_count: int = 0) -> tuple[bool, float, float, float]:
+        """
+        Проверяет соблюдение Hard Daily Drawdown Limit.
+        Возвращает (is_locked, today_net_pnl, today_drawdown_pct, daily_start_balance).
+        """
+        now_utc = datetime.now(timezone.utc)
+        today_str = now_utc.strftime("%Y-%m-%d")
+
+        # Автоматический сброс дневного замка при наступлении нового торгового дня UTC (00:00)
+        if today_str != self.current_trade_date:
+            logger.info("New trading day UTC: %s (was %s). Resetting daily loss lock.", today_str, self.current_trade_date)
+            self.current_trade_date = today_str
+            self.daily_loss_locked = False
+            self.daily_lock_reason = ""
+            self.daily_lock_alerted_date = ""
+
+        is_online, _ = self.is_mt5_online()
+        if not is_online:
+            return self.daily_loss_locked, 0.0, 0.0, 0.0
+
+        bal = float(self.mt5_telemetry.get("balance", 0.0))
+        eq = float(self.mt5_telemetry.get("equity", 0.0))
+        if bal <= 0:
+            return self.daily_loss_locked, 0.0, 0.0, 0.0
+
+        floating_pnl = eq - bal
+        today_net_pnl = today_closed_pnl + floating_pnl
+        daily_start_balance = bal - today_closed_pnl
+        if daily_start_balance <= 0:
+            daily_start_balance = bal
+
+        self.today_stats_cache = {
+            "closed_pnl": today_closed_pnl,
+            "floating_pnl": floating_pnl,
+            "net_pnl": today_net_pnl,
+            "start_balance": daily_start_balance,
+            "deals_count": today_deals_count,
+            "date": today_str
+        }
+
+        # Если суммарный дневной результат отрицательный, проверяем превышение лимита
+        if today_net_pnl < 0:
+            dd_pct = (abs(today_net_pnl) / daily_start_balance) * 100.0
+            if dd_pct >= self.max_daily_loss_pct:
+                self.daily_loss_locked = True
+                self.daily_lock_reason = f"Дневная просадка {dd_pct:.2f}% >= лимита {self.max_daily_loss_pct:.1f}% (PnL: {today_net_pnl:.2f} USD)"
+                return True, today_net_pnl, dd_pct, daily_start_balance
+            return False, today_net_pnl, dd_pct, daily_start_balance
+
+        return False, today_net_pnl, 0.0, daily_start_balance
+
+    def can_open_new_position(self, symbol: str, trading_mode: str = "prop") -> tuple[bool, str]:
+        """
+        Институциональная 10-факторная валидация перед открытием ордера на реальные деньги.
+        Возвращает (allowed: bool, reason: str).
+        """
+        # 1. Проверка активности автопилота
+        if not self.enabled:
+            return False, "Автопилот выключен"
+
+        # 2. Проверка Hard Daily Drawdown Lock
+        if self.daily_loss_locked:
+            return False, f"Защита от дневного убытка: {self.daily_lock_reason}"
+
+        # 3. Проверка институционального недельного торгового окна
+        w_open, w_reason = config.is_weekly_trading_window_open()
+        if not w_open:
+            return False, f"Торговое окно закрыто: {w_reason}"
+
+        # 4. Проверка связи с терминалом MT5
+        is_online, ping = self.is_mt5_online()
+        if not is_online:
+            return False, f"MT5 не в сети (задержка {ping}с)"
+
+        # 5. Проверка режима депозита: в режиме 'micro' золото отключено
+        sym_u = symbol.upper()
+        if trading_mode == "micro" and sym_u == "XAUUSD":
+            return False, "Золото (XAUUSD) отключено в режиме «Микро-депозит»"
+
+        # 6. Лимит одновременно активных слотов (позиции + отложенные ордера)
+        positions = self.mt5_telemetry.get("positions") or []
+        orders = self.mt5_telemetry.get("orders") or []
+        active_slots = len(positions) + len(orders)
+        
+        max_slots = 1 if trading_mode == "micro" else self.max_concurrent_positions
+        if active_slots >= max_slots:
+            return False, f"Лимит слотов исчерпан ({active_slots}/{max_slots} занято)"
+
+        # 7. Защита от дублирования инструмента: не более 1 позиции на пару
+        for p in positions:
+            if str(p.get("symbol", "")).upper() == sym_u:
+                return False, f"Позиция по {sym_u} уже открыта в рынке"
+        for o in orders:
+            if str(o.get("symbol", "")).upper() == sym_u:
+                return False, f"Отложенный ордер по {sym_u} уже выставлен"
+
+        # 8. Защита от корреляции валют (Currency Correlation Exposure Cap)
+        # Максимум 2 позиции, содержащие одну и ту же базовую или котируемую валюту
+        if len(sym_u) == 6:
+            base_curr = sym_u[:3]
+            quote_curr = sym_u[3:]
+            active_symbols = [str(p.get("symbol", "")).upper() for p in positions] + [str(o.get("symbol", "")).upper() for o in orders]
+            base_count = sum(1 for s in active_symbols if base_curr in s)
+            quote_count = sum(1 for s in active_symbols if quote_curr in s)
+            max_curr = getattr(config, 'MAX_CURRENCY_EXPOSURE', 2)
+            if base_count >= max_curr:
+                return False, f"Превышен лимит корреляции по валюте {base_curr} ({base_count}/{max_curr})"
+            if quote_count >= max_curr:
+                return False, f"Превышен лимит корреляции по валюте {quote_curr} ({quote_count}/{max_curr})"
+
+        # 9. Проверка свободной маржи
+        bal = float(self.mt5_telemetry.get("balance", 0.0))
+        mf = float(self.mt5_telemetry.get("margin_free", 0.0))
+        min_usd = getattr(config, 'MIN_MARGIN_FREE_USD', 50.0)
+        min_pct = getattr(config, 'MIN_MARGIN_FREE_PCT', 25.0)
+        if bal > 0:
+            mf_pct = (mf / bal) * 100.0
+            if mf < min_usd or mf_pct < min_pct:
+                return False, f"Недостаточно маржи: ${mf:.2f} ({mf_pct:.1f}% свободных средств)"
+
+        # 10. Защита от расширения спреда (Spread Spike Guard)
+        is_spread_ok, cur_spread, max_s = self.is_spread_acceptable(sym_u)
+        if not is_spread_ok:
+            return False, f"Спред расширен: {cur_spread:.1f} > max {max_s:.1f} pips"
+
+        return True, "OK"
+
     def format_terminal_dashboard(self) -> str:
         is_online, ping = self.is_mt5_online()
         t = self.mt5_telemetry
@@ -220,6 +376,25 @@ class ExecutionBridge:
             pnl_badge = "—"
 
         mode_badge = "Фиксированный лот" if self.lot_mode == "fixed" else "Динамический (% риска)"
+        
+        # Институциональный блок риск-контроля
+        today_cache = getattr(self, 'today_stats_cache', {})
+        today_pnl = today_cache.get("net_pnl", (t.get('equity', 0.0) - t.get('balance', 0.0)) if is_online else 0.0)
+        today_pnl_sign = "+" if today_pnl >= 0 else ""
+        start_b = today_cache.get("start_balance", t.get('balance', 0.0) if is_online else 0.0)
+        today_dd_pct = (abs(today_pnl) / start_b * 100.0) if (start_b > 0 and today_pnl < 0) else 0.0
+        
+        lock_badge = "🟢 Норма" if not self.daily_loss_locked else f"🚨 <b>БЛОКИРОВКА</b> ({self.daily_lock_reason})"
+        daily_limit_str = f"{self.max_daily_loss_pct:.1f}%"
+        
+        bal_val = float(t.get('balance', 0.0))
+        mf_val = float(t.get('margin_free', 0.0))
+        mf_pct = (mf_val / bal_val * 100.0) if bal_val > 0 else 0.0
+        margin_health = f"{mf_pct:.1f}% (Безопасно)" if mf_pct >= 35.0 else f"{mf_pct:.1f}% (Внимание)"
+
+        active_slots = len(t.get('positions') or []) + len(t.get('orders') or [])
+        max_slots = self.max_concurrent_positions
+
         lines = [
             "🖥 <b>ТЕРМИНАЛ METATRADER 5 | ПУЛЬТ УПРАВЛЕНИЯ</b>",
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
@@ -228,11 +403,16 @@ class ExecutionBridge:
             f"👤 <b>Счёт:</b> <code>#{account_str}</code>",
             f"💰 <b>Баланс:</b> <code>{balance_str}</code>",
             f"📈 <b>Эквити (Средства):</b> <code>{equity_str}</code>",
-            f"🛡 <b>Свободная маржа:</b> <code>{margin_str}</code>",
+            f"🛡 <b>Свободная маржа:</b> <code>{margin_str}</code> ({margin_health})",
             f"💵 <b>Плавающий PnL:</b> {pnl_badge}",
             f"🤖 <b>Автопилот:</b> {'🟢 ВКЛЮЧЕН' if self.enabled else '🔴 ВЫКЛЮЧЕН'}",
             f"⚖️ <b>Режим объема:</b> <code>{mode_badge}</code>",
             f"📊 <b>Рабочий лот:</b> <code>{self.default_lot:.2f}</code> | <b>Риск:</b> <code>{self.default_risk:.1f}%</code>",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "🛡 <b>ИНСТИТУЦИОНАЛЬНЫЙ РИСК-КОНТРОЛЬ:</b>",
+            f"🔒 <b>Дневной замок:</b> {lock_badge}",
+            f"📉 <b>PnL сегодня:</b> <b>{today_pnl_sign}{today_pnl:.2f} USD</b> ({today_pnl_sign}{today_dd_pct:.1f}%) | <b>Лимит:</b> <code>{daily_limit_str}</code>",
+            f"📊 <b>Активные слоты:</b> <code>{active_slots} / {max_slots}</code> (макс. {max_slots} сделки)",
         ]
 
         # Статус недельного торгового окна

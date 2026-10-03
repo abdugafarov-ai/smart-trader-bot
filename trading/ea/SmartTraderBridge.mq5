@@ -19,11 +19,11 @@ input int      InpPollInterval = 3;                       // Опрос серв
 input ulong    InpMagicNumber  = 888001;                   // Magic Number ордеров
 
 input group "=== УПРАВЛЕНИЕ РИСКОМ ==="
-input int      InpMaxOpenOrders = 7;                       // Макс. одновременно активных позиций/ордеров
+input int      InpMaxOpenOrders = 3;                       // Макс. одновременно активных позиций/ордеров
 input bool     InpUseAutoRisk  = false;                    // Использовать расчет лота от баланса (%)
 input double   InpRiskPercent  = 1.0;                      // Процент риска на сделку (%)
 input double   InpFixedLot     = 0.01;                     // Фиксированный лот (если AutoRisk = false)
-input int      InpSlippage     = 10;                       // Проскальзывание в пунктах
+input int      InpSlippage     = 20;                       // Проскальзывание в пунктах
 input bool     InpUseAutoBE    = true;                     // Использовать авто-безубыток (+1.0R защищен)
 
 //--- Глобальные переменные
@@ -526,6 +526,17 @@ void ParseAndExecuteOrders(string json)
             lot = MathFloor(lot / step_l) * step_l;
          lot = MathMax(min_l, MathMin(max_l, lot));
          PrintFormat("📊 [SmartTrader] %s: Фиксированный лот из команды бота -> %.2f", broker_symbol, lot);
+      }
+
+      // Институциональная маржинальная защита (Margin Guard)
+      double free_margin = AccountInfoDouble(ACCOUNT_MARGIN_FREE);
+      if(free_margin < 50.0)
+      {
+         string err_margin = StringFormat("Недостаточно свободной маржи: %.2f USD (< 50.0)", free_margin);
+         Print("⛔ [SmartTrader] ОТМЕНА: ", broker_symbol, ". ", err_margin);
+         ReportExecution(pair, "REJECTED_MARGIN", 0.0, 0.0, err_margin, sig_id);
+         if(sig_id > 0) MarkSignalProcessed(sig_id);
+         continue;
       }
 
       // Автоматическое определение режима заполнения для брокера

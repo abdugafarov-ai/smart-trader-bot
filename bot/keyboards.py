@@ -250,15 +250,23 @@ def autotrade_keyboard(
     mode: str = "micro",
     current_lot: float = 0.01,
     current_risk: float = 1.0,
-    lot_mode: str = "fixed"
+    lot_mode: str = "fixed",
+    daily_limit: float = 3.0,
+    daily_locked: bool = False
 ) -> InlineKeyboardMarkup:
-    """Клавиатура быстрого управления авто-торговлей MT5 с интерактивными галочками выбора."""
+    """Клавиатура быстрого управления авто-торговлей MT5 с институциональным риск-контролем."""
     builder = InlineKeyboardBuilder()
     toggle_text = "🔴 ПРИОСТАНОВИТЬ АВТОПИЛОТ" if enabled else "🟢 ВКЛЮЧИТЬ АВТОПИЛОТ"
     toggle_cb = "autotrade:off" if enabled else "autotrade:on"
     builder.row(
         InlineKeyboardButton(text=toggle_text, callback_data=toggle_cb)
     )
+
+    if daily_locked:
+        builder.row(
+            InlineKeyboardButton(text="🔓 СБРОСИТЬ ДНЕВНОЙ ЗАМОК", callback_data="autotrade:unlock_daily")
+        )
+
     # Отдельные кнопки для выбора профиля (Radio-style)
     if mode == "micro":
         btn_micro = InlineKeyboardButton(text="✅ 🛡️ Режим «Микро-депозит»", callback_data="autotrade:mode_noop:micro")
@@ -268,6 +276,16 @@ def autotrade_keyboard(
         btn_prop  = InlineKeyboardButton(text="✅ 👑 Режим: Институционал", callback_data="autotrade:mode_noop:prop")
     builder.row(btn_micro)
     builder.row(btn_prop)
+
+    # Дневной лимит допустимого убытка (Hard Daily Drawdown Guard)
+    dl_2 = "✅ 🛑 Стоп 2%" if abs(daily_limit - 2.0) < 0.1 else "🛑 Стоп 2%"
+    dl_3 = "✅ 🛑 Стоп 3%" if abs(daily_limit - 3.0) < 0.1 else "🛑 Стоп 3%"
+    dl_5 = "✅ 🛑 Стоп 5%" if abs(daily_limit - 5.0) < 0.1 else "🛑 Стоп 5%"
+    builder.row(
+        InlineKeyboardButton(text=dl_2, callback_data="autotrade:daily_limit:2.0"),
+        InlineKeyboardButton(text=dl_3, callback_data="autotrade:daily_limit:3.0"),
+        InlineKeyboardButton(text=dl_5, callback_data="autotrade:daily_limit:5.0")
+    )
 
     # Пресеты фиксированного лота с галочками
     is_fixed = (lot_mode == "fixed")

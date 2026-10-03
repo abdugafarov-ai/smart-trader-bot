@@ -309,10 +309,49 @@ async def bridge_get_orders(request: web.Request) -> web.Response:
 
         use_risk_flag = 1 if (getattr(bridge_manager, 'lot_mode', 'fixed') == 'risk') else 0
 
+        # 1. Проверка Hard Daily Drawdown Limit
+        from db.database import get_today_broker_pnl, get_bot_setting
+        today_stats = await get_today_broker_pnl()
+        is_daily_locked, today_net_pnl, today_dd_pct, start_bal = bridge_manager.check_daily_loss(
+            today_closed_pnl=today_stats.get("total_pnl", 0.0),
+            today_deals_count=today_stats.get("deals_count", 0)
+        )
+
+        today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        if is_daily_locked:
+            # Отправляем экстренное тревожное сообщение в Telegram один раз за день
+            if bridge_manager.daily_lock_alerted_date != today_str:
+                bridge_manager.daily_lock_alerted_date = today_str
+                alert_text = (
+                    f"🚨 <b>ВНИМАНИЕ: СРАБОТАЛ HARD DAILY DRAWDOWN LIMIT!</b>\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"📉 Дневной PnL: <b>{today_net_pnl:.2f} USD</b> (<code>-{today_dd_pct:.2f}%</code>)\n"
+                    f"🛑 Лимит допустимого убытка: <b>{bridge_manager.max_daily_loss_pct:.1f}%</b>\n"
+                    f"🔒 Авто-торговля <b>АВТОМАТИЧЕСКИ ЗАМОРОЖЕНА</b> до 00:00 UTC.\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"💼 <i>Капитал защищен. Алгоритм сберег баланс и предотвратил серию тильтовых стопов. "
+                    f"Сбросить блокировку вручную при необходимости можно в меню настроек автопилота.</i>"
+                )
+                await _send_telegram_notification(alert_text)
+
+            return web.json_response({
+                "status": "ok",
+                "autotrade_enabled": False,
+                "daily_loss_locked": True,
+                "panic_close_all": panic,
+                "lot": bridge_manager.default_lot,
+                "risk_percent": bridge_manager.default_risk,
+                "use_auto_risk": use_risk_flag,
+                "orders": [],
+                "reason": bridge_manager.daily_lock_reason,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            })
+
         if not bridge_manager.enabled:
             return web.json_response({
                 "status": "ok",
                 "autotrade_enabled": False,
+                "daily_loss_locked": False,
                 "panic_close_all": panic,
                 "lot": bridge_manager.default_lot,
                 "risk_percent": bridge_manager.default_risk,
@@ -321,7 +360,7 @@ async def bridge_get_orders(request: web.Request) -> web.Response:
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             })
 
-        # Берем активные и свежие ожидающие сигналы за последние 4 часа
+        # Берем активные и свежие сигналы из базы данных
         from db.database import DB_PATH
         import aiosqlite
         async with aiosqlite.connect(str(DB_PATH)) as db:
@@ -334,11 +373,33 @@ async def bridge_get_orders(request: web.Request) -> web.Response:
             rows = await cursor.fetchall()
             active = [dict(r) for r in rows]
 
+        trading_mode = await get_bot_setting("trading_mode", "micro")
         orders = []
+        current_active_slots = len(bridge_manager.mt5_telemetry.get("positions") or []) + len(bridge_manager.mt5_telemetry.get("orders") or [])
+        max_allowed_slots = 1 if trading_mode == "micro" else bridge_manager.max_concurrent_positions
+        dispatched_symbols = set()
+
         for sig in (active or []):
+            sym = sig.get("symbol")
+            if not sym or sym in dispatched_symbols:
+                continue
+
+            # Институциональная многофакторная валидация перед входом в рынок
+            can_open, hold_reason = bridge_manager.can_open_new_position(sym, trading_mode=trading_mode)
+            if not can_open:
+                logger.debug("Signal #%s (%s) held by Risk Guard: %s", sig.get("id"), sym, hold_reason)
+                continue
+
+            # Проверка лимита свободных слотов в текущем цикле отправки
+            if (current_active_slots + len(orders)) >= max_allowed_slots:
+                logger.info("Batch slot capacity reached: %d/%d (holding remaining signals)",
+                            current_active_slots + len(orders), max_allowed_slots)
+                break
+
+            dispatched_symbols.add(sym)
             orders.append({
                 "id": sig.get("id"),
-                "symbol": sig.get("symbol"),
+                "symbol": sym,
                 "direction": sig.get("direction"), # LONG или SHORT
                 "order_type": sig.get("order_type", "BUY_MARKET"),
                 "entry": sig.get("entry_price"),

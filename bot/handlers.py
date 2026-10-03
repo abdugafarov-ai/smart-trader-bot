@@ -724,7 +724,9 @@ async def cb_menu_actions(callback: CallbackQuery):
             f"{profile_desc}\n\n"
             f"📊 <b>Рабочий лот:</b> {lot_status_badge}\n"
             f"⚖️ <b>Риск на сделку:</b> {risk_status_badge}\n"
-            f"💱 <b>Инструментов в пуле:</b> <code>{pool_str}</code>\n\n"
+            f"💱 <b>Инструментов в пуле:</b> <code>{pool_str}</code>\n"
+        f"🛑 <b>Дневной лимит просадки:</b> <code>{bridge_manager.max_daily_loss_pct:.1f}%</code> "
+        f"{'(🚨 ЗАБЛОКИРОВАН)' if bridge_manager.daily_loss_locked else '(🟢 Норма)'}\n\n"
             f"Используйте кнопки ниже для быстрого управления 👇\n"
             f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         )
@@ -733,7 +735,9 @@ async def cb_menu_actions(callback: CallbackQuery):
             mode=trading_mode,
             current_lot=bridge_manager.default_lot,
             current_risk=bridge_manager.default_risk,
-            lot_mode=getattr(bridge_manager, 'lot_mode', 'fixed')
+            lot_mode=getattr(bridge_manager, 'lot_mode', 'fixed'),
+            daily_limit=getattr(bridge_manager, 'max_daily_loss_pct', 3.0),
+            daily_locked=getattr(bridge_manager, 'daily_loss_locked', False)
         )
         await safe_edit(callback, text, reply_markup=kb, parse_mode="HTML")
     elif action == "main":
@@ -843,6 +847,14 @@ async def cb_autotrade_actions(callback: CallbackQuery):
         state = get_user_state(callback.from_user.id)
         state["awaiting_custom_lot"] = False
         await callback.answer("Ввод лота отменён")
+    elif action == "daily_limit":
+        val = float(parts[2])
+        bridge_manager.set_daily_loss_limit(val)
+        await set_bot_setting("max_daily_loss_pct", str(val))
+        await callback.answer(f"🛡️ Дневной лимит допустимого убытка: {val:.1f}%")
+    elif action == "unlock_daily":
+        bridge_manager.unlock_daily_loss()
+        await callback.answer("🔓 Дневной замок просадки успешно сброшен!", show_alert=True)
     elif action == "mode":
         new_mode = parts[2]  # "micro" or "prop"
         await set_bot_setting("trading_mode", new_mode)
@@ -892,7 +904,9 @@ async def cb_autotrade_actions(callback: CallbackQuery):
         f"{profile_desc}\n\n"
         f"📊 <b>Рабочий лот:</b> {lot_status_badge}\n"
         f"⚖️ <b>Риск на сделку:</b> {risk_status_badge}\n"
-        f"💱 <b>Инструментов в пуле:</b> <code>{pool_str}</code>\n\n"
+        f"💱 <b>Инструментов в пуле:</b> <code>{pool_str}</code>\n"
+        f"🛑 <b>Дневной лимит просадки:</b> <code>{bridge_manager.max_daily_loss_pct:.1f}%</code> "
+        f"{'(🚨 ЗАБЛОКИРОВАН)' if bridge_manager.daily_loss_locked else '(🟢 Норма)'}\n\n"
         f"Используйте кнопки ниже для быстрого управления 👇\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     )
@@ -901,7 +915,9 @@ async def cb_autotrade_actions(callback: CallbackQuery):
         mode=trading_mode,
         current_lot=bridge_manager.default_lot,
         current_risk=bridge_manager.default_risk,
-        lot_mode=getattr(bridge_manager, 'lot_mode', 'fixed')
+        lot_mode=getattr(bridge_manager, 'lot_mode', 'fixed'),
+        daily_limit=getattr(bridge_manager, 'max_daily_loss_pct', 3.0),
+        daily_locked=getattr(bridge_manager, 'daily_loss_locked', False)
     )
     await safe_edit(callback, text, reply_markup=kb, parse_mode="HTML")
 
@@ -992,7 +1008,9 @@ async def handle_user_text_input(message: Message):
             f"{profile_desc}\n\n"
             f"📊 <b>Рабочий лот:</b> <b>{val:.2f}</b> (✅ Активен: Фиксированный)\n"
             f"⚖️ <b>Риск на сделку:</b> <code>{bridge_manager.default_risk:.1f}%</code>\n"
-            f"💱 <b>Инструментов в пуле:</b> <code>{pool_str}</code>\n\n"
+            f"💱 <b>Инструментов в пуле:</b> <code>{pool_str}</code>\n"
+        f"🛑 <b>Дневной лимит просадки:</b> <code>{bridge_manager.max_daily_loss_pct:.1f}%</code> "
+        f"{'(🚨 ЗАБЛОКИРОВАН)' if bridge_manager.daily_loss_locked else '(🟢 Норма)'}\n\n"
             f"Используйте кнопки ниже для быстрого управления 👇\n"
             f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         )
@@ -1001,7 +1019,9 @@ async def handle_user_text_input(message: Message):
             mode=trading_mode,
             current_lot=bridge_manager.default_lot,
             current_risk=bridge_manager.default_risk,
-            lot_mode=getattr(bridge_manager, 'lot_mode', 'fixed')
+            lot_mode=getattr(bridge_manager, 'lot_mode', 'fixed'),
+            daily_limit=getattr(bridge_manager, 'max_daily_loss_pct', 3.0),
+            daily_locked=getattr(bridge_manager, 'daily_loss_locked', False)
         )
         await message.answer(text, reply_markup=kb, parse_mode="HTML")
 

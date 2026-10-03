@@ -275,3 +275,17 @@ WINE_MT5_PATH = os.getenv('WINE_MT5_PATH', '/home/trader/.wine/drive_c/Program F
 
 
 BRIDGE_API_KEY = os.getenv('BRIDGE_API_KEY', 'stb-default-key-change-me-2026')
+
+
+# ── РИСК-МЕНЕДЖМЕНТ ДЛЯ РЕАЛЬНЫХ ДЕНЕГ (REAL MONEY PROTECTION) ──
+# 1. Жесткий лимит дневной просадки (% от баланса на начало дня)
+MAX_DAILY_DRAWDOWN_PCT: float = 3.0  # При дневном убытке 3.0% автопилот полностью блокируется
+
+# 2. Ограничение совокупного риска и количества позиций
+MAX_CONCURRENT_POSITIONS: int = 3    # Не более 3 одновременно открытых позиций во всем терминале
+MAX_POSITIONS_PER_PAIR: int = 1      # Не более 1 позиции на одну валютную пару
+MAX_CURRENCY_EXPOSURE: int = 2       # Не более 2 пар с одинаковой валютой (защита от скачков USD/EUR)
+
+# 3. Маржинальная защита (Margin Guard)
+MIN_MARGIN_FREE_USD: float = 50.0    # Минимальная свободная маржа в USD
+MIN_MARGIN_FREE_PCT: float = 25.0    # Минимальный запас свободной маржи (% от баланса)

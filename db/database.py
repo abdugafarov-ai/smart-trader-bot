@@ -974,3 +974,55 @@ async def get_last_signal_time_for_pair(symbol: str) -> Optional[datetime]:
         logger.error("get_last_signal_time_for_pair error: %s", e)
         return None
 
+
+
+async def get_today_broker_pnl() -> dict:
+    """
+    Возвращает статистику закрытых сделок брокера за текущий календарный день (с 00:00:00 UTC):
+    - total_pnl: суммарный закрытый PnL в USD
+    - profit_sum: сумма прибыльных сделок
+    - loss_sum: сумма убыточных сделок
+    - deals_count: количество закрытых сделок за сегодня
+    - wins: кол-во прибыльных
+    - losses: кол-во убыточных
+    """
+    try:
+        now_utc = datetime.now(timezone.utc)
+        today_midnight = datetime(now_utc.year, now_utc.month, now_utc.day, tzinfo=timezone.utc)
+        today_ts = int(today_midnight.timestamp())
+
+        async with aiosqlite.connect(str(DB_PATH)) as db:
+            cursor = await db.execute(
+                """SELECT 
+                    COALESCE(SUM(profit_usd), 0.0) as total_pnl,
+                    COALESCE(SUM(CASE WHEN profit_usd > 0 THEN profit_usd ELSE 0.0 END), 0.0) as profit_sum,
+                    COALESCE(SUM(CASE WHEN profit_usd < 0 THEN profit_usd ELSE 0.0 END), 0.0) as loss_sum,
+                    COUNT(*) as deals_count,
+                    COALESCE(SUM(CASE WHEN profit_usd > 0 THEN 1 ELSE 0 END), 0) as wins,
+                    COALESCE(SUM(CASE WHEN profit_usd < 0 THEN 1 ELSE 0 END), 0) as losses
+                FROM broker_deals 
+                WHERE close_time >= ?""",
+                (today_ts,)
+            )
+            row = await cursor.fetchone()
+            if row:
+                return {
+                    "total_pnl": float(row[0]),
+                    "profit_sum": float(row[1]),
+                    "loss_sum": float(row[2]),
+                    "deals_count": int(row[3]),
+                    "wins": int(row[4]),
+                    "losses": int(row[5]),
+                    "today_ts": today_ts
+                }
+    except Exception as e:
+        logger.error("get_today_broker_pnl error: %s", e)
+    return {
+        "total_pnl": 0.0,
+        "profit_sum": 0.0,
+        "loss_sum": 0.0,
+        "deals_count": 0,
+        "wins": 0,
+        "losses": 0,
+        "today_ts": 0
+    }
