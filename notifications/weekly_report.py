@@ -130,6 +130,27 @@ class WeeklyReporter:
                 )
                 total_profit_usd = (await cursor.fetchone())[0]
 
+                cursor = await db.execute(
+                    f"SELECT COALESCE(SUM(profit_usd), 0.0) FROM broker_deals {time_filter} AND profit_usd > 0" if not all_time else
+                    "SELECT COALESCE(SUM(profit_usd), 0.0) FROM broker_deals WHERE profit_usd > 0",
+                    params
+                )
+                gross_profit = (await cursor.fetchone())[0]
+
+                cursor = await db.execute(
+                    f"SELECT COALESCE(SUM(profit_usd), 0.0) FROM broker_deals {time_filter} AND profit_usd < 0" if not all_time else
+                    "SELECT COALESCE(SUM(profit_usd), 0.0) FROM broker_deals WHERE profit_usd < 0",
+                    params
+                )
+                gross_loss = abs((await cursor.fetchone())[0])
+
+                profit_factor = round(gross_profit / gross_loss, 2) if gross_loss > 0 else (round(gross_profit, 2) if gross_profit > 0 else 0.0)
+                avg_win = round(gross_profit / tp_hits, 2) if tp_hits > 0 else 0.0
+                avg_loss = round(gross_loss / sl_hits, 2) if sl_hits > 0 else 0.0
+                win_pct = tp_hits / total if total > 0 else 0.0
+                loss_pct = sl_hits / total if total > 0 else 0.0
+                expectancy = round((win_pct * avg_win) - (loss_pct * avg_loss), 2)
+
                 # Win Rate рассчитывается аналогично database.py (доля прибыльных и безубыточных сделок)
                 win_rate = ((total - sl_hits) / total * 100) if total > 0 else 0.0
 
@@ -190,7 +211,9 @@ class WeeklyReporter:
             "┌── <b>ФИНАНСОВЫЙ РЕЗУЛЬТАТ (USD)</b> ────",
             f"│ 💵 <b>Чистый PnL:</b>       <b>{profit_sign}{total_profit_usd:.2f} USD</b>",
             f"│ 💼 <b>Баланс:</b>           <code>${stats.get('balance', 0.0):.2f}</code>",
-            f"│ 📐 <b>Средний R:R:</b>       <code>1:2.1</code>",
+            f"│ 📐 <b>Средний R:R:</b>       <code>1:{stats.get('avg_rr', 2.1):.1f}</code>",
+            f"│ 📊 <b>Profit Factor:</b>     <code>{profit_factor:.2f}</code>",
+            f"│ 🎯 <b>Expectancy:</b>        <b>{'+' if expectancy >= 0 else ''}{expectancy:.2f} USD</b>/сделка",
             "└──────────────────────────────────────",
         ]
 

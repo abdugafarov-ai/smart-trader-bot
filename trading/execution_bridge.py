@@ -20,6 +20,7 @@ class ExecutionBridge:
         self.enabled = config.AUTOTRADE_ENABLED
         self.default_risk = config.AUTOTRADE_DEFAULT_RISK
         self.default_lot = config.AUTOTRADE_DEFAULT_LOT
+        self.lot_mode = "fixed"  # "fixed" or "risk"
         self._connected_terminals: Dict[str, Any] = {}
         
         # Реальная телеметрия из MetaTrader 5 (без фейковых данных по умолчанию)
@@ -44,11 +45,34 @@ class ExecutionBridge:
 
     def set_risk(self, risk_percent: float):
         self.default_risk = max(0.1, min(5.0, risk_percent))
-        logger.info("Auto-Trading Bridge risk set to: %.2f%%", self.default_risk)
+        self.lot_mode = "risk"
+        logger.info("Auto-Trading Bridge risk set to: %.2f%% (mode: risk)", self.default_risk)
 
     def set_lot(self, lot: float):
         self.default_lot = max(0.01, min(10.0, lot))
-        logger.info("Auto-Trading Bridge lot set to: %.2f", self.default_lot)
+        self.lot_mode = "fixed"
+        logger.info("Auto-Trading Bridge lot set to: %.2f (mode: fixed)", self.default_lot)
+
+    async def load_settings_from_db(self):
+        """Загружает персистентные настройки моста (лот, риск, режим) из базы данных SQLite."""
+        from db.database import get_bot_setting
+        try:
+            lot_str = await get_bot_setting("trading_lot", "")
+            if lot_str:
+                self.default_lot = max(0.01, min(10.0, float(lot_str)))
+            risk_str = await get_bot_setting("trading_risk", "")
+            if risk_str:
+                self.default_risk = max(0.1, min(5.0, float(risk_str)))
+            lot_mode_str = await get_bot_setting("lot_mode", "")
+            if lot_mode_str in ("fixed", "risk"):
+                self.lot_mode = lot_mode_str
+            enabled_str = await get_bot_setting("autotrade_enabled", "")
+            if enabled_str:
+                self.enabled = (enabled_str.lower() in ("true", "1", "yes"))
+            logger.info("Loaded Bridge settings from DB: lot=%.2f, risk=%.1f%%, lot_mode=%s, enabled=%s",
+                        self.default_lot, self.default_risk, self.lot_mode, self.enabled)
+        except Exception as e:
+            logger.error("Failed to load Bridge settings from DB: %s", e)
 
     def update_telemetry(self, balance: float, equity: float, margin_free: float,
                          broker: str, account: str, positions: list, orders: list):
@@ -152,6 +176,7 @@ class ExecutionBridge:
         is_online, ping = self.is_mt5_online()
         return {
             "enabled": self.enabled,
+            "lot_mode": self.lot_mode,
             "risk_percent": self.default_risk,
             "default_lot": self.default_lot,
             "terminals_connected": 1 if is_online else 0,
@@ -194,6 +219,7 @@ class ExecutionBridge:
             broker_str = "—"
             pnl_badge = "—"
 
+        mode_badge = "Фиксированный лот" if self.lot_mode == "fixed" else "Динамический (% риска)"
         lines = [
             "🖥 <b>ТЕРМИНАЛ METATRADER 5 | ПУЛЬТ УПРАВЛЕНИЯ</b>",
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
@@ -205,7 +231,8 @@ class ExecutionBridge:
             f"🛡 <b>Свободная маржа:</b> <code>{margin_str}</code>",
             f"💵 <b>Плавающий PnL:</b> {pnl_badge}",
             f"🤖 <b>Автопилот:</b> {'🟢 ВКЛЮЧЕН' if self.enabled else '🔴 ВЫКЛЮЧЕН'}",
-            f"⚖️ <b>Риск на сделку:</b> <code>{self.default_risk}%</code> | <b>Лот:</b> <code>{self.default_lot}</code>",
+            f"⚖️ <b>Режим объема:</b> <code>{mode_badge}</code>",
+            f"📊 <b>Рабочий лот:</b> <code>{self.default_lot:.2f}</code> | <b>Риск:</b> <code>{self.default_risk:.1f}%</code>",
         ]
 
         # Статус недельного торгового окна

@@ -3,6 +3,7 @@ from aiogram.filters import CommandStart, Command
 from aiogram.types import Message, CallbackQuery
 import logging
 import asyncio
+import html
 logger = logging.getLogger(__name__)
 
 from market.data_fetcher import DataFetcher
@@ -14,7 +15,7 @@ from bot.keyboards import (
     main_menu_keyboard, admin_menu_keyboard, client_menu_keyboard,
     back_keyboard, guide_keyboard, admin_approve_keyboard,
     analysis_result_keyboard, terminal_dashboard_keyboard, panic_confirm_keyboard,
-    autotrade_keyboard, admin_users_crm_keyboard, admin_user_card_keyboard,
+    autotrade_keyboard, cancel_custom_lot_keyboard, admin_users_crm_keyboard, admin_user_card_keyboard,
     client_subscription_keyboard, client_support_keyboard
 )
 from utils.formatters import (
@@ -465,8 +466,11 @@ async def cmd_risk(message: Message):
         try:
             val = float(parts[1].replace(',', '.'))
             from trading.execution_bridge import bridge_manager
+            from db.database import set_bot_setting
             bridge_manager.set_risk(val)
-            await message.answer(f"✅ Риск на сделку установлен: <b>{bridge_manager.default_risk}%</b>", parse_mode="HTML")
+            await set_bot_setting("trading_risk", str(bridge_manager.default_risk))
+            await set_bot_setting("lot_mode", "risk")
+            await message.answer(f"✅ Риск на сделку установлен: <b>{bridge_manager.default_risk:.1f}%</b> (Режим: Динамический)", parse_mode="HTML")
             return
         except ValueError:
             pass
@@ -482,8 +486,11 @@ async def cmd_lot(message: Message):
         try:
             val = float(parts[1].replace(',', '.'))
             from trading.execution_bridge import bridge_manager
+            from db.database import set_bot_setting
             bridge_manager.set_lot(val)
-            await message.answer(f"✅ Фиксированный лот установлен: <b>{bridge_manager.default_lot}</b>", parse_mode="HTML")
+            await set_bot_setting("trading_lot", str(bridge_manager.default_lot))
+            await set_bot_setting("lot_mode", "fixed")
+            await message.answer(f"✅ Фиксированный лот установлен: <b>{bridge_manager.default_lot:.2f}</b> (Режим: Фиксированный)", parse_mode="HTML")
             return
         except ValueError:
             pass
@@ -701,19 +708,34 @@ async def cb_menu_actions(callback: CallbackQuery):
             )
             pool_str = "17 пар (Форекс + Золото)"
 
+        lot_display = f"{bridge_manager.default_lot:.2f}"
+        if getattr(bridge_manager, 'lot_mode', 'fixed') == "fixed":
+            lot_status_badge = f"<b>{lot_display}</b> (✅ Активен: Фиксированный)"
+            risk_status_badge = f"{bridge_manager.default_risk:.1f}%"
+        else:
+            lot_status_badge = f"Динамический (по риску)"
+            risk_status_badge = f"<b>{bridge_manager.default_risk:.1f}%</b> (✅ Активен: Динамический)"
+
         text = (
             f"⚙️ <b>НАСТРОЙКИ АВТОПИЛОТА (MT5 BRIDGE)</b>\n"
             f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
             f"📡 <b>Статус авто-торговли:</b> {status_emoji}\n"
             f"🎯 <b>Активный профиль:</b> <b>{profile_name}</b>\n"
             f"{profile_desc}\n\n"
-            f"📊 <b>Рабочий лот:</b> <code>{bridge_manager.default_lot}</code>\n"
-            f"⚖️ <b>Риск на сделку:</b> <code>{bridge_manager.default_risk}%</code>\n"
+            f"📊 <b>Рабочий лот:</b> {lot_status_badge}\n"
+            f"⚖️ <b>Риск на сделку:</b> {risk_status_badge}\n"
             f"💱 <b>Инструментов в пуле:</b> <code>{pool_str}</code>\n\n"
             f"Используйте кнопки ниже для быстрого управления 👇\n"
             f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         )
-        await safe_edit(callback, text, reply_markup=autotrade_keyboard(bridge_manager.enabled, mode=trading_mode), parse_mode="HTML")
+        kb = autotrade_keyboard(
+            enabled=bridge_manager.enabled,
+            mode=trading_mode,
+            current_lot=bridge_manager.default_lot,
+            current_risk=bridge_manager.default_risk,
+            lot_mode=getattr(bridge_manager, 'lot_mode', 'fixed')
+        )
+        await safe_edit(callback, text, reply_markup=kb, parse_mode="HTML")
     elif action == "main":
         is_admin = (callback.from_user.id == config.ADMIN_ID)
         kb = admin_menu_keyboard() if is_admin else client_menu_keyboard()
@@ -775,25 +797,52 @@ async def cb_autotrade_actions(callback: CallbackQuery):
         await callback.answer("❌ Доступно только администратору!", show_alert=True)
         return
     from trading.execution_bridge import bridge_manager
-    from bot.keyboards import autotrade_keyboard
+    from bot.keyboards import autotrade_keyboard, cancel_custom_lot_keyboard
     from db.database import get_bot_setting, set_bot_setting
 
     parts = callback.data.split(":")
     action = parts[1]
     if action == "on":
         bridge_manager.set_enabled(True)
+        await set_bot_setting("autotrade_enabled", "true")
         await callback.answer("🟢 Автопилот включен!")
     elif action == "off":
         bridge_manager.set_enabled(False)
+        await set_bot_setting("autotrade_enabled", "false")
         await callback.answer("🔴 Автопилот приостановлен!")
     elif action == "lot":
         val = float(parts[2])
         bridge_manager.set_lot(val)
-        await callback.answer(f"🔹 Лот установлен: {val}")
+        await set_bot_setting("trading_lot", str(val))
+        await set_bot_setting("lot_mode", "fixed")
+        await callback.answer(f"🔹 Лот установлен: {val:.2f}")
     elif action == "risk":
         val = float(parts[2])
         bridge_manager.set_risk(val)
-        await callback.answer(f"⚖️ Риск установлен: {val}%")
+        await set_bot_setting("trading_risk", str(val))
+        await set_bot_setting("lot_mode", "risk")
+        await callback.answer(f"⚖️ Риск установлен: {val:.1f}%")
+    elif action == "custom_lot":
+        state = get_user_state(callback.from_user.id)
+        state["awaiting_custom_lot"] = True
+        prompt_text = (
+            "✍️ <b>Ввод собственного размера лота</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"Текущий лот: <code>{bridge_manager.default_lot:.2f}</code>\n\n"
+            "Напишите в ответ желаемое число в чат сообщением.\n"
+            "<i>Примеры: <code>0.03</code>, <code>0.07</code>, <code>0.15</code>, <code>0.50</code></i>\n\n"
+            "📌 <b>Ограничения:</b>\n"
+            "• Минимум: <b>0.01</b>\n"
+            "• Максимум: <b>10.00</b>\n"
+            "• Шаг: <b>0.01</b>\n\n"
+            "<i>Для отмены нажмите кнопку ниже 👇</i>"
+        )
+        await safe_edit(callback, prompt_text, reply_markup=cancel_custom_lot_keyboard(), parse_mode="HTML")
+        return
+    elif action == "cancel_custom_lot":
+        state = get_user_state(callback.from_user.id)
+        state["awaiting_custom_lot"] = False
+        await callback.answer("Ввод лота отменён")
     elif action == "mode":
         new_mode = parts[2]  # "micro" or "prop"
         await set_bot_setting("trading_mode", new_mode)
@@ -827,19 +876,134 @@ async def cb_autotrade_actions(callback: CallbackQuery):
         )
         pool_str = "17 пар (Форекс + Золото)"
 
+    lot_display = f"{bridge_manager.default_lot:.2f}"
+    if getattr(bridge_manager, 'lot_mode', 'fixed') == "fixed":
+        lot_status_badge = f"<b>{lot_display}</b> (✅ Активен: Фиксированный)"
+        risk_status_badge = f"{bridge_manager.default_risk:.1f}%"
+    else:
+        lot_status_badge = f"Динамический (по риску)"
+        risk_status_badge = f"<b>{bridge_manager.default_risk:.1f}%</b> (✅ Активен: Динамический)"
+
     text = (
         f"⚙️ <b>НАСТРОЙКИ АВТОПИЛОТА (MT5 BRIDGE)</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
         f"📡 <b>Статус авто-торговли:</b> {status_emoji}\n"
         f"🎯 <b>Активный профиль:</b> <b>{profile_name}</b>\n"
         f"{profile_desc}\n\n"
-        f"📊 <b>Рабочий лот:</b> <code>{bridge_manager.default_lot}</code>\n"
-        f"⚖️ <b>Риск на сделку:</b> <code>{bridge_manager.default_risk}%</code>\n"
+        f"📊 <b>Рабочий лот:</b> {lot_status_badge}\n"
+        f"⚖️ <b>Риск на сделку:</b> {risk_status_badge}\n"
         f"💱 <b>Инструментов в пуле:</b> <code>{pool_str}</code>\n\n"
         f"Используйте кнопки ниже для быстрого управления 👇\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     )
-    await safe_edit(callback, text, reply_markup=autotrade_keyboard(bridge_manager.enabled, mode=trading_mode), parse_mode="HTML")
+    kb = autotrade_keyboard(
+        enabled=bridge_manager.enabled,
+        mode=trading_mode,
+        current_lot=bridge_manager.default_lot,
+        current_risk=bridge_manager.default_risk,
+        lot_mode=getattr(bridge_manager, 'lot_mode', 'fixed')
+    )
+    await safe_edit(callback, text, reply_markup=kb, parse_mode="HTML")
+
+
+@router.message(F.text & ~F.text.startswith("/"))
+async def handle_user_text_input(message: Message):
+    """Обработчик текстового ввода администратора (в частности, ручной ввод лота)."""
+    if message.from_user.id != config.ADMIN_ID:
+        return
+
+    state = get_user_state(message.from_user.id)
+    if state.get("awaiting_custom_lot"):
+        raw_text = message.text.strip().replace(',', '.')
+        try:
+            val = float(raw_text)
+        except ValueError:
+            await message.answer(
+                "❌ <b>Некорректный формат!</b> Вы ввели не число.\n\n"
+                f"Получено: <code>{html.escape(message.text)}</code>\n"
+                "Пожалуйста, отправьте корректное число (например: <code>0.03</code>, <code>0.07</code> или <code>0.15</code>).\n\n"
+                "<i>Допустимый диапазон: от 0.01 до 10.00</i>",
+                reply_markup=cancel_custom_lot_keyboard(),
+                parse_mode="HTML"
+            )
+            return
+
+        if val < 0.01:
+            await message.answer(
+                "⚠️ <b>Слишком маленький лот!</b>\n\n"
+                f"Вы указали: <code>{val}</code>\n"
+                "Минимально допустимый торговый лот у брокера — <b>0.01</b>.\n\n"
+                "Пожалуйста, введите значение <b>0.01</b> или выше:",
+                reply_markup=cancel_custom_lot_keyboard(),
+                parse_mode="HTML"
+            )
+            return
+
+        if val > 10.0:
+            await message.answer(
+                "⚠️ <b>Слишком большой лот!</b>\n\n"
+                f"Вы указали: <code>{val}</code>\n"
+                "Максимальный безопасный лот в системе ограничен <b>10.00</b> (защита депозита от моментального слива).\n\n"
+                "Пожалуйста, укажите разумный лот от <b>0.01 до 10.00</b>:",
+                reply_markup=cancel_custom_lot_keyboard(),
+                parse_mode="HTML"
+            )
+            return
+
+        val = round(val, 2)
+        state["awaiting_custom_lot"] = False
+
+        from trading.execution_bridge import bridge_manager
+        from db.database import set_bot_setting, get_bot_setting
+        from bot.keyboards import autotrade_keyboard
+
+        bridge_manager.set_lot(val)
+        await set_bot_setting("trading_lot", str(val))
+        await set_bot_setting("lot_mode", "fixed")
+
+        trading_mode = await get_bot_setting("trading_mode", "micro")
+        status_emoji = "🟢 ВКЛЮЧЕН (АКТИВЕН)" if bridge_manager.enabled else "🔴 ПРИОСТАНОВЛЕН (ПАУЗА)"
+
+        if trading_mode == "micro":
+            profile_name = "🛡️ Режим «Микро-депозит»"
+            profile_desc = (
+                "• Золото (XAUUSD): ❌ <b>ОТКЛЮЧЕНО</b> (защита депозита)\n"
+                "• Макс. сделок в рынке: <b>1</b> (свободная маржа)\n"
+                "• Макс. стоп-лосс: <b>≤ 18 пипсов</b> (риск ~$1.80)\n"
+                "• Режим сделок: <b>Pure Swing</b> (свободный ход до Take Profit)"
+            )
+            pool_str = "16 валютных пар (без Золота)"
+        else:
+            profile_name = "👑 Режим: Институционал"
+            profile_desc = (
+                "• Золото (XAUUSD): ✅ <b>ВКЛЮЧЕНО</b>\n"
+                "• Макс. сделок в рынке: <b>до 7</b>\n"
+                "• Макс. стоп-лосс: по структуре ICT/SMC\n"
+                "• Режим сделок: <b>Pure Swing</b> (удержание до полного Take Profit)"
+            )
+            pool_str = "17 пар (Форекс + Золото)"
+
+        text = (
+            f"✅ <b>Рабочий лот успешно установлен: {val:.2f}</b>\n\n"
+            f"⚙️ <b>НАСТРОЙКИ АВТОПИЛОТА (MT5 BRIDGE)</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"📡 <b>Статус авто-торговли:</b> {status_emoji}\n"
+            f"🎯 <b>Активный профиль:</b> <b>{profile_name}</b>\n"
+            f"{profile_desc}\n\n"
+            f"📊 <b>Рабочий лот:</b> <b>{val:.2f}</b> (✅ Активен: Фиксированный)\n"
+            f"⚖️ <b>Риск на сделку:</b> <code>{bridge_manager.default_risk:.1f}%</code>\n"
+            f"💱 <b>Инструментов в пуле:</b> <code>{pool_str}</code>\n\n"
+            f"Используйте кнопки ниже для быстрого управления 👇\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        )
+        kb = autotrade_keyboard(
+            enabled=bridge_manager.enabled,
+            mode=trading_mode,
+            current_lot=bridge_manager.default_lot,
+            current_risk=bridge_manager.default_risk,
+            lot_mode=getattr(bridge_manager, 'lot_mode', 'fixed')
+        )
+        await message.answer(text, reply_markup=kb, parse_mode="HTML")
 
 
 

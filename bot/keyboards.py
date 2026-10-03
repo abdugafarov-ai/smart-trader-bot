@@ -245,8 +245,14 @@ def panic_confirm_keyboard() -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
-def autotrade_keyboard(enabled: bool = True, mode: str = "micro") -> InlineKeyboardMarkup:
-    """Клавиатура быстрого управления авто-торговлей MT5."""
+def autotrade_keyboard(
+    enabled: bool = True,
+    mode: str = "micro",
+    current_lot: float = 0.01,
+    current_risk: float = 1.0,
+    lot_mode: str = "fixed"
+) -> InlineKeyboardMarkup:
+    """Клавиатура быстрого управления авто-торговлей MT5 с интерактивными галочками выбора."""
     builder = InlineKeyboardBuilder()
     toggle_text = "🔴 ПРИОСТАНОВИТЬ АВТОПИЛОТ" if enabled else "🟢 ВКЛЮЧИТЬ АВТОПИЛОТ"
     toggle_cb = "autotrade:off" if enabled else "autotrade:on"
@@ -263,20 +269,51 @@ def autotrade_keyboard(enabled: bool = True, mode: str = "micro") -> InlineKeybo
     builder.row(btn_micro)
     builder.row(btn_prop)
 
+    # Пресеты фиксированного лота с галочками
+    is_fixed = (lot_mode == "fixed")
+    
+    t_001 = "✅ 0.01" if (is_fixed and abs(current_lot - 0.01) < 0.001) else "🔹 Лот 0.01"
+    t_002 = "✅ 0.02" if (is_fixed and abs(current_lot - 0.02) < 0.001) else "🔹 Лот 0.02"
+    t_005 = "✅ 0.05" if (is_fixed and abs(current_lot - 0.05) < 0.001) else "🔹 Лот 0.05"
+
     builder.row(
-        InlineKeyboardButton(text="🔹 Лот 0.01", callback_data="autotrade:lot:0.01"),
-        InlineKeyboardButton(text="🔹 Лот 0.02", callback_data="autotrade:lot:0.02"),
-        InlineKeyboardButton(text="🔹 Лот 0.05", callback_data="autotrade:lot:0.05")
+        InlineKeyboardButton(text=t_001, callback_data="autotrade:lot:0.01"),
+        InlineKeyboardButton(text=t_002, callback_data="autotrade:lot:0.02"),
+        InlineKeyboardButton(text=t_005, callback_data="autotrade:lot:0.05")
     )
+
+    # Кнопка ручного ввода своего лота
+    is_custom = is_fixed and (abs(current_lot - 0.01) >= 0.001 and abs(current_lot - 0.02) >= 0.001 and abs(current_lot - 0.05) >= 0.001)
+    custom_btn_text = f"✅ ✍️ Свой лот: {current_lot:.2f}" if is_custom else "✍️ Задать свой лот"
     builder.row(
-        InlineKeyboardButton(text="⚖️ Риск 0.5%", callback_data="autotrade:risk:0.5"),
-        InlineKeyboardButton(text="⚖️ Риск 1.0%", callback_data="autotrade:risk:1.0"),
-        InlineKeyboardButton(text="⚖️ Риск 2.0%", callback_data="autotrade:risk:2.0")
+        InlineKeyboardButton(text=custom_btn_text, callback_data="autotrade:custom_lot")
+    )
+
+    # Пресеты риска с галочками
+    is_risk = (lot_mode == "risk")
+    r_05 = "✅ ⚖️ 0.5%" if (is_risk and abs(current_risk - 0.5) < 0.01) else "⚖️ Риск 0.5%"
+    r_10 = "✅ ⚖️ 1.0%" if (is_risk and abs(current_risk - 1.0) < 0.01) else "⚖️ Риск 1.0%"
+    r_20 = "✅ ⚖️ 2.0%" if (is_risk and abs(current_risk - 2.0) < 0.01) else "⚖️ Риск 2.0%"
+
+    builder.row(
+        InlineKeyboardButton(text=r_05, callback_data="autotrade:risk:0.5"),
+        InlineKeyboardButton(text=r_10, callback_data="autotrade:risk:1.0"),
+        InlineKeyboardButton(text=r_20, callback_data="autotrade:risk:2.0")
     )
     builder.row(
         InlineKeyboardButton(text="◀️ В Главное Меню", callback_data="menu")
     )
     return builder.as_markup()
+
+
+def cancel_custom_lot_keyboard() -> InlineKeyboardMarkup:
+    """Клавиатура отмены ручного ввода лота."""
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="❌ Отмена", callback_data="autotrade:cancel_custom_lot")
+    )
+    return builder.as_markup()
+
 
 
 def signal_inline_keyboard(symbol: str) -> InlineKeyboardMarkup:

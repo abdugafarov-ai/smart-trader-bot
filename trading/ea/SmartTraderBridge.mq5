@@ -24,7 +24,7 @@ input bool     InpUseAutoRisk  = false;                    // Использов
 input double   InpRiskPercent  = 1.0;                      // Процент риска на сделку (%)
 input double   InpFixedLot     = 0.01;                     // Фиксированный лот (если AutoRisk = false)
 input int      InpSlippage     = 10;                       // Проскальзывание в пунктах
-input bool     InpUseAutoBE    = false;                    // Использовать авто-безубыток (ОТКЛЮЧЕНО: Pure Swing)
+input bool     InpUseAutoBE    = true;                     // Использовать авто-безубыток (+1.0R защищен)
 
 //--- Глобальные переменные
 ulong    processed_signals[];
@@ -39,6 +39,7 @@ string GetBrokerSymbol(string standard_pair);
 void   ReportExecution(string symbol, string action, double price, double profit=0.0, string reason="", int signal_id=0, ulong ticket=0);
 void   SetOptimalFillingMode(string symbol);
 void   CleanupStalePendingOrders();
+double CalculateRiskLot(string symbol, double entry_price, double sl_price, double custom_risk = 0.0, double fallback_lot = 0.01);
 
 //+------------------------------------------------------------------+
 //| Получение JSON текущих живых цен (тиков) для всех пар           |
@@ -147,6 +148,9 @@ void OnTimer()
 //+------------------------------------------------------------------+
 //| Получение JSON открытых позиций                                  |
 //+------------------------------------------------------------------+
+//+------------------------------------------------------------------+
+//| Получение JSON открытых позиций (все сделки: робот + ручные)    |
+//+------------------------------------------------------------------+
 string GetActivePositionsSummary()
 {
    string json = "[";
@@ -156,7 +160,7 @@ string GetActivePositionsSummary()
       ulong ticket = PositionGetTicket(i);
       if(ticket > 0)
       {
-         if(PositionGetInteger(POSITION_MAGIC) != InpMagicNumber) continue;
+         long magic = PositionGetInteger(POSITION_MAGIC);
          if(count > 0) json += ",";
          string sym = PositionGetString(POSITION_SYMBOL);
          ENUM_POSITION_TYPE type = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
@@ -166,8 +170,8 @@ string GetActivePositionsSummary()
          double tp = PositionGetDouble(POSITION_TP);
          double profit = PositionGetDouble(POSITION_PROFIT);
          string type_str = (type == POSITION_TYPE_BUY) ? "BUY" : "SELL";
-         json += StringFormat("{\"ticket\":%I64u,\"symbol\":\"%s\",\"type\":\"%s\",\"lot\":%.2f,\"price\":%.5f,\"sl\":%.5f,\"tp\":%.5f,\"profit\":%.2f}",
-                              ticket, sym, type_str, volume, price, sl, tp, profit);
+         json += StringFormat("{\"ticket\":%I64u,\"symbol\":\"%s\",\"type\":\"%s\",\"lot\":%.2f,\"price\":%.5f,\"sl\":%.5f,\"tp\":%.5f,\"profit\":%.2f,\"magic\":%I64d,\"is_manual\":%s}",
+                              ticket, sym, type_str, volume, price, sl, tp, profit, magic, (magic == 0 ? "true" : "false"));
          count++;
       }
    }
@@ -176,7 +180,7 @@ string GetActivePositionsSummary()
 }
 
 //+------------------------------------------------------------------+
-//| Получение JSON отложенных ордеров                                |
+//| Получение JSON отложенных ордеров (все ордера: робот + ручные)   |
 //+------------------------------------------------------------------+
 string GetPendingOrdersSummary()
 {
@@ -187,7 +191,7 @@ string GetPendingOrdersSummary()
       ulong ticket = OrderGetTicket(i);
       if(ticket > 0)
       {
-         if(OrderGetInteger(ORDER_MAGIC) != InpMagicNumber) continue;
+         long magic = OrderGetInteger(ORDER_MAGIC);
          if(count > 0) json += ",";
          string sym = OrderGetString(ORDER_SYMBOL);
          ENUM_ORDER_TYPE type = (ENUM_ORDER_TYPE)OrderGetInteger(ORDER_TYPE);
@@ -201,8 +205,8 @@ string GetPendingOrdersSummary()
          else if(type == ORDER_TYPE_BUY_STOP) type_str = "BUY_STOP";
          else if(type == ORDER_TYPE_SELL_STOP) type_str = "SELL_STOP";
          
-         json += StringFormat("{\"ticket\":%I64u,\"symbol\":\"%s\",\"type\":\"%s\",\"lot\":%.2f,\"price\":%.5f,\"sl\":%.5f,\"tp\":%.5f}",
-                              ticket, sym, type_str, volume, price, sl, tp);
+         json += StringFormat("{\"ticket\":%I64u,\"symbol\":\"%s\",\"type\":\"%s\",\"lot\":%.2f,\"price\":%.5f,\"sl\":%.5f,\"tp\":%.5f,\"magic\":%I64d,\"is_manual\":%s}",
+                              ticket, sym, type_str, volume, price, sl, tp, magic, (magic == 0 ? "true" : "false"));
          count++;
       }
    }
@@ -236,7 +240,7 @@ void PanicCloseAll()
 }
 
 //+------------------------------------------------------------------+
-//| Получение JSON истории закрытых сделок брокера                   |
+//| Получение JSON истории закрытых сделок (робот + ручные)          |
 //+------------------------------------------------------------------+
 string GetDealsHistorySummary()
 {
@@ -249,7 +253,6 @@ string GetDealsHistorySummary()
       ulong ticket = HistoryDealGetTicket(i);
       if(ticket > 0)
       {
-         if(HistoryDealGetInteger(ticket, DEAL_MAGIC) != InpMagicNumber) continue;
          ENUM_DEAL_ENTRY entry = (ENUM_DEAL_ENTRY)HistoryDealGetInteger(ticket, DEAL_ENTRY);
          if(entry == DEAL_ENTRY_OUT || entry == DEAL_ENTRY_INOUT)
          {
@@ -498,12 +501,31 @@ void ParseAndExecuteOrders(string json)
 
       bool is_limit = (StringFind(block, "LIMIT") >= 0);
 
-      // Рассчитываем лот с учетом реальной точки входа
-      double lot = InpFixedLot;
-      if(InpUseAutoRisk)
+      // Извлекаем параметры лота и риска из JSON блока ордера
+      double json_lot   = ExtractDouble(block, "\"lot\":");
+      double json_risk  = ExtractDouble(block, "\"risk_percent\":");
+      int json_use_risk = (int)ExtractDouble(block, "\"use_auto_risk\":");
+      bool is_auto_risk = (json_use_risk == 1 || (json_use_risk < 0 && InpUseAutoRisk));
+
+      // Рассчитываем итоговый объем ордера
+      double lot = (json_lot > 0.0) ? json_lot : InpFixedLot;
+      if(is_auto_risk)
       {
          double entry_ref = is_limit ? entry : (is_long ? SymbolInfoDouble(broker_symbol, SYMBOL_ASK) : SymbolInfoDouble(broker_symbol, SYMBOL_BID));
-         lot = CalculateRiskLot(broker_symbol, entry_ref, sl);
+         double eff_risk  = (json_risk > 0.0) ? json_risk : InpRiskPercent;
+         lot = CalculateRiskLot(broker_symbol, entry_ref, sl, eff_risk, lot);
+         PrintFormat("⚖️ [SmartTrader] %s: Авто-риск %.1f%% -> рассчитан лот %.2f (Баланс: %.2f)", broker_symbol, eff_risk, lot, AccountInfoDouble(ACCOUNT_BALANCE));
+      }
+      else
+      {
+         // Нормализуем фиксированный лот по требованиям брокера
+         double min_l  = SymbolInfoDouble(broker_symbol, SYMBOL_VOLUME_MIN);
+         double max_l  = SymbolInfoDouble(broker_symbol, SYMBOL_VOLUME_MAX);
+         double step_l = SymbolInfoDouble(broker_symbol, SYMBOL_VOLUME_STEP);
+         if(step_l > 0)
+            lot = MathFloor(lot / step_l) * step_l;
+         lot = MathMax(min_l, MathMin(max_l, lot));
+         PrintFormat("📊 [SmartTrader] %s: Фиксированный лот из команды бота -> %.2f", broker_symbol, lot);
       }
 
       // Автоматическое определение режима заполнения для брокера
@@ -719,7 +741,8 @@ bool HasOpenPosition(string symbol)
    {
       if(StringCompare(PositionGetSymbol(i), symbol, false) == 0)
       {
-         if(PositionGetInteger(POSITION_MAGIC) == InpMagicNumber)
+         long magic = PositionGetInteger(POSITION_MAGIC);
+         if(magic == InpMagicNumber || magic == 888001 || magic == 777001 || magic == 0)
             return true;
       }
    }
@@ -736,7 +759,8 @@ bool HasPendingOrder(string symbol)
       ulong ticket = OrderGetTicket(i);
       if(ticket > 0 && StringCompare(OrderGetString(ORDER_SYMBOL), symbol, false) == 0)
       {
-         if(OrderGetInteger(ORDER_MAGIC) == InpMagicNumber)
+         long magic = OrderGetInteger(ORDER_MAGIC);
+         if(magic == InpMagicNumber || magic == 888001 || magic == 777001 || magic == 0)
             return true;
       }
    }
@@ -744,21 +768,26 @@ bool HasPendingOrder(string symbol)
 }
 
 //+------------------------------------------------------------------+
-//| Подсчет всех открытых позиций и отложенных ордеров советника    |
+//| Подсчет всех открытых позиций и отложенных ордеров (всего счёта)|
 //+------------------------------------------------------------------+
 int CountTotalOpenAndPending()
 {
    int count = 0;
    for(int i = PositionsTotal() - 1; i >= 0; i--)
    {
-      if(PositionGetInteger(POSITION_MAGIC) == InpMagicNumber)
+      long magic = PositionGetInteger(POSITION_MAGIC);
+      if(magic == InpMagicNumber || magic == 888001 || magic == 777001 || magic == 0)
          count++;
    }
    for(int i = OrdersTotal() - 1; i >= 0; i--)
    {
       ulong ticket = OrderGetTicket(i);
-      if(ticket > 0 && OrderGetInteger(ORDER_MAGIC) == InpMagicNumber)
-         count++;
+      if(ticket > 0)
+      {
+         long magic = OrderGetInteger(ORDER_MAGIC);
+         if(magic == InpMagicNumber || magic == 888001 || magic == 777001 || magic == 0)
+            count++;
+      }
    }
    return count;
 }
@@ -845,13 +874,14 @@ void ApplyBreakevenIfEligible(string symbol)
 //+------------------------------------------------------------------+
 void ManageOpenPositions()
 {
-   if(!InpUseAutoBE) return; // Pure Swing: алгоритм безубытка полностью ОТКЛЮЧЕН (сделка дышит до полного TP или начального SL)
+   if(!InpUseAutoBE) return;
 
    for(int i = PositionsTotal() - 1; i >= 0; i--)
    {
       ulong ticket = PositionGetTicket(i);
       if(ticket <= 0) continue;
-      if(PositionGetInteger(POSITION_MAGIC) != InpMagicNumber) continue;
+      long magic = PositionGetInteger(POSITION_MAGIC);
+      if(magic != InpMagicNumber && magic != 777001 && magic != 0) continue;
 
       string symbol = PositionGetString(POSITION_SYMBOL);
       double open_price = PositionGetDouble(POSITION_PRICE_OPEN);
@@ -870,7 +900,7 @@ void ManageOpenPositions()
       if(!SymbolInfoTick(symbol, tick)) continue;
 
       // 1. Проверка условия перевода в безубыток:
-      // Переводим в безубыток, если цена прошла >= 15% пути до TP или профит превысил 0.25R
+      // Переводим в безубыток строго при достижении +1.0R (профит >= первоначальному риску)
       bool qualify_be = false;
       double new_be_sl = 0.0;
 
@@ -879,12 +909,10 @@ void ManageOpenPositions()
          // Если SL уже на уровне входа или выше - уже защищено
          if(curr_sl >= open_price - point) continue;
 
-         double total_tp_dist = tp - open_price;
+         double initial_risk = open_price - curr_sl;
          double current_run   = tick.bid - open_price;
 
-         if(total_tp_dist > 0 && current_run >= total_tp_dist * 0.15)
-            qualify_be = true;
-         else if(curr_sl > 0 && (open_price - curr_sl) > 0 && current_run >= (open_price - curr_sl) * 0.25)
+         if(curr_sl > 0 && initial_risk > 0 && current_run >= initial_risk * 1.0)
             qualify_be = true;
 
          if(qualify_be && tick.bid > open_price + min_stop_dist)
@@ -892,8 +920,8 @@ void ManageOpenPositions()
             new_be_sl = open_price + 2 * point;
             if(trade.PositionModify(ticket, new_be_sl, tp))
             {
-               Print("🛡 [SmartTrader Auto-BE] BUY ", symbol, " #", ticket, " защищен в БЕЗУБЫТОК! SL: ", new_be_sl, " | Профит: $", DoubleToString(profit, 2));
-               ReportExecution(symbol, "AUTO_BREAKEVEN", tick.bid, profit, "Авто-безубыток (0.25R / 15% TP)", 0, ticket);
+               Print("🛡 [SmartTrader Auto-BE] BUY ", symbol, " #", ticket, " защищен в БЕЗУБЫТОК (+1.0R)! SL: ", new_be_sl, " | Профит: $", DoubleToString(profit, 2));
+               ReportExecution(symbol, "AUTO_BREAKEVEN", tick.bid, profit, "Авто-безубыток (+1.0R защищен)", 0, ticket);
 
                // Частичная фиксация прибыли (если объем >= 0.02)
                double step = SymbolInfoDouble(symbol, SYMBOL_VOLUME_STEP);
@@ -915,12 +943,10 @@ void ManageOpenPositions()
          // Если SL уже на уровне входа или ниже - уже защищено
          if(curr_sl > 0 && curr_sl <= open_price + point) continue;
 
-         double total_tp_dist = open_price - tp;
+         double initial_risk = curr_sl - open_price;
          double current_run   = open_price - tick.ask;
 
-         if(total_tp_dist > 0 && current_run >= total_tp_dist * 0.15)
-            qualify_be = true;
-         else if(curr_sl > 0 && (curr_sl - open_price) > 0 && current_run >= (curr_sl - open_price) * 0.25)
+         if(curr_sl > 0 && initial_risk > 0 && current_run >= initial_risk * 1.0)
             qualify_be = true;
 
          if(qualify_be && tick.ask < open_price - min_stop_dist)
@@ -928,8 +954,8 @@ void ManageOpenPositions()
             new_be_sl = open_price - 2 * point;
             if(trade.PositionModify(ticket, new_be_sl, tp))
             {
-               Print("🛡 [SmartTrader Auto-BE] SELL ", symbol, " #", ticket, " защищен в БЕЗУБЫТОК! SL: ", new_be_sl, " | Профит: $", DoubleToString(profit, 2));
-               ReportExecution(symbol, "AUTO_BREAKEVEN", tick.ask, profit, "Авто-безубыток (0.25R / 15% TP)", 0, ticket);
+               Print("🛡 [SmartTrader Auto-BE] SELL ", symbol, " #", ticket, " защищен в БЕЗУБЫТОК (+1.0R)! SL: ", new_be_sl, " | Профит: $", DoubleToString(profit, 2));
+               ReportExecution(symbol, "AUTO_BREAKEVEN", tick.ask, profit, "Авто-безубыток (+1.0R защищен)", 0, ticket);
 
                double step = SymbolInfoDouble(symbol, SYMBOL_VOLUME_STEP);
                double min_vol = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MIN);
@@ -951,16 +977,18 @@ void ManageOpenPositions()
 //+------------------------------------------------------------------+
 //| Расчет объема лота на основе % риска от баланса                 |
 //+------------------------------------------------------------------+
-double CalculateRiskLot(string symbol, double entry_price, double sl_price)
+double CalculateRiskLot(string symbol, double entry_price, double sl_price, double custom_risk = 0.0, double fallback_lot = 0.01)
 {
    double balance   = AccountInfoDouble(ACCOUNT_BALANCE);
-   double risk_amt  = balance * (InpRiskPercent / 100.0);
+   double risk_pct  = (custom_risk > 0.0) ? custom_risk : InpRiskPercent;
+   double risk_amt  = balance * (risk_pct / 100.0);
    double diff      = MathAbs(entry_price - sl_price);
-   if(diff <= 0) return InpFixedLot;
+   double def_lot   = (fallback_lot > 0.0) ? fallback_lot : InpFixedLot;
+   if(diff <= 0) return def_lot;
    
    double tick_size = SymbolInfoDouble(symbol, SYMBOL_TRADE_TICK_SIZE);
    double tick_val  = SymbolInfoDouble(symbol, SYMBOL_TRADE_TICK_VALUE);
-   if(tick_size <= 0 || tick_val <= 0) return InpFixedLot;
+   if(tick_size <= 0 || tick_val <= 0) return def_lot;
    
    double pips = diff / tick_size;
    double lot = risk_amt / (pips * tick_val);
@@ -969,7 +997,8 @@ double CalculateRiskLot(string symbol, double entry_price, double sl_price)
    double max_lot = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MAX);
    double step    = SymbolInfoDouble(symbol, SYMBOL_VOLUME_STEP);
    
-   lot = MathFloor(lot / step) * step;
+   if(step > 0)
+      lot = MathFloor(lot / step) * step;
    return MathMax(min_lot, MathMin(max_lot, lot));
 }
 
@@ -1038,7 +1067,7 @@ void OnTradeTransaction(const MqlTradeTransaction& trans, const MqlTradeRequest&
          ENUM_DEAL_TYPE dtype = (ENUM_DEAL_TYPE)HistoryDealGetInteger(deal_ticket, DEAL_TYPE);
          string dir_str = (dtype == DEAL_TYPE_BUY) ? "BUY" : "SELL";
 
-         if(magic == InpMagicNumber)
+         if(magic == InpMagicNumber || magic == 888001 || magic == 777001)
          {
             if(entry_type == DEAL_ENTRY_OUT || entry_type == DEAL_ENTRY_INOUT)
             {

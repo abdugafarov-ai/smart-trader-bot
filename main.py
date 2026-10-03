@@ -47,6 +47,14 @@ async def main():
         await init_db()
         await init_users_table()
         await auto_approve_admin(config.ADMIN_ID)
+
+        # Загрузка сохранённых настроек лота, риска и автопилота из БД
+        try:
+            from trading.execution_bridge import bridge_manager
+            await bridge_manager.load_settings_from_db()
+        except Exception as e:
+            logging.error("Failed to load bridge settings on startup: %s", e)
+
         logging.info("Database initialized. Admin ID: %d", config.ADMIN_ID)
         logging.info("Bot started. Scanning %d pairs every %d min.",
                       len(config.ALL_PAIRS), config.SCAN_INTERVAL_MINUTES)

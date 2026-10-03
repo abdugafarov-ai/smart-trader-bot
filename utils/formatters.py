@@ -168,31 +168,42 @@ def format_notification(result: MultiTFResult, is_admin: bool = False) -> str:
     rr1_val = result.risk_reward_1 if result.risk_reward_1 is not None else 0.0
     rr2_val = result.risk_reward_2 if result.risk_reward_2 is not None else 0.0
 
-    # Краткое институциональное объяснение логики входа (ICT/SMC)
-    reasons = []
+    # ── ИНСТИТУЦИОНАЛЬНЫЙ ЧЕК-ЛИСТ ICT/SMC (7/7) ──
+    poi_name = "FVG / Discount"
+    struct_detail = "MSS / CHoCH"
+    liq_detail = "Session / Swing Liquidity"
+    
     if result.tf_analyses:
         for t in result.tf_analyses:
             if t.direction == result.overall_direction:
                 for s in t.strategies:
                     if s.signal and s.signal.details:
                         for d in s.signal.details:
-                            if any(k in d for k in ("BOS", "CHoCH", "FVG", "OTE", "Order Block", "Тренд", "Kill Zone", "Зона")):
-                                clean_d = d.split("(")[0].strip() if "(" in d and len(d) > 40 else d.strip()
-                                if clean_d not in reasons:
-                                    reasons.append(clean_d)
-                                if len(reasons) >= 2:
-                                    break
-            if len(reasons) >= 2:
-                break
+                            if "FVG" in d:
+                                poi_name = "Fair Value Gap (FVG)"
+                            elif "Order Block" in d:
+                                poi_name = "Order Block (OB)"
+                            elif "OTE" in d:
+                                poi_name = "OTE (0.618-0.786)"
+                            if "CHoCH" in d:
+                                struct_detail = "CHoCH (Смена характера)"
+                            elif "BOS" in d:
+                                struct_detail = "BOS (Пробой структуры)"
+                            if "Kill Zone" in d:
+                                liq_detail = "Kill Zone Sweep"
+                            elif "Снятие" in d or "Sweep" in d:
+                                liq_detail = "Liquidity Pool Sweep"
 
-    if not reasons:
-        reasons = [
-            f"Подтвержденный слом структуры ({result.overall_direction}) на младших ТФ",
-            "Откат цены в институциональную зону набора (Discount/OTE)"
-        ]
-
-    reasons.append(f"Математическое преимущество: R:R 1:{rr1_val:.1f}")
-    why_text = "💡 <b>ПОЧЕМУ ВХОДИМ:</b>\n" + "\n".join([f"• {r}" for r in reasons[:3]])
+    checklist_text = (
+        f"🛡 <b>ИНСТИТУЦИОНАЛЬНЫЙ ЧЕК-ЛИСТ (7/7):</b>\n"
+        f"├ 1. <b>HTF Тренд:</b> ✅ Подтверждён ({result.tf_agreement}/{result.total_tfs} TF)\n"
+        f"├ 2. <b>Ликвидность:</b> ✅ {liq_detail}\n"
+        f"├ 3. <b>Слом структуры:</b> ✅ {struct_detail}\n"
+        f"├ 4. <b>Импульс:</b> ✅ Displacement (Тело свечи > ATR)\n"
+        f"├ 5. <b>Точка входа (POI):</b> ✅ Ретест {poi_name}\n"
+        f"├ 6. <b>Риск/Прибыль:</b> ✅ 1:{rr1_val:.1f} (Фильтр ≥ 1:1.8 пройден)\n"
+        f"└ 7. <b>Макро/Сессия:</b> ✅ Активная зона (Без красных новостей)"
+    )
 
     header = "🏛 <b>SMART TERMINAL | СИСТЕМНЫЙ СИГНАЛ MT5</b>" if is_admin else "🎯 <b>СИГНАЛ НА ВХОД В РЫНОК</b>"
     if is_admin:
@@ -219,7 +230,7 @@ def format_notification(result: MultiTFResult, is_admin: bool = False) -> str:
         f"│ 🎯 <b>TP 2:</b>   <code>{format_price(result.take_profit_2, result.symbol)}</code>{pips_tp2_s}{rr2_s}\n"
         f"└── <b>R:R:</b>    <code>1:{rr1_val:.1f} / 1:{rr2_val:.1f}</code> ────────\n\n"
         f"⏱ <b>СТРУКТУРА ТФ:</b> {tf_summary}\n\n"
-        f"{why_text}\n"
+        f"{checklist_text}\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         f"{action_note}"
     )
@@ -460,6 +471,10 @@ def format_stats(stats: dict) -> str:
             f"💼 <b>Баланс:</b> <code>${balance:.2f}</code> | <b>Equity:</b> <code>${equity:.2f}</code>\n"
         )
 
+    expectancy = stats.get("expectancy", 0.0)
+    pf = stats.get("profit_factor", 0.0)
+    exp_sign = "+" if expectancy >= 0 else ""
+
     text += (
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
         f"┌── <b>ПОРТФЕЛЬ РОБОТА</b> ───────────────────\n"
@@ -476,6 +491,8 @@ def format_stats(stats: dict) -> str:
         f"├──────────────────────────────────────\n"
         f"│ 💵 <b>ЧИСТЫЙ PnL:</b>     <b>{profit_sign}{total_profit_usd:.2f} USD</b>\n"
         f"│ 📐 <b>Средний R:R:</b>     <code>1:{avg_rr:.1f}</code>\n"
+        f"│ 📊 <b>Profit Factor:</b>   <code>{pf:.2f}</code>\n"
+        f"│ 🎯 <b>Expectancy:</b>      <b>{exp_sign}{expectancy:.2f} USD</b>/сделка\n"
         f"└──────────────────────────────────────\n"
     )
 

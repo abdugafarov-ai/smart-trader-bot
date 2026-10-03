@@ -785,6 +785,25 @@ async def get_stats() -> dict:
                 pips_row = await cursor.fetchone()
                 total_pips = round(float(pips_row[0]), 1) if pips_row and pips_row[0] else 0.0
 
+                # Расчет валовой прибыли и валового убытка
+                if reset_ts:
+                    cursor = await db.execute("SELECT COALESCE(SUM(profit_usd), 0.0) FROM broker_deals WHERE profit_usd > 0 AND close_time >= ?", (reset_ts,))
+                    gross_profit = (await cursor.fetchone())[0]
+                    cursor = await db.execute("SELECT COALESCE(SUM(profit_usd), 0.0) FROM broker_deals WHERE profit_usd < 0 AND close_time >= ?", (reset_ts,))
+                    gross_loss = abs((await cursor.fetchone())[0])
+                else:
+                    cursor = await db.execute("SELECT COALESCE(SUM(profit_usd), 0.0) FROM broker_deals WHERE profit_usd > 0")
+                    gross_profit = (await cursor.fetchone())[0]
+                    cursor = await db.execute("SELECT COALESCE(SUM(profit_usd), 0.0) FROM broker_deals WHERE profit_usd < 0")
+                    gross_loss = abs((await cursor.fetchone())[0])
+
+                profit_factor = round(gross_profit / gross_loss, 2) if gross_loss > 0 else (round(gross_profit, 2) if gross_profit > 0 else 0.0)
+                avg_win = round(gross_profit / wins, 2) if wins > 0 else 0.0
+                avg_loss = round(gross_loss / losses, 2) if losses > 0 else 0.0
+                win_pct = wins / deals_count if deals_count > 0 else 0.0
+                loss_pct = losses / deals_count if deals_count > 0 else 0.0
+                expectancy = round((win_pct * avg_win) - (loss_pct * avg_loss), 2)
+
                 return {
                     "total": deals_count,
                     "open": len(open_positions),
@@ -797,6 +816,10 @@ async def get_stats() -> dict:
                     "total_profit_usd": round(total_profit_usd, 2),
                     "total_pips": total_pips,
                     "avg_rr": avg_rr,
+                    "profit_factor": profit_factor,
+                    "expectancy": expectancy,
+                    "avg_win": avg_win,
+                    "avg_loss": avg_loss,
                     "by_direction": by_direction,
                     "by_symbol": by_symbol,
                     "balance": telemetry.get("balance", 0.0),

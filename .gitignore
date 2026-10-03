@@ -36,3 +36,8 @@ desktop.ini
 
 # Scratch / Local debugging scripts & credentials
 scratch/
+
+# Temp test files
+bot.pid
+test_*.png
+test_*.py

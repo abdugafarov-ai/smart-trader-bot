@@ -52,11 +52,10 @@ async def _send_telegram_notification(text: str, photo_bytes: bytes = None, text
                 else:
                     await _bot_instance.send_message(uid, msg_to_send, parse_mode="HTML")
             except Exception as err:
-                if photo_bytes:
-                    try:
-                        await _bot_instance.send_message(uid, msg_to_send, parse_mode="HTML")
-                    except Exception:
-                        pass
+                try:
+                    await _bot_instance.send_message(uid, msg_to_send, parse_mode=None)
+                except Exception:
+                    pass
                 logger.error("Failed to send bridge notification to %d: %s", uid, err)
     except Exception as e:
         logger.error("Error sending bridge notification: %s", e)
@@ -308,6 +307,8 @@ async def bridge_get_orders(request: web.Request) -> web.Response:
             bridge_manager.panic_close_requested = False
             logger.warning("Sending panic_close_all=True to MT5 terminal!")
 
+        use_risk_flag = 1 if (getattr(bridge_manager, 'lot_mode', 'fixed') == 'risk') else 0
+
         if not bridge_manager.enabled:
             return web.json_response({
                 "status": "ok",
@@ -315,6 +316,7 @@ async def bridge_get_orders(request: web.Request) -> web.Response:
                 "panic_close_all": panic,
                 "lot": bridge_manager.default_lot,
                 "risk_percent": bridge_manager.default_risk,
+                "use_auto_risk": use_risk_flag,
                 "orders": [],
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             })
@@ -346,6 +348,7 @@ async def bridge_get_orders(request: web.Request) -> web.Response:
                 "breakeven_applied": bool(sig.get("breakeven_applied", 0)),
                 "lot": bridge_manager.default_lot,
                 "risk_percent": bridge_manager.default_risk,
+                "use_auto_risk": use_risk_flag,
                 "magic_number": 888001,
             })
 
@@ -355,6 +358,7 @@ async def bridge_get_orders(request: web.Request) -> web.Response:
             "panic_close_all": panic,
             "lot": bridge_manager.default_lot,
             "risk_percent": bridge_manager.default_risk,
+            "use_auto_risk": use_risk_flag,
             "orders": orders,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         })
@@ -443,18 +447,20 @@ async def bridge_post_report(request: web.Request) -> web.Response:
         # 3. Лимитный ордер снят брокером или истек по таймауту
         elif action in ("LIMIT_EXPIRED", "ORDER_CANCELED", "ORDER_CANCELLED", "EXPIRED"):
             await expire_signal_by_broker(symbol, signal_id=sig_id, reason=reason)
+            import html
+            safe_reason = html.escape(str(reason or ""))
             msg_admin = (
                 f"⏰ <b>ЛИМИТНЫЙ ОРДЕР СНЯТ / ИСТЁК В MT5</b>\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
                 f"📊 <b>{symbol}</b>\n"
-                f"ℹ️ Причина: <code>{reason or 'Истек срок ожидания (снят)'}</code>\n"
+                f"ℹ️ Причина: <code>{safe_reason or 'Истек срок ожидания (снят)'}</code>\n"
                 f"💼 <i>Ордер удален из биржевого стакана. Торговый слот освобожден.</i>"
             )
             msg_client = (
                 f"⏰ <b>СИГНАЛ ОТМЕНЁН / ИСТЁК СРОК ОЖИДАНИЯ</b>\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
                 f"📊 <b>{symbol}</b>\n"
-                f"ℹ️ Причина: <code>{reason or 'Цена не дошла до лимита в отведённое время'}</code>\n"
+                f"ℹ️ Причина: <code>{safe_reason or 'Цена не дошла до лимита в отведённое время'}</code>\n"
                 f"💼 <i>Отмените отложенный ордер в своём терминале.</i>"
             )
             await _send_telegram_notification(msg_client, text_admin=msg_admin)
@@ -482,12 +488,14 @@ async def bridge_post_report(request: web.Request) -> web.Response:
         # 5. Вход отклонен роботом (R:R < 1.8, превышен лимит или ошибка терминала)
         elif action.startswith("REJECTED"):
             await reject_signal_by_broker(symbol, reason, signal_id=sig_id)
+            import html
+            safe_reason = html.escape(str(reason or ""))
             if "RR" in action:
                 msg = (
                     f"⛔ <b>ВХОД ОТМЕНЁН РОБОТОМ MT5 (ФИЛЬТР РИСКА)</b>\n"
                     f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
                     f"📊 <b>{symbol}</b>\n"
-                    f"🛡 Причина: <b>{reason}</b>\n\n"
+                    f"🛡 Причина: <b>{safe_reason}</b>\n\n"
                     f"💼 <i>Рыночная цена сместилась до исполнения. Робот заблокировал вход ради защиты депозита. Ордер в MT5 НЕ открыт.</i>"
                 )
             elif "LIMIT" in action:
@@ -495,7 +503,7 @@ async def bridge_post_report(request: web.Request) -> web.Response:
                     f"⚠️ <b>ВХОД ПРОПУЩЕН РОБОТОМ MT5</b>\n"
                     f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
                     f"📊 <b>{symbol}</b>\n"
-                    f"💼 Причина: <b>{reason}</b>\n\n"
+                    f"💼 Причина: <b>{safe_reason}</b>\n\n"
                     f"<i>Все торговые слоты заняты. Новый ордер заблокирован.</i>"
                 )
             else:
@@ -503,7 +511,7 @@ async def bridge_post_report(request: web.Request) -> web.Response:
                     f"⚠️ <b>ОШИБКА ИСПОЛНЕНИЯ В METATRADER 5</b>\n"
                     f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
                     f"📊 <b>{symbol}</b>\n"
-                    f"❌ Причина: <code>{reason}</code>\n\n"
+                    f"❌ Причина: <code>{safe_reason}</code>\n\n"
                     f"💼 <i>Ордер в MT5 НЕ был открыт. Проверьте статус терминала.</i>"
                 )
             await _send_telegram_notification(msg)
