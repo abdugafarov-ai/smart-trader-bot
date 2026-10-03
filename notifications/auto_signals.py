@@ -39,7 +39,7 @@ class AutoSignalScanner:
         self.signals_skipped_by_correlation: int = 0
         self.signals_skipped_by_spread: int = 0
         self.signals_skipped_by_daily_limit: int = 0
-        self.chart_theme: str = "dark"
+        self.chart_theme: str = getattr(config, "CHART_THEME", "ict")
         self._daily_signal_count: int = 0
         self._daily_reset_date: str = ""
         self._last_signal_time: dict[str, datetime] = {}  # symbol -> last signal time

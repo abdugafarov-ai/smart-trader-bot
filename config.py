@@ -70,6 +70,9 @@ AUTOTRADE_ENABLED: bool = os.getenv("AUTOTRADE_ENABLED", "true").lower() in ("tr
 AUTOTRADE_DEFAULT_RISK: float = float(os.getenv("AUTOTRADE_DEFAULT_RISK", "1.0"))
 AUTOTRADE_DEFAULT_LOT: float = float(os.getenv("AUTOTRADE_DEFAULT_LOT", "0.01"))
 
+# ── Стиль графиков (ict, dark, light) ────────────────────
+CHART_THEME: str = os.getenv("CHART_THEME", "ict")
+
 # ── Минимальные звёзды для уведомления ────────────────────
 MIN_SIGNAL_STARS: int = 4   # Только 4-5 звёзд → уведомление
 
