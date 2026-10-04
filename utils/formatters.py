@@ -628,16 +628,16 @@ def format_welcome(is_admin: bool = False) -> str:
 def format_crm_user_card(user: dict, ltv_usd: float = 0.0, payments_cnt: int = 0) -> str:
     """Форматирует детальную карточку пользователя в CRM для администратора с LTV и заметками."""
     uid = user.get("telegram_id")
-    first_name = user.get("first_name") or "—"
-    username = f"@{user['username']}" if user.get("username") else "отсутствует"
+    first_name = html.escape(str(user.get("first_name") or "—"))
+    username = html.escape(f"@{user['username']}") if user.get("username") else "отсутствует"
     status = user.get("status") or "pending"
-    tariff = user.get("tariff") or "PRO"
+    tariff = html.escape(str(user.get("tariff") or "PRO"))
     requested_at = (user.get("requested_at") or "—")[:16].replace("T", " ")
     approved_at = (user.get("approved_at") or "—")[:16].replace("T", " ")
     last_seen = (user.get("last_seen") or "—")[:19].replace("T", " ")
     activity_cnt = user.get("activity_count") or 0
     expires_at = user.get("expires_at")
-    admin_notes = user.get("admin_notes") or ""
+    admin_notes = html.escape(str(user.get("admin_notes") or ""))
     
     now = datetime.now(timezone.utc)
     if status == "approved":
@@ -697,7 +697,7 @@ def format_crm_user_card(user: dict, ltv_usd: float = 0.0, payments_cnt: int = 0
 
 def format_my_subscription(user: dict) -> str:
     """Форматирует карточку подписки и официальную тарифную сетку для клиента."""
-    tariff = user.get("tariff") or "PRO"
+    tariff = html.escape(str(user.get("tariff") or "PRO"))
     expires_at = user.get("expires_at")
     is_lifetime = user.get("is_lifetime") or False
 

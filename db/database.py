@@ -18,7 +18,7 @@ async def init_db():
     """Создаёт базу данных, таблицы и выполняет миграции если нужно."""
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
-    async with aiosqlite.connect(str(DB_PATH)) as db:
+    async with aiosqlite.connect(str(DB_PATH), timeout=30.0) as db:
         await db.execute("PRAGMA journal_mode = WAL;")
         await db.execute("PRAGMA synchronous = NORMAL;")
         await db.execute("""
@@ -136,7 +136,7 @@ async def init_db():
 async def get_bot_setting(key: str, default: str = "") -> str:
     """Получить значение настройки из БД."""
     try:
-        async with aiosqlite.connect(str(DB_PATH)) as db:
+        async with aiosqlite.connect(str(DB_PATH), timeout=30.0) as db:
             async with db.execute("SELECT value FROM bot_settings WHERE key = ?", (key,)) as cursor:
                 row = await cursor.fetchone()
                 if row:
@@ -151,7 +151,7 @@ async def set_bot_setting(key: str, value: str):
     """Сохранить значение настройки в БД."""
     try:
         now_iso = datetime.now(timezone.utc).isoformat()
-        async with aiosqlite.connect(str(DB_PATH)) as db:
+        async with aiosqlite.connect(str(DB_PATH), timeout=30.0) as db:
             await db.execute("""
                 INSERT INTO bot_settings (key, value, updated_at)
                 VALUES (?, ?, ?)
@@ -183,7 +183,7 @@ async def save_signal(
         initial_status = "ACTIVE" if "MARKET" in (order_type or "") else "PENDING"
         activated_at = now_iso if initial_status == "ACTIVE" else None
 
-        async with aiosqlite.connect(str(DB_PATH)) as db:
+        async with aiosqlite.connect(str(DB_PATH), timeout=30.0) as db:
             cursor = await db.execute(
                 """INSERT INTO signals
                    (symbol, direction, order_type, tag_emoji, stars,
@@ -209,7 +209,7 @@ async def save_signal(
 async def activate_signal(signal_id: int):
     """Переводит сигнал из статуса PENDING в ACTIVE (цена коснулась входа)."""
     try:
-        async with aiosqlite.connect(str(DB_PATH)) as db:
+        async with aiosqlite.connect(str(DB_PATH), timeout=30.0) as db:
             await db.execute(
                 """UPDATE signals
                    SET status = 'ACTIVE', activated_at = ?
@@ -226,7 +226,7 @@ async def confirm_signal_by_broker(symbol: str, action: str, price: float, ticke
     try:
         now_iso = datetime.now(timezone.utc).isoformat()
         is_limit = "LIMIT" in action.upper()
-        async with aiosqlite.connect(str(DB_PATH)) as db:
+        async with aiosqlite.connect(str(DB_PATH), timeout=30.0) as db:
             db.row_factory = aiosqlite.Row
             if signal_id > 0:
                 cursor = await db.execute("SELECT * FROM signals WHERE id = ?", (signal_id,))
@@ -273,7 +273,7 @@ async def activate_filled_signal(symbol: str, price: float, ticket: int = 0, sig
     """Активирует лимитный ордер (переводит PENDING -> OPEN), когда цена коснулась лимита и брокер открыл позицию."""
     try:
         now_iso = datetime.now(timezone.utc).isoformat()
-        async with aiosqlite.connect(str(DB_PATH)) as db:
+        async with aiosqlite.connect(str(DB_PATH), timeout=30.0) as db:
             db.row_factory = aiosqlite.Row
             if signal_id > 0:
                 cursor = await db.execute("SELECT * FROM signals WHERE id = ?", (signal_id,))
@@ -312,7 +312,7 @@ async def expire_signal_by_broker(symbol: str, signal_id: int = 0, reason: str =
     """Отмечает ордер как EXPIRED, если лимит был снят или истек срок действия в MT5."""
     try:
         now_iso = datetime.now(timezone.utc).isoformat()
-        async with aiosqlite.connect(str(DB_PATH)) as db:
+        async with aiosqlite.connect(str(DB_PATH), timeout=30.0) as db:
             db.row_factory = aiosqlite.Row
             if signal_id > 0:
                 cursor = await db.execute("SELECT * FROM signals WHERE id = ?", (signal_id,))
@@ -347,7 +347,7 @@ async def reject_signal_by_broker(symbol: str, reason: str, signal_id: int = 0) 
     """Отменяет сигнал, если MT5 заблокировал вход (R:R < 1.8, ошибка терминала или лимит слотов)."""
     try:
         now_iso = datetime.now(timezone.utc).isoformat()
-        async with aiosqlite.connect(str(DB_PATH)) as db:
+        async with aiosqlite.connect(str(DB_PATH), timeout=30.0) as db:
             db.row_factory = aiosqlite.Row
             if signal_id > 0:
                 cursor = await db.execute("SELECT * FROM signals WHERE id = ?", (signal_id,))
@@ -379,7 +379,7 @@ async def close_signal_by_broker(symbol: str, close_price: float, profit_usd: fl
     """Закрывает сделку по факту закрытия позиции в MT5."""
     try:
         now_iso = datetime.now(timezone.utc).isoformat()
-        async with aiosqlite.connect(str(DB_PATH)) as db:
+        async with aiosqlite.connect(str(DB_PATH), timeout=30.0) as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute(
                 """SELECT * FROM signals
@@ -415,7 +415,7 @@ async def update_signal_status(
 ):
     """Обновляет статус сигнала (TP1_HIT, TP2_HIT, SL_HIT, EXPIRED, CANCELLED)."""
     try:
-        async with aiosqlite.connect(str(DB_PATH)) as db:
+        async with aiosqlite.connect(str(DB_PATH), timeout=30.0) as db:
             await db.execute(
                 """UPDATE signals
                    SET status = ?, closed_at = ?, close_price = ?,
@@ -438,7 +438,7 @@ async def update_signal_status(
 async def update_signal_sl(signal_id: int, new_sl: float, breakeven: bool = False):
     """Переносит стоп-лосс на новый уровень (breakeven / trailing)."""
     try:
-        async with aiosqlite.connect(str(DB_PATH)) as db:
+        async with aiosqlite.connect(str(DB_PATH), timeout=30.0) as db:
             if breakeven:
                 await db.execute(
                     """UPDATE signals SET stop_loss = ?, breakeven_applied = 1 WHERE id = ?""",
@@ -457,7 +457,7 @@ async def update_signal_sl(signal_id: int, new_sl: float, breakeven: bool = Fals
 async def has_open_signal_for_pair(symbol: str) -> bool:
     """Проверяет, есть ли уже активный или ожидающий сигнал по этой паре (анти-спам)."""
     try:
-        async with aiosqlite.connect(str(DB_PATH)) as db:
+        async with aiosqlite.connect(str(DB_PATH), timeout=30.0) as db:
             cursor = await db.execute(
                 """SELECT COUNT(*) FROM signals
                    WHERE symbol = ? AND status IN ('PENDING', 'ACTIVE', 'OPEN', 'TP1_PARTIAL')""",
@@ -473,7 +473,7 @@ async def has_open_signal_for_pair(symbol: str) -> bool:
 async def get_pending_signals() -> list[dict]:
     """Возвращает все отложенные сигналы (ожидающие касания цены входа)."""
     try:
-        async with aiosqlite.connect(str(DB_PATH)) as db:
+        async with aiosqlite.connect(str(DB_PATH), timeout=30.0) as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute(
                 "SELECT * FROM signals WHERE status = 'PENDING' ORDER BY created_at ASC"
@@ -488,7 +488,7 @@ async def get_pending_signals() -> list[dict]:
 async def get_active_signals() -> list[dict]:
     """Возвращает все сигналы в рынке (активированные, ожидающие TP/SL)."""
     try:
-        async with aiosqlite.connect(str(DB_PATH)) as db:
+        async with aiosqlite.connect(str(DB_PATH), timeout=30.0) as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute(
                 "SELECT * FROM signals WHERE status IN ('ACTIVE', 'OPEN', 'TP1_PARTIAL') ORDER BY created_at ASC"
@@ -503,7 +503,7 @@ async def get_active_signals() -> list[dict]:
 async def get_stats_reset_time() -> Optional[int]:
     """Получает unix timestamp последнего сброса статистики."""
     try:
-        async with aiosqlite.connect(str(DB_PATH)) as db:
+        async with aiosqlite.connect(str(DB_PATH), timeout=30.0) as db:
             cursor = await db.execute("SELECT value FROM system_settings WHERE key = 'stats_reset_time'")
             row = await cursor.fetchone()
             return int(row[0]) if row and row[0] else None
@@ -516,7 +516,7 @@ async def set_stats_reset_time(ts: Optional[int] = None) -> int:
     if ts is None:
         import time
         ts = int(time.time())
-    async with aiosqlite.connect(str(DB_PATH)) as db:
+    async with aiosqlite.connect(str(DB_PATH), timeout=30.0) as db:
         await db.execute(
             """INSERT INTO system_settings (key, value) VALUES ('stats_reset_time', ?)
                ON CONFLICT(key) DO UPDATE SET value = excluded.value""",
@@ -530,7 +530,7 @@ async def reset_all_stats() -> dict:
     """Полная очистка всей истории сигналов и сделок для вин-рейта."""
     import time
     ts = int(time.time())
-    async with aiosqlite.connect(str(DB_PATH)) as db:
+    async with aiosqlite.connect(str(DB_PATH), timeout=30.0) as db:
         await db.execute("DELETE FROM broker_deals")
         await db.execute("DELETE FROM signals")
         await db.execute("DELETE FROM daily_stats")
@@ -552,7 +552,7 @@ async def sync_broker_deals(deals: list[dict]) -> list[dict]:
     try:
         new_deals = []
         reset_ts = await get_stats_reset_time()
-        async with aiosqlite.connect(str(DB_PATH)) as db:
+        async with aiosqlite.connect(str(DB_PATH), timeout=30.0) as db:
             now_iso = datetime.now(timezone.utc).isoformat()
             for d in deals:
                 ticket = int(d.get("ticket") or 0)
@@ -644,7 +644,7 @@ async def get_recent_signals(limit: int = 20) -> list[dict]:
         # 3. Закрытые сделки из broker_deals
         reset_ts = await get_stats_reset_time()
         time_cond = f"WHERE close_time >= {reset_ts}" if reset_ts else ""
-        async with aiosqlite.connect(str(DB_PATH)) as db:
+        async with aiosqlite.connect(str(DB_PATH), timeout=30.0) as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute(
                 f"SELECT * FROM broker_deals {time_cond} ORDER BY close_time DESC, ticket DESC LIMIT ?",
@@ -694,7 +694,7 @@ async def get_stats() -> dict:
 
         reset_ts = await get_stats_reset_time()
 
-        async with aiosqlite.connect(str(DB_PATH)) as db:
+        async with aiosqlite.connect(str(DB_PATH), timeout=30.0) as db:
             if reset_ts:
                 cursor = await db.execute("SELECT COUNT(*) FROM broker_deals WHERE close_time >= ?", (reset_ts,))
             else:
@@ -859,7 +859,7 @@ async def check_signal_exists(symbol: str, direction: str, hours: int = 6) -> bo
 async def get_drawdown_reset_time() -> Optional[str]:
     """Получает время последнего ручного сброса просадки."""
     try:
-        async with aiosqlite.connect(str(DB_PATH)) as db:
+        async with aiosqlite.connect(str(DB_PATH), timeout=30.0) as db:
             cursor = await db.execute("SELECT value FROM system_settings WHERE key = 'drawdown_reset_time'")
             row = await cursor.fetchone()
             return row[0] if row else None
@@ -871,7 +871,7 @@ async def set_drawdown_reset_now() -> bool:
     """Сбрасывает таймер просадки на текущий момент."""
     try:
         now_iso = datetime.now(timezone.utc).isoformat()
-        async with aiosqlite.connect(str(DB_PATH)) as db:
+        async with aiosqlite.connect(str(DB_PATH), timeout=30.0) as db:
             await db.execute(
                 "CREATE TABLE IF NOT EXISTS system_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
             )
@@ -899,7 +899,7 @@ async def get_consecutive_sl_count(max_lookback_hours: float = 12.0) -> int:
         if reset_dt and reset_dt.tzinfo is None:
             reset_dt = reset_dt.replace(tzinfo=timezone.utc)
 
-        async with aiosqlite.connect(str(DB_PATH)) as db:
+        async with aiosqlite.connect(str(DB_PATH), timeout=30.0) as db:
             cursor = await db.execute(
                 """SELECT status, closed_at FROM signals 
                    WHERE status IN ('TP1_HIT', 'TP2_HIT', 'SL_HIT', 'BREAKEVEN', 'CLOSED_BE') 
@@ -941,7 +941,7 @@ async def get_today_signal_count() -> int:
     """Считает количество реально исполненных/активных сигналов за сегодня (исключая отменённые MT5)."""
     try:
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        async with aiosqlite.connect(str(DB_PATH)) as db:
+        async with aiosqlite.connect(str(DB_PATH), timeout=30.0) as db:
             cursor = await db.execute(
                 """SELECT COUNT(*) FROM signals 
                    WHERE created_at LIKE ? 
@@ -958,7 +958,7 @@ async def get_today_signal_count() -> int:
 async def get_last_signal_time_for_pair(symbol: str) -> Optional[datetime]:
     """Возвращает время последнего сигнала по данной паре (для cooldown). Персистентный."""
     try:
-        async with aiosqlite.connect(str(DB_PATH)) as db:
+        async with aiosqlite.connect(str(DB_PATH), timeout=30.0) as db:
             cursor = await db.execute(
                 "SELECT created_at FROM signals WHERE symbol = ? ORDER BY created_at DESC LIMIT 1",
                 (symbol,),
@@ -991,7 +991,7 @@ async def get_today_broker_pnl() -> dict:
         today_midnight = datetime(now_utc.year, now_utc.month, now_utc.day, tzinfo=timezone.utc)
         today_ts = int(today_midnight.timestamp())
 
-        async with aiosqlite.connect(str(DB_PATH)) as db:
+        async with aiosqlite.connect(str(DB_PATH), timeout=30.0) as db:
             cursor = await db.execute(
                 """SELECT 
                     COALESCE(SUM(profit_usd), 0.0) as total_pnl,

@@ -1,3 +1,11 @@
+def _sanitize_csv_cell(val):
+    if val is None:
+        return ""
+    s = str(val)
+    if s and s[0] in ("=", "+", "-", "@", "\t", "\r"):
+        return "'" + s
+    return s
+
 """
 Smart Trader Bot — Управление пользователями и подписками (CRM).
 Система одобрения заявок, тарифов, триалов, сроков действия, авто-напоминаний и скрытой активности.
@@ -320,18 +328,28 @@ async def activate_trial(telegram_id: int, days: int = 3) -> bool:
         return False
 
 
-async def set_lifetime_subscription(telegram_id: int) -> bool:
-    """Активирует бессрочный доступ (VIP / Для братьев и друзей администратора)."""
+async def set_lifetime_subscription(telegram_id: int, enable: bool = True) -> bool:
+    """Активирует или отключает бессрочный VIP-доступ клиента."""
     try:
         now = datetime.now(timezone.utc)
-        async with aiosqlite.connect(str(DB_PATH)) as db:
-            await db.execute(
-                """UPDATE users 
-                   SET status = 'approved', approved_at = ?, tariff = 'VIP BECCPOЧНЫЙ', expires_at = NULL,
-                       is_lifetime = 1, reminder_3d_sent = 0, reminder_1d_sent = 0
-                   WHERE telegram_id = ?""",
-                (now.isoformat(), telegram_id),
-            )
+        async with aiosqlite.connect(str(DB_PATH), timeout=30.0) as db:
+            if enable:
+                await db.execute(
+                    """UPDATE users 
+                       SET status = 'approved', approved_at = ?, tariff = 'VIP BECCPOЧНЫЙ', expires_at = NULL,
+                           is_lifetime = 1, reminder_3d_sent = 0, reminder_1d_sent = 0
+                       WHERE telegram_id = ?""",
+                    (now.isoformat(), telegram_id),
+                )
+            else:
+                default_exp = (now + timedelta(days=30)).isoformat()
+                await db.execute(
+                    """UPDATE users 
+                       SET tariff = 'PRO', expires_at = ?,
+                           is_lifetime = 0, reminder_3d_sent = 0, reminder_1d_sent = 0
+                       WHERE telegram_id = ?""",
+                    (default_exp, telegram_id),
+                )
             await db.commit()
             return True
     except Exception as e:
@@ -819,10 +837,10 @@ async def export_users_to_csv() -> str:
             ltv_usd, ltv_cnt = await get_user_ltv(uid)
             writer.writerow([
                 uid,
-                f"@{r['username']}" if r.get("username") else "",
-                r.get("first_name") or "",
-                r.get("status") or "",
-                r.get("tariff") or "",
+                _sanitize_csv_cell(f"@{r['username']}" if r.get("username") else ""),
+                _sanitize_csv_cell(r.get("first_name") or ""),
+                _sanitize_csv_cell(r.get("status") or ""),
+                _sanitize_csv_cell(r.get("tariff") or ""),
                 (r.get("expires_at") or "")[:19].replace("T", " "),
                 "YES" if r.get("is_lifetime") else "NO",
                 f"{ltv_usd:.2f}",
@@ -831,7 +849,7 @@ async def export_users_to_csv() -> str:
                 (r.get("approved_at") or "")[:19].replace("T", " "),
                 (r.get("last_seen") or "")[:19].replace("T", " "),
                 r.get("activity_count") or 0,
-                r.get("admin_notes") or ""
+                _sanitize_csv_cell(r.get("admin_notes") or "")
             ])
         return output.getvalue()
     except Exception as e:

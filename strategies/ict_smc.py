@@ -199,8 +199,9 @@ class ICTSMCStrategy(BaseStrategy):
         bos_found = False
         choch_found = False
 
-        # 3. Break of Structure (BOS) & CHoCH (Historical check for pullback)
-        recent_closes = df['close'].iloc[-15:]
+        # 3. Break of Structure (BOS) & CHoCH (Historical check for pullback on closed candles)
+        # Исключаем формирующуюся свечу iloc[-1] во избежание ложных пробоев внутри текущего тика
+        recent_closes = df['close'].iloc[-16:-1] if len(df) >= 17 else df['close'].iloc[:-1]
         bull_break = (recent_closes > hh1).any()
         bear_break = (recent_closes < hl1).any()
 

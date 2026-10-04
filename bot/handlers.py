@@ -1,3 +1,4 @@
+from datetime import datetime, timezone, timedelta
 from aiogram import Router, F
 from aiogram.filters import CommandStart, Command
 from aiogram.types import Message, CallbackQuery
@@ -986,7 +987,7 @@ async def handle_user_text_input(message: Message):
     # 2. CRM Admin Notes
     if state.get("awaiting_crm_notes"):
         target_id = state.pop("awaiting_crm_notes")
-        notes_text = message.text.strip()
+        notes_text = html.escape(message.text.strip())
         from db.users import update_admin_notes, get_user, get_user_ltv
         from bot.keyboards import admin_user_card_keyboard
         await update_admin_notes(target_id, notes_text)
@@ -1004,7 +1005,7 @@ async def handle_user_text_input(message: Message):
     # 3. CRM Direct Message
     if state.get("awaiting_crm_dm"):
         target_id = state.pop("awaiting_crm_dm")
-        dm_text = message.text.strip()
+        dm_text = html.escape(message.text.strip())
         from db.users import get_user, get_user_ltv
         from bot.keyboards import admin_user_card_keyboard
         u = await get_user(target_id)
@@ -1342,11 +1343,12 @@ async def cb_request_actions(callback: CallbackQuery):
 
         # Уведомляем администратора с кнопками быстрого одобрения
         try:
-            un_text = f"@{username}" if username else f"ID: <code>{user_id}</code>"
+            un_text = f"@{html.escape(username)}" if username else f"ID: <code>{user_id}</code>"
+            safe_fn = html.escape(str(first_name or ""))
             admin_msg = (
                 f"📩 <b>НОВАЯ ЗАЯВКА НА ДОСТУП</b>\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                f"👤 Имя: <b>{first_name}</b>\n"
+                f"👤 Имя: <b>{safe_fn}</b>\n"
                 f"📛 Профиль: {un_text}\n"
                 f"🆔 Telegram ID: <code>{user_id}</code>\n"
                 f"📦 <b>Желаемый план:</b> {plan_label}\n\n"
