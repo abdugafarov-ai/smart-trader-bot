@@ -126,9 +126,29 @@ async def main():
 
         # Фоновый воркер удержания (напоминания об окончании подписки за 3 дня и 1 день)
         async def run_subscription_retention_worker():
-            from db.users import get_reminder_candidates, mark_reminder_sent
+            from db.users import get_reminder_candidates, mark_reminder_sent, check_and_expire_subscriptions
+            from bot.keyboards import guest_welcome_keyboard
             while True:
                 try:
+                    # 1. Проверяем и автоматически переводим истекшие подписки в статус 'expired'
+                    expired_users = await check_and_expire_subscriptions()
+                    for exp_u in expired_users:
+                        exp_uid = exp_u.get("telegram_id")
+                        exp_tariff = exp_u.get("tariff") or "PRO"
+                        msg_exp = (
+                            "🔒 <b>СРОК ДЕЙСТВИЯ ПОДПИСКИ ИСТЁК</b>\n"
+                            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                            f"Уважаемый трейдер! Действие вашего тарифа <b>{exp_tariff}</b> завершилось.\n\n"
+                            "Доступ к институциональным сигналам Smart Trader приостановлен.\n\n"
+                            "Чтобы продолжить торговлю и не пропускать рыночные сетапы, выберите тариф для продления ниже 👇"
+                        )
+                        try:
+                            await bot.send_message(exp_uid, msg_exp, reply_markup=guest_welcome_keyboard(), parse_mode="HTML")
+                            logging.info("Sent subscription expiration notice to user %d", exp_uid)
+                        except Exception as e_exp:
+                            logging.warning("Failed to notify user %d about expiration: %s", exp_uid, e_exp)
+
+                    # 2. Напоминания за 3 дня и 1 день
                     candidates = await get_reminder_candidates()
                     for u in candidates:
                         uid = u.get("telegram_id")

@@ -104,9 +104,18 @@ def client_support_keyboard(admin_username: str = "") -> InlineKeyboardMarkup:
 
 
 def admin_users_crm_keyboard(users: list[dict], tab: str = "all", page: int = 1, total_pages: int = 1) -> InlineKeyboardMarkup:
-    """Клавиатура списка клиентов для CRM-панели администратора с вкладками и пагинацией."""
+    """Клавиатура списка клиентов для CRM-панели администратора с быстрым поиском, кассой, вкладками и экспортом."""
     builder = InlineKeyboardBuilder()
     now = datetime.now(timezone.utc)
+
+    # 0. Быстрый поиск, касса и экспорт
+    builder.row(
+        InlineKeyboardButton(text="🔍 Найти клиента", callback_data="crm:search_prompt"),
+        InlineKeyboardButton(text="📊 Касса и Выручка", callback_data="crm:finance_stats")
+    )
+    builder.row(
+        InlineKeyboardButton(text="📥 Скачать базу (.CSV)", callback_data="crm:export_csv")
+    )
 
     # 1. Вкладки (Tabs)
     tab_all_text = "• 🟢 Все •" if tab == "all" else "🟢 Все"
@@ -197,7 +206,13 @@ def admin_user_card_keyboard(target_id: int, is_active: bool, is_lifetime: bool 
             InlineKeyboardButton(text="🟢 Восстановить доступ", callback_data=f"crm:restore:{target_id}")
         )
 
-    # Строка 2: Продление тарифов
+    # Строка 2: Личные сообщения и заметки
+    builder.row(
+        InlineKeyboardButton(text="✉️ Написать клиенту", callback_data=f"crm:dm_prompt:{target_id}"),
+        InlineKeyboardButton(text="📝 Заметка админа", callback_data=f"crm:notes_prompt:{target_id}")
+    )
+
+    # Строка 3: Продление тарифов
     builder.row(
         InlineKeyboardButton(text="🎁 +3 дня (Триал)", callback_data=f"crm:extend_days:{target_id}:3"),
         InlineKeyboardButton(text="💎 +30 дней ($50)", callback_data=f"crm:extend_days:{target_id}:30")
@@ -206,17 +221,64 @@ def admin_user_card_keyboard(target_id: int, is_active: bool, is_lifetime: bool 
         InlineKeyboardButton(text="🚀 +90 дней ($140)", callback_data=f"crm:extend_days:{target_id}:90"),
         InlineKeyboardButton(text="👑 +365 дней ($500)", callback_data=f"crm:extend_days:{target_id}:365")
     )
-    # Строка 3: Бессрочный доступ (VIP для братьев и друзей)
+
+    # Строка 4: Свой срок и история платежей
+    builder.row(
+        InlineKeyboardButton(text="✍️ Свой срок (дни)", callback_data=f"crm:custom_days_prompt:{target_id}"),
+        InlineKeyboardButton(text="💳 История оплат", callback_data=f"crm:payments_history:{target_id}")
+    )
+
+    # Строка 5: Бессрочный доступ (VIP для братьев и друзей)
     lifetime_text = "✨ Снять VIP статус" if is_lifetime else "♾️ Бессрочно (Братья / VIP)"
     builder.row(
         InlineKeyboardButton(text=lifetime_text, callback_data=f"crm:lifetime:{target_id}")
     )
-    # Строка 4: Удаление и возврат
+
+    # Строка 6: Удаление и возврат
     builder.row(
         InlineKeyboardButton(text="🗑️ Удалить клиента", callback_data=f"crm:delete:{target_id}"),
         InlineKeyboardButton(text="◀️ Назад в CRM", callback_data="menu:crm")
     )
     return builder.as_markup()
+
+
+def cancel_crm_action_keyboard(target_id: int) -> InlineKeyboardMarkup:
+    """Кнопка отмены ввода для действий CRM (DM, заметки, дни)."""
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="❌ Отмена", callback_data=f"crm:user:{target_id}")
+    )
+    return builder.as_markup()
+
+
+def cancel_crm_search_keyboard() -> InlineKeyboardMarkup:
+    """Кнопка отмены поиска в CRM."""
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="❌ Отмена поиска", callback_data="menu:crm")
+    )
+    return builder.as_markup()
+
+
+def crm_finance_keyboard() -> InlineKeyboardMarkup:
+    """Клавиатура окна финансов и кассы CRM."""
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="📥 Скачать базу (.CSV)", callback_data="crm:export_csv"),
+        InlineKeyboardButton(text="◀️ Назад в CRM", callback_data="menu:crm")
+    )
+    return builder.as_markup()
+
+
+def crm_payments_history_keyboard(target_id: int) -> InlineKeyboardMarkup:
+    """Клавиатура истории оплат пользователя."""
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="◀️ Назад к карточке", callback_data=f"crm:user:{target_id}"),
+        InlineKeyboardButton(text="📂 В список CRM", callback_data="menu:crm")
+    )
+    return builder.as_markup()
+
 
 
 def terminal_dashboard_keyboard() -> InlineKeyboardMarkup:

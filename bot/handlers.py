@@ -533,8 +533,8 @@ async def cb_guide(callback: CallbackQuery):
         await safe_edit(callback, "🏛 <b>ГЛАВНОЕ МЕНЮ ТЕРМИНАЛА:</b>", reply_markup=main_menu_keyboard(), parse_mode="HTML")
 
 async def get_crm_view(tab: str = "all", page: int = 1, page_size: int = 8):
-    """Формирует данные и клавиатуру для CRM панели администратора с вкладками и пагинацией."""
-    from db.users import get_all_users_filtered, get_all_users
+    """Формирует данные и клавиатуру для CRM панели администратора с поиском, финансами, вкладками и пагинацией."""
+    from db.users import get_all_users_filtered, get_all_users, get_crm_finance_summary
     from bot.keyboards import admin_users_crm_keyboard
 
     all_users = await get_all_users()
@@ -542,6 +542,8 @@ async def get_crm_view(tab: str = "all", page: int = 1, page_size: int = 8):
     revoked_cnt = sum(1 for u in all_users if u.get("status") in ("revoked", "expired"))
     pending_cnt = sum(1 for u in all_users if u.get("status") == "pending")
     total_clients = len([u for u in all_users if u.get("telegram_id") != config.ADMIN_ID])
+
+    fin = await get_crm_finance_summary()
 
     filtered_users = await get_all_users_filtered(filter_type=tab)
     total_items = len(filtered_users)
@@ -559,16 +561,18 @@ async def get_crm_view(tab: str = "all", page: int = 1, page_size: int = 8):
     }
     tab_title = tab_titles.get(tab, "Клиенты")
 
+    month_name = fin.get('month_name') or 'текущий месяц'
     text = (
         "👥 <b>УПРАВЛЕНИЕ КЛИЕНТАМИ И ПОДПИСКАМИ (CRM)</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"💰 <b>Выручка CRM:</b> <b>${fin['total_usd']:.2f}</b> (за {month_name}: <code>${fin['month_usd']:.2f}</code>)\n"
+        f"📊 <b>Клиентов в базе:</b> {total_clients} | <b>Платящих:</b> {fin['unique_clients']}\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"📊 <b>Всего клиентов в базе:</b> {total_clients}\n"
         f"• 🟢 Активных подписок: <b>{active_cnt}</b>\n"
         f"• 🔴 Отключенных / Истёкших: <b>{revoked_cnt}</b>\n"
         f"• ⏳ Ожидающих заявок: <b>{pending_cnt}</b>\n\n"
         f"📂 <b>Вкладка:</b> {tab_title} ({total_items})\n\n"
-        "Нажмите на любого клиента ниже, чтобы открыть его карточку, проверить активность, "
-        "<b>отключить доступ (Kick)</b> или продлить срок 👇\n"
+        "<i>Нажмите на клиента для карточки, поиска, заметок или продления 👇</i>\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     )
     kb = admin_users_crm_keyboard(page_users, tab=tab, page=page, total_pages=total_pages)
@@ -929,6 +933,148 @@ async def handle_user_text_input(message: Message):
         return
 
     state = get_user_state(message.from_user.id)
+
+    # 1. CRM Search
+    if state.get("awaiting_crm_search"):
+        state["awaiting_crm_search"] = False
+        query = message.text.strip()
+        from db.users import search_users, get_user_ltv
+        from bot.keyboards import admin_user_card_keyboard, cancel_crm_search_keyboard
+        from aiogram.utils.keyboard import InlineKeyboardBuilder
+        from aiogram.types import InlineKeyboardButton
+
+        results = await search_users(query)
+        if not results:
+            prompt = (
+                f"🔍 <b>ПОИСК КЛИЕНТА В CRM</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                f"По запросу <code>{html.escape(query)}</code> никого не найдено.\n\n"
+                f"Попробуйте ввести другой username или Telegram ID 👇"
+            )
+            state["awaiting_crm_search"] = True
+            await message.answer(prompt, reply_markup=cancel_crm_search_keyboard(), parse_mode="HTML")
+            return
+
+        if len(results) == 1:
+            u = results[0]
+            target_id = u["telegram_id"]
+            is_active = (u.get("status") == "approved")
+            is_life = bool(u.get("is_lifetime", 0))
+            ltv_usd, ltv_cnt = await get_user_ltv(target_id)
+            card_text = format_crm_user_card(u, ltv_usd=ltv_usd, payments_cnt=ltv_cnt)
+            await message.answer(f"✅ <b>Клиент найден!</b>\n\n{card_text}",
+                                 reply_markup=admin_user_card_keyboard(target_id, is_active=is_active, is_lifetime=is_life),
+                                 parse_mode="HTML")
+            return
+
+        builder = InlineKeyboardBuilder()
+        for u in results[:10]:
+            uid = u["telegram_id"]
+            un = f"@{u['username']}" if u.get("username") else f"ID:{uid}"
+            fn = u.get("first_name") or "Клиент"
+            builder.row(InlineKeyboardButton(text=f"👤 {fn} ({un})", callback_data=f"crm:user:{uid}"))
+        builder.row(InlineKeyboardButton(text="◀️ В Главное Меню CRM", callback_data="menu:crm"))
+
+        await message.answer(
+            f"🔍 <b>РЕЗУЛЬТАТЫ ПОИСКА ({len(results)}):</b>\n"
+            f"Выберите клиента из списка ниже 👇",
+            reply_markup=builder.as_markup(),
+            parse_mode="HTML"
+        )
+        return
+
+    # 2. CRM Admin Notes
+    if state.get("awaiting_crm_notes"):
+        target_id = state.pop("awaiting_crm_notes")
+        notes_text = message.text.strip()
+        from db.users import update_admin_notes, get_user, get_user_ltv
+        from bot.keyboards import admin_user_card_keyboard
+        await update_admin_notes(target_id, notes_text)
+        u = await get_user(target_id)
+        if u:
+            is_active = (u.get("status") == "approved")
+            is_life = bool(u.get("is_lifetime", 0))
+            ltv_usd, ltv_cnt = await get_user_ltv(target_id)
+            card_text = format_crm_user_card(u, ltv_usd=ltv_usd, payments_cnt=ltv_cnt)
+            await message.answer(f"✅ <b>Заметка успешно сохранена!</b>\n\n{card_text}",
+                                 reply_markup=admin_user_card_keyboard(target_id, is_active=is_active, is_lifetime=is_life),
+                                 parse_mode="HTML")
+        return
+
+    # 3. CRM Direct Message
+    if state.get("awaiting_crm_dm"):
+        target_id = state.pop("awaiting_crm_dm")
+        dm_text = message.text.strip()
+        from db.users import get_user, get_user_ltv
+        from bot.keyboards import admin_user_card_keyboard
+        u = await get_user(target_id)
+        un = f"@{u['username']}" if u and u.get("username") else f"ID {target_id}"
+
+        client_msg = (
+            "📩 <b>СООБЩЕНИЕ ОТ АДМИНИСТРАЦИИ SMART TRADER</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"{html.escape(dm_text)}\n\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "<i>Вы можете ответить на это сообщение прямо в чате бота.</i>"
+        )
+        try:
+            await message.bot.send_message(target_id, client_msg, parse_mode="HTML")
+            sent_ok = True
+        except Exception as e:
+            sent_ok = False
+            err_msg = str(e)
+
+        if u:
+            is_active = (u.get("status") == "approved")
+            is_life = bool(u.get("is_lifetime", 0))
+            ltv_usd, ltv_cnt = await get_user_ltv(target_id)
+            status_report = f"✅ <b>Сообщение успешно доставлено клиенту {un}!</b>" if sent_ok else f"❌ <b>Ошибка отправки ({err_msg})</b>"
+            card_text = format_crm_user_card(u, ltv_usd=ltv_usd, payments_cnt=ltv_cnt)
+            await message.answer(f"{status_report}\n\n{card_text}",
+                                 reply_markup=admin_user_card_keyboard(target_id, is_active=is_active, is_lifetime=is_life),
+                                 parse_mode="HTML")
+        return
+
+    # 4. CRM Custom Days
+    if state.get("awaiting_crm_custom_days"):
+        target_id = state.pop("awaiting_crm_custom_days")
+        try:
+            days_val = int(message.text.strip())
+            if days_val <= 0 or days_val > 3650:
+                raise ValueError
+        except ValueError:
+            from bot.keyboards import cancel_crm_action_keyboard
+            state["awaiting_crm_custom_days"] = target_id
+            await message.answer("⚠️ <b>Некорректное число дней!</b>\nВведите целое число от 1 до 3650:",
+                                 reply_markup=cancel_crm_action_keyboard(target_id), parse_mode="HTML")
+            return
+
+        from db.users import extend_subscription, get_user, get_user_ltv
+        from bot.keyboards import admin_user_card_keyboard
+        ok, new_exp = await extend_subscription(target_id, days=days_val)
+        exp_date_str = new_exp[:10] if new_exp else "успешно"
+        try:
+            await message.bot.send_message(
+                target_id,
+                f"💎 <b>Администратор продлил ваш доступ на {days_val} дней!</b>\n\n"
+                f"Подписка активна до: <code>{exp_date_str}</code> 🚀\n"
+                f"Отправьте /start чтобы открыть терминал.",
+                parse_mode="HTML"
+            )
+        except Exception:
+            pass
+
+        u = await get_user(target_id)
+        if u:
+            is_active = (u.get("status") == "approved")
+            is_life = bool(u.get("is_lifetime", 0))
+            ltv_usd, ltv_cnt = await get_user_ltv(target_id)
+            card_text = format_crm_user_card(u, ltv_usd=ltv_usd, payments_cnt=ltv_cnt)
+            await message.answer(f"➕ <b>Доступ успешно продлён на {days_val} дн. (до {exp_date_str})!</b>\n\n{card_text}",
+                                 reply_markup=admin_user_card_keyboard(target_id, is_active=is_active, is_lifetime=is_life),
+                                 parse_mode="HTML")
+        return
+
     if state.get("awaiting_custom_lot"):
         raw_text = message.text.strip().replace(',', '.')
         try:
@@ -1400,6 +1546,136 @@ async def cb_crm_actions(callback: CallbackQuery):
         await callback.answer()
         return
 
+    elif action == "search_prompt":
+        state = get_user_state(callback.from_user.id)
+        state["awaiting_crm_search"] = True
+        from bot.keyboards import cancel_crm_search_keyboard
+        prompt = (
+            "🔍 <b>ПОИСК КЛИЕНТА В CRM</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "Введите <b>@username</b>, <b>Имя</b> или <b>Telegram ID</b> клиента сообщением в чат:\n\n"
+            "<i>Примеры: <code>@m_bakhtiyor</code>, <code>2122425599</code>, <code>Bakhtiyor</code></i>\n\n"
+            "<i>Для отмены нажмите кнопку ниже 👇</i>"
+        )
+        await safe_edit(callback, prompt, reply_markup=cancel_crm_search_keyboard(), parse_mode="HTML")
+        return
+
+    elif action == "finance_stats":
+        from db.users import get_crm_finance_summary
+        from bot.keyboards import crm_finance_keyboard
+        fin = await get_crm_finance_summary()
+        text = (
+            "💵 <b>ФИНАНСОВАЯ КАССА И ВЫРУЧКА CRM</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"💰 <b>Общая выручка за всё время:</b> <b>${fin['total_usd']:.2f}</b>\n"
+            f"📅 <b>Выручка за текущий месяц ({fin['month_name']}):</b> <b>${fin['month_usd']:.2f}</b>\n\n"
+            "📈 <b>Метрики продаж:</b>\n"
+            f"• Всего успешных оплат: <b>{fin['total_tx']}</b>\n"
+            f"• Уникальных платящих клиентов: <b>{fin['unique_clients']}</b>\n"
+            f"• Средний чек (ARPU): <b>${fin['avg_check']:.2f}</b>\n\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "<i>Вы можете скачать полный список клиентов с историей оплат в формате CSV 👇</i>"
+        )
+        await safe_edit(callback, text, reply_markup=crm_finance_keyboard(), parse_mode="HTML")
+        return
+
+    elif action == "export_csv":
+        from db.users import export_users_to_csv
+        from aiogram.types import BufferedInputFile
+        csv_text = await export_users_to_csv()
+        if not csv_text:
+            await callback.answer("⚠️ База клиентов пуста или произошла ошибка.", show_alert=True)
+            return
+        await callback.answer("📥 Генерирую CSV файл...")
+        today_tag = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        file_bytes = csv_text.encode("utf-8-sig")
+        doc = BufferedInputFile(file_bytes, filename=f"smart_trader_clients_{today_tag}.csv")
+        await callback.bot.send_document(
+            callback.from_user.id,
+            document=doc,
+            caption=f"📁 <b>Экспорт базы клиентов CRM ({today_tag})</b>\nФайл готов для открытия в Excel и Google Таблицах.",
+            parse_mode="HTML"
+        )
+        return
+
+    elif action == "dm_prompt":
+        target_id = int(parts[2])
+        from db.users import get_user
+        from bot.keyboards import cancel_crm_action_keyboard
+        user = await get_user(target_id)
+        un = f"@{user['username']}" if user and user.get("username") else f"ID {target_id}"
+        state = get_user_state(callback.from_user.id)
+        state["awaiting_crm_dm"] = target_id
+        prompt = (
+            f"✉️ <b>ПРЯМОЕ СООБЩЕНИЕ КЛИЕНТУ ({un})</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "Напишите текст сообщения в чат. Бот доставит его клиенту от лица сервиса:\n\n"
+            "<i>Для отмены нажмите кнопку ниже 👇</i>"
+        )
+        await safe_edit(callback, prompt, reply_markup=cancel_crm_action_keyboard(target_id), parse_mode="HTML")
+        return
+
+    elif action == "notes_prompt":
+        target_id = int(parts[2])
+        from db.users import get_user
+        from bot.keyboards import cancel_crm_action_keyboard
+        user = await get_user(target_id)
+        cur_note = user.get("admin_notes") or "(заметки нет)"
+        state = get_user_state(callback.from_user.id)
+        state["awaiting_crm_notes"] = target_id
+        prompt = (
+            f"📝 <b>ЗАМЕТКА АДМИНИСТРАТОРА (ID {target_id})</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"Текущая заметка: <i>«{cur_note}»</i>\n\n"
+            "Отправьте новый текст заметки сообщением в чат:\n"
+            "<i>(Например: 'Оплатил USDT TRC20, контакт в Telegram, скидка 10%')</i>\n\n"
+            "<i>Для отмены нажмите кнопку ниже 👇</i>"
+        )
+        await safe_edit(callback, prompt, reply_markup=cancel_crm_action_keyboard(target_id), parse_mode="HTML")
+        return
+
+    elif action == "custom_days_prompt":
+        target_id = int(parts[2])
+        from bot.keyboards import cancel_crm_action_keyboard
+        state = get_user_state(callback.from_user.id)
+        state["awaiting_crm_custom_days"] = target_id
+        prompt = (
+            f"✍️ <b>ПРОДЛЕНИЕ НА СВОЙ СРОК (ID {target_id})</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "Введите число дней для продления подписки (например: <code>7</code>, <code>14</code>, <code>45</code>, <code>60</code>):\n\n"
+            "<i>Для отмены нажмите кнопку ниже 👇</i>"
+        )
+        await safe_edit(callback, prompt, reply_markup=cancel_crm_action_keyboard(target_id), parse_mode="HTML")
+        return
+
+    elif action == "payments_history":
+        target_id = int(parts[2])
+        from db.users import get_user, get_user_payments, get_user_ltv
+        from bot.keyboards import crm_payments_history_keyboard
+        user = await get_user(target_id)
+        payments = await get_user_payments(target_id)
+        ltv_usd, ltv_cnt = await get_user_ltv(target_id)
+        un = f"@{user['username']}" if user and user.get("username") else f"ID {target_id}"
+
+        lines = [
+            f"💳 <b>ИСТОРИЯ ОПЛАТ КЛИЕНТА: {un}</b>",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            f"💰 <b>Всего оплачено (LTV):</b> <b>${ltv_usd:.2f}</b> (<code>{ltv_cnt}</code> оплат)",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+        ]
+        if not payments:
+            lines.append("<i>Платежей в базе пока нет (выдавался триал или ручной доступ).</i>")
+        else:
+            for p in payments:
+                dt_str = (p.get("created_at") or "")[:10]
+                amt = float(p.get("amount_usd") or 0.0)
+                p_tariff = p.get("tariff") or ""
+                p_days = p.get("days_added") or 0
+                lines.append(f"• 📅 <code>{dt_str}</code>: <b>+${amt:.2f}</b> ({p_tariff}, +{p_days} дн.)")
+        lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        await safe_edit(callback, "\n".join(lines), reply_markup=crm_payments_history_keyboard(target_id), parse_mode="HTML")
+        return
+
     elif action == "user":
         target_id = int(parts[2])
         from db.users import get_user
@@ -1411,7 +1687,9 @@ async def cb_crm_actions(callback: CallbackQuery):
 
         is_active = (user.get("status") == "approved")
         is_life = bool(user.get("is_lifetime", 0))
-        text = format_crm_user_card(user)
+        from db.users import get_user_ltv
+        ltv_usd, ltv_cnt = await get_user_ltv(target_id)
+        text = format_crm_user_card(user, ltv_usd=ltv_usd, payments_cnt=ltv_cnt)
         await safe_edit(callback, text, reply_markup=admin_user_card_keyboard(target_id, is_active=is_active, is_lifetime=is_life), parse_mode="HTML")
 
     elif action == "revoke":

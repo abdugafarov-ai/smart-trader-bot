@@ -625,8 +625,8 @@ def format_welcome(is_admin: bool = False) -> str:
     )
 
 
-def format_crm_user_card(user: dict) -> str:
-    """Форматирует детальную карточку пользователя в CRM для администратора."""
+def format_crm_user_card(user: dict, ltv_usd: float = 0.0, payments_cnt: int = 0) -> str:
+    """Форматирует детальную карточку пользователя в CRM для администратора с LTV и заметками."""
     uid = user.get("telegram_id")
     first_name = user.get("first_name") or "—"
     username = f"@{user['username']}" if user.get("username") else "отсутствует"
@@ -637,6 +637,7 @@ def format_crm_user_card(user: dict) -> str:
     last_seen = (user.get("last_seen") or "—")[:19].replace("T", " ")
     activity_cnt = user.get("activity_count") or 0
     expires_at = user.get("expires_at")
+    admin_notes = user.get("admin_notes") or ""
     
     now = datetime.now(timezone.utc)
     if status == "approved":
@@ -650,6 +651,8 @@ def format_crm_user_card(user: dict) -> str:
         status_text = "⚠️ <b>ИСТЁК</b> (требуется продление)" if is_exp else "🟢 <b>АКТИВЕН</b>"
     elif status == "revoked":
         status_text = "🔴 <b>ОТКЛЮЧЕН (REVOKED)</b>"
+    elif status == "expired":
+        status_text = "⏳ <b>ПОДПИСКА ИСТЕКЛА</b>"
     elif status == "pending":
         status_text = "⏳ <b>ОЖИДАЕТ ОДОБРЕНИЯ</b>"
     elif status == "rejected":
@@ -657,7 +660,7 @@ def format_crm_user_card(user: dict) -> str:
     else:
         status_text = f"⚪ <b>{status.upper()}</b>"
 
-    exp_text = "Бессрочно"
+    exp_text = "Бессрочно (VIP)"
     days_left_text = "—"
     if expires_at:
         try:
@@ -668,6 +671,8 @@ def format_crm_user_card(user: dict) -> str:
         except Exception:
             exp_text = str(expires_at)[:10]
 
+    notes_text = f"<i>«{admin_notes}»</i>" if admin_notes else "<i>(нет заметки — нажмите «📝 Заметка админа»)</i>"
+
     return (
         "👤 <b>КАРТОЧКА КЛИЕНТА | CRM ПАНЕЛЬ</b>\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
@@ -677,6 +682,8 @@ def format_crm_user_card(user: dict) -> str:
         f"📡 <b>Статус доступа:</b> {status_text}\n"
         f"💎 <b>Тарифный план:</b> <code>{tariff}</code>\n"
         f"📅 <b>Подписка до:</b> <code>{exp_text}</code> (осталось: <b>{days_left_text}</b>)\n\n"
+        f"💰 <b>ФИНАНСЫ (LTV):</b> <b>${ltv_usd:.2f}</b> (<code>{payments_cnt}</code> оплат)\n"
+        f"📝 <b>ЗАМЕТКА АДМИНА:</b> {notes_text}\n\n"
         "⏱ <b>ИСТОРИЯ РЕГИСТРАЦИИ:</b>\n"
         f"• Подача заявки: <code>{requested_at} UTC</code>\n"
         f"• Дата активации: <code>{approved_at} UTC</code>\n\n"
@@ -684,7 +691,7 @@ def format_crm_user_card(user: dict) -> str:
         f"• Последний визит: <code>{last_seen} UTC</code>\n"
         f"• Всего действий в боте: <b>{activity_cnt}</b>\n\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        "<i>Используйте кнопки ниже для отключения доступа или продления тарифа 👇</i>"
+        "<i>Используйте кнопки ниже для управления тарифом или отправки сообщения 👇</i>"
     )
 
 
