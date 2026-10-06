@@ -41,3 +41,4 @@ scratch/
 bot.pid
 test_*.png
 test_*.py
+*.log*
