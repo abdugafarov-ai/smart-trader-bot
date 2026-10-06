@@ -745,6 +745,36 @@ async def cb_menu_actions(callback: CallbackQuery):
             daily_locked=getattr(bridge_manager, 'daily_loss_locked', False)
         )
         await safe_edit(callback, text, reply_markup=kb, parse_mode="HTML")
+    elif action == "server_status":
+        if callback.from_user.id != config.ADMIN_ID:
+            await callback.answer("❌ Доступно только администратору!", show_alert=True)
+            return
+        from utils.server_health import get_server_health_dashboard
+        from bot.keyboards import server_status_keyboard
+        text = await get_server_health_dashboard()
+        await safe_edit(callback, text, reply_markup=server_status_keyboard(), parse_mode="HTML")
+    elif action == "clear_cache":
+        if callback.from_user.id != config.ADMIN_ID:
+            await callback.answer("❌ Доступно только администратору!", show_alert=True)
+            return
+        from utils.server_health import execute_cache_cleanup
+        from bot.keyboards import server_cleaned_keyboard
+        await callback.answer("🧹 Очищаю кэш и временный мусор...", show_alert=False)
+        res = await execute_cache_cleanup()
+        freed_str = res.get("bytes_freed_str", "0 B")
+        files_cnt = res.get("files_removed", 0)
+        disk_free = res.get("disk_free_str", "—")
+        actions_list = "\n".join([f"• {a}" for a in res.get("actions", [])])
+        text = (
+            "✅ <b>СЕРВЕР УСПЕШНО ОЧИЩЕН & ОПТИМИЗИРОВАН</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"🧹 <b>Удалено мусора:</b> <code>{files_cnt} файлов</code> (<b>{freed_str}</b>)\n"
+            f"💾 <b>Свободно на диске теперь:</b> <b>{disk_free}</b> 🟢\n\n"
+            f"<b>Выполненные операции:</b>\n{actions_list}\n\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "🚀 <i>Память освобождена, база данных сжата. Риск зависания устранён!</i>"
+        )
+        await safe_edit(callback, text, reply_markup=server_cleaned_keyboard(), parse_mode="HTML")
     elif action == "main":
         is_admin = (callback.from_user.id == config.ADMIN_ID)
         kb = admin_menu_keyboard() if is_admin else client_menu_keyboard()
@@ -798,6 +828,80 @@ async def cb_panic_exec(callback: CallbackQuery):
     )
     await safe_edit(callback, text, reply_markup=terminal_dashboard_keyboard(), parse_mode="HTML")
 
+
+@router.callback_query(F.data == "server:refresh")
+async def cb_server_refresh(callback: CallbackQuery):
+    if callback.from_user.id != config.ADMIN_ID:
+        await callback.answer("❌ Доступно только администратору!", show_alert=True)
+        return
+    from utils.server_health import get_server_health_dashboard
+    from bot.keyboards import server_status_keyboard
+    await callback.answer("🔄 Данные сервера обновлены!")
+    text = await get_server_health_dashboard()
+    await safe_edit(callback, text, reply_markup=server_status_keyboard(), parse_mode="HTML")
+
+
+@router.callback_query(F.data == "server:clear_cache")
+async def cb_server_clear_cache(callback: CallbackQuery):
+    if callback.from_user.id != config.ADMIN_ID:
+        await callback.answer("❌ Доступно только администратору!", show_alert=True)
+        return
+    from utils.server_health import execute_cache_cleanup
+    from bot.keyboards import server_cleaned_keyboard
+    await callback.answer("🧹 Очищаю кэш и временный мусор...", show_alert=False)
+    res = await execute_cache_cleanup()
+    freed_str = res.get("bytes_freed_str", "0 B")
+    files_cnt = res.get("files_removed", 0)
+    disk_free = res.get("disk_free_str", "—")
+    actions_list = "\n".join([f"• {a}" for a in res.get("actions", [])])
+    text = (
+        "✅ <b>СЕРВЕР УСПЕШНО ОЧИЩЕН & ОПТИМИЗИРОВАН</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"🧹 <b>Удалено мусора:</b> <code>{files_cnt} файлов</code> (<b>{freed_str}</b>)\n"
+        f"💾 <b>Свободно на диске теперь:</b> <b>{disk_free}</b> 🟢\n\n"
+        f"<b>Выполненные операции:</b>\n{actions_list}\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "🚀 <i>Память освобождена, база данных сжата. Риск зависания устранён!</i>"
+    )
+    await safe_edit(callback, text, reply_markup=server_cleaned_keyboard(), parse_mode="HTML")
+
+
+@router.message(Command("server"))
+@router.message(Command("health"))
+async def cmd_server_health(message: Message):
+    if message.from_user.id != config.ADMIN_ID:
+        await message.answer("❌ Доступно только администратору.")
+        return
+    from utils.server_health import get_server_health_dashboard
+    from bot.keyboards import server_status_keyboard
+    text = await get_server_health_dashboard()
+    await message.answer(text, reply_markup=server_status_keyboard(), parse_mode="HTML")
+
+
+@router.message(Command("clean"))
+@router.message(Command("clear_cache"))
+async def cmd_clear_cache(message: Message):
+    if message.from_user.id != config.ADMIN_ID:
+        await message.answer("❌ Доступно только администратору.")
+        return
+    from utils.server_health import execute_cache_cleanup
+    from bot.keyboards import server_cleaned_keyboard
+    wait_msg = await message.answer("🧹 Очищаю кэш и временный мусор...")
+    res = await execute_cache_cleanup()
+    freed_str = res.get("bytes_freed_str", "0 B")
+    files_cnt = res.get("files_removed", 0)
+    disk_free = res.get("disk_free_str", "—")
+    actions_list = "\n".join([f"• {a}" for a in res.get("actions", [])])
+    text = (
+        "✅ <b>СЕРВЕР УСПЕШНО ОЧИЩЕН & ОПТИМИЗИРОВАН</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"🧹 <b>Удалено мусора:</b> <code>{files_cnt} файлов</code> (<b>{freed_str}</b>)\n"
+        f"💾 <b>Свободно на диске теперь:</b> <b>{disk_free}</b> 🟢\n\n"
+        f"<b>Выполненные операции:</b>\n{actions_list}\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "🚀 <i>Память освобождена, база данных сжата. Риск зависания устранён!</i>"
+    )
+    await wait_msg.edit_text(text, reply_markup=server_cleaned_keyboard(), parse_mode="HTML")
 
 
 @router.callback_query(F.data.startswith("autotrade:"))

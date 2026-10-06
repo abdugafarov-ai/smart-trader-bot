@@ -33,7 +33,12 @@ def admin_menu_keyboard() -> InlineKeyboardMarkup:
         InlineKeyboardButton(text="⏰ Торговые Сессии", callback_data="menu:sessions"),
         InlineKeyboardButton(text="📰 Макро Календарь", callback_data="menu:news")
     )
-    # 5. Справочник
+    # 5. Состояние Сервера и Обслуживание (VPS Health & Clean)
+    builder.row(
+        InlineKeyboardButton(text="🎛️ Состояние Сервера", callback_data="menu:server_status"),
+        InlineKeyboardButton(text="🧹 Очистить Кэш", callback_data="menu:clear_cache")
+    )
+    # 6. Справочник
     builder.row(
         InlineKeyboardButton(text="📖 Справочник / Инфо", callback_data="menu:help")
     )
@@ -520,4 +525,28 @@ def broadcast_cancel_keyboard() -> InlineKeyboardMarkup:
         InlineKeyboardButton(text="❌ Отменить рассылку", callback_data="broadcast:cancel")
     )
     return builder.as_markup()
+
+
+def server_status_keyboard() -> InlineKeyboardMarkup:
+    """Клавиатура пульта мониторинга сервера."""
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="🔄 Обновить статус", callback_data="server:refresh"),
+        InlineKeyboardButton(text="🧹 Очистить кэш / мусор", callback_data="server:clear_cache")
+    )
+    builder.row(
+        InlineKeyboardButton(text="◀️ В Главное Меню", callback_data="menu")
+    )
+    return builder.as_markup()
+
+
+def server_cleaned_keyboard() -> InlineKeyboardMarkup:
+    """Клавиатура после завершения очистки кэша."""
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="🎛️ К Состоянию Сервера", callback_data="menu:server_status"),
+        InlineKeyboardButton(text="◀️ В Главное Меню", callback_data="menu")
+    )
+    return builder.as_markup()
+
 

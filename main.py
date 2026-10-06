@@ -102,6 +102,8 @@ async def main():
                 BotCommand(command="risk", description="⚖️ Задать риск: /risk 1.0"),
                 BotCommand(command="sessions", description="⏰ Расписание торговых сессий"),
                 BotCommand(command="news", description="📰 Календарь важных новостей"),
+                BotCommand(command="server", description="🎛️ Состояние сервера (VPS Health)"),
+                BotCommand(command="clean", description="🧹 Очистить кэш и мусор от зависаний"),
                 BotCommand(command="reset_drawdown", description="🛡️ Сбросить защиту просадки"),
                 BotCommand(command="help", description="📖 Справочник и документация"),
             ])
