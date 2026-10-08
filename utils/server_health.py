@@ -354,8 +354,24 @@ async def execute_cache_cleanup() -> Dict[str, Any]:
     if platform.system().lower() == "linux":
         try:
             subprocess.run(["apt-get", "clean"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
-            subprocess.run(["journalctl", "--vacuum-size=15M"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
-            actions_taken.append("Очищен системный кэш APT и сжаты системные журналы")
+            subprocess.run(["journalctl", "--vacuum-time=2d", "--vacuum-size=15M"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
+            for old_log in Path("/var/log").glob("*.gz"):
+                try:
+                    bytes_freed += old_log.stat().st_size
+                    old_log.unlink()
+                    files_removed += 1
+                except Exception:
+                    pass
+            snap_cache = Path("/var/lib/snapd/cache")
+            if snap_cache.exists():
+                for sf in snap_cache.iterdir():
+                    try:
+                        bytes_freed += sf.stat().st_size
+                        sf.unlink()
+                        files_removed += 1
+                    except Exception:
+                        pass
+            actions_taken.append("Очищен системный кэш APT, архивные логи и сжаты журналы")
         except Exception:
             pass
 
