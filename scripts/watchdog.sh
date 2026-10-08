@@ -2,8 +2,14 @@
 # Smart Trader 24/7 Watchdog
 
 if ! systemctl is-active --quiet smart-trader-bot.service; then
-    echo smart-trader-bot is inactive. Restarting... >> /root/smart-trader-bot/watchdog.log
+    echo "$(date -u '+%Y-%m-%d %H:%M:%S UTC') - smart-trader-bot is inactive. Restarting..." >> /root/smart-trader-bot/watchdog.log
     systemctl restart smart-trader-bot.service
+fi
+
+# MT5 Terminal Self-Healing
+if ! pgrep -f "terminal64" > /dev/null; then
+    echo "$(date -u '+%Y-%m-%d %H:%M:%S UTC') - MT5 terminal64 is offline. Launching start_mt5.sh..." >> /root/smart-trader-bot/watchdog.log
+    su - trader -c "/home/trader/start_mt5.sh" > /dev/null 2>&1 &
 fi
 
 FREE_MB=$(df -m / | awk 'NR==2 {print $4}')

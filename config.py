@@ -162,7 +162,7 @@ CORRELATION_GROUPS = {
 MAX_CORRELATED_SIGNALS = 2  # Max simultaneous signals in one correlation group
 
 # ── Order Limits (Лимит одновременно открытых ордеров) ────
-MAX_CONCURRENT_ORDERS = 7  # Максимум одновременно активных позиций + отложенных ордеров
+MAX_CONCURRENT_ORDERS = 3  # Синхронизировано с MAX_CONCURRENT_POSITIONS (макс. 3 позиции в рынке)
 
 # ── Micro Account Protection Mode ($12 - $100) ────────────
 MICRO_MAX_CONCURRENT_ORDERS = 1      # Строго 1 сделка в рынке одновременно

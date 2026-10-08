@@ -150,12 +150,24 @@ class AutoSignalScanner:
         """
         Проверяет, не превышен ли лимит одновременно активных/отложенных ордеров.
         В режиме 'micro' разрешен максимум 1 ордер.
-        В режиме 'prop' разрешено до MAX_CONCURRENT_ORDERS (7) ордеров.
+        В режиме 'prop' разрешено до MAX_CONCURRENT_POSITIONS (3) ордеров.
         """
         try:
             from db.database import get_bot_setting
+            from trading.execution_bridge import bridge_manager
             trading_mode = await get_bot_setting("trading_mode", "micro")
-            max_orders = config.MICRO_MAX_CONCURRENT_ORDERS if trading_mode == "micro" else config.MAX_CONCURRENT_ORDERS
+            max_orders = config.MICRO_MAX_CONCURRENT_ORDERS if trading_mode == "micro" else getattr(config, 'MAX_CONCURRENT_POSITIONS', 3)
+
+            # Проверяем живую телеметрию MT5, если терминал в сети
+            is_mt5_online, _ = bridge_manager.is_mt5_online()
+            if is_mt5_online:
+                positions = bridge_manager.mt5_telemetry.get("positions") or []
+                orders = bridge_manager.mt5_telemetry.get("orders") or []
+                total_mt5 = len(positions) + len(orders)
+                if total_mt5 >= max_orders:
+                    logger.info("MT5 active slots limit reached (%d/%d, mode: %s). New signals paused.",
+                                total_mt5, max_orders, trading_mode.upper())
+                    return False
 
             open_signals = await get_active_signals()
             pending = await get_pending_signals()
@@ -202,6 +214,12 @@ class AutoSignalScanner:
             logger.info("Smart Weekly Window active: %s. New signals paused.", window_reason)
             return
 
+        # ── Проверка замка дневного риска (Daily Drawdown Lock) ──
+        from trading.execution_bridge import bridge_manager
+        if bridge_manager.daily_loss_locked:
+            logger.info("Daily loss lock active: %s. Scanner paused.", bridge_manager.daily_lock_reason)
+            return
+
         # Текущий профиль торговли (micro vs prop)
         trading_mode = await get_bot_setting("trading_mode", "micro")
 
@@ -239,6 +257,17 @@ class AutoSignalScanner:
                 # ── ФИЛЬТР 0: Исключение пар для режима Микро ($12) ──
                 if trading_mode == "micro" and symbol in getattr(config, "MICRO_EXCLUDED_PAIRS", ["XAUUSD"]):
                     continue
+
+                # ── ФИЛЬТР 0.1: Предварительная проверка слотов и риска MT5 Risk Guard ──
+                is_mt5_online, _ = bridge_manager.is_mt5_online()
+                if is_mt5_online and bridge_manager.enabled:
+                    allowed, block_reason = bridge_manager.can_open_new_position(symbol, trading_mode)
+                    if not allowed:
+                        if "Лимит слотов" in block_reason or "Защита от дневного убытка" in block_reason:
+                            logger.info("Scanner paused by Risk Guard: %s", block_reason)
+                            break
+                        if any(k in block_reason for k in ["уже открыта", "уже выставлен", "лимит корреляции"]):
+                            continue
 
                 # ── ФИЛЬТР 1: Сессия ──
                 if not self._is_pair_active(symbol):

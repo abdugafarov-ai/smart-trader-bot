@@ -554,6 +554,30 @@ class ICTSMCStrategy(BaseStrategy):
                 tp2 = entry - 3.0 * risk
 
         risk = abs(entry - sl)
+
+        # ── Институциональный лимит максимального стоп-лосса (Outlier Risk Protection) ──
+        sym_u = symbol.upper()
+        if 'XAU' in sym_u:
+            max_sl_dist = 15.00  # Максимум $15.00 (150 пипсов) для Золота (защита от -$90 просадки)
+        elif 'JPY' in sym_u:
+            max_sl_dist = 0.85   # Максимум 85 пипсов для JPY пар
+        elif 'BTC' in sym_u:
+            max_sl_dist = 1500.0
+        elif 'ETH' in sym_u:
+            max_sl_dist = 100.0
+        else:
+            max_sl_dist = 0.0065  # Максимум 65 пипсов для основных Forex пар
+
+        if risk > max_sl_dist:
+            return self._make_result(
+                StrategySignal(
+                    direction="NEUTRAL",
+                    confidence=0,
+                    details=details + [f"Стоп-лосс слишком широкий ({risk:.4f} > max {max_sl_dist:.4f}) — аномальный риск"]
+                ),
+                details + [f"Сетап отброшен: риск по стоп-лоссу превышает институциональный лимит безопасности ({max_sl_dist})"]
+            )
+
         reward_1 = abs(tp1 - entry)
         rr1 = reward_1 / risk if risk > 0 else 0.0
 

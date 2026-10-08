@@ -10,6 +10,7 @@ from typing import Callable, Awaitable, Any
 
 import config
 from db.users import is_user_approved, get_user_status, log_user_activity
+from bot.keyboards import guest_welcome_keyboard
 
 
 class AccessControlMiddleware(BaseMiddleware):
@@ -78,26 +79,30 @@ class AccessControlMiddleware(BaseMiddleware):
                 await event.answer(
                     "🔒 <b>Доступ к боту приостановлен администратором.</b>\n\n"
                     "Действие тарифа завершено или доступ был отключен.\n"
-                    "Для продления подписки обратитесь к администратору.",
-                    parse_mode="HTML"
+                    "Для продления подписки обратитесь к администратору или выберите тариф ниже:",
+                    parse_mode="HTML",
+                    reply_markup=guest_welcome_keyboard()
                 )
             elif status == "expired":
                 await event.answer(
                     "⏳ <b>Срок действия вашей подписки истёк.</b>\n\n"
-                    "Для продления доступа обратитесь к администратору.",
-                    parse_mode="HTML"
+                    "Для продления доступа выберите подходящий тариф или свяжитесь с поддержкой:",
+                    parse_mode="HTML",
+                    reply_markup=guest_welcome_keyboard()
                 )
             elif status == "rejected":
                 await event.answer(
                     "❌ <b>Ваша заявка была отклонена.</b>\n"
-                    "Свяжитесь с администратором для уточнения.",
-                    parse_mode="HTML"
+                    "Свяжитесь с администратором для уточнения деталей:",
+                    parse_mode="HTML",
+                    reply_markup=guest_welcome_keyboard()
                 )
             else:
                 await event.answer(
                     "🔒 <b>Доступ к боту ограничен.</b>\n\n"
-                    "Отправьте /request чтобы подать заявку на доступ.",
-                    parse_mode="HTML"
+                    "Отправьте /request или выберите действие ниже для получения доступа:",
+                    parse_mode="HTML",
+                    reply_markup=guest_welcome_keyboard()
                 )
         elif isinstance(event, CallbackQuery):
             if status == "revoked":
