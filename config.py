@@ -162,7 +162,7 @@ CORRELATION_GROUPS = {
 MAX_CORRELATED_SIGNALS = 2  # Max simultaneous signals in one correlation group
 
 # ── Order Limits (Лимит одновременно открытых ордеров) ────
-MAX_CONCURRENT_ORDERS = 3  # Синхронизировано с MAX_CONCURRENT_POSITIONS (макс. 3 позиции в рынке)
+MAX_CONCURRENT_ORDERS = 5  # Синхронизировано с MAX_CONCURRENT_POSITIONS (макс. 5 позиций в рынке)
 
 # ── Micro Account Protection Mode ($12 - $100) ────────────
 MICRO_MAX_CONCURRENT_ORDERS = 1      # Строго 1 сделка в рынке одновременно
@@ -282,7 +282,7 @@ BRIDGE_API_KEY = os.getenv('BRIDGE_API_KEY', 'stb-default-key-change-me-2026')
 MAX_DAILY_DRAWDOWN_PCT: float = 3.0  # При дневном убытке 3.0% автопилот полностью блокируется
 
 # 2. Ограничение совокупного риска и количества позиций
-MAX_CONCURRENT_POSITIONS: int = 3    # Не более 3 одновременно открытых позиций во всем терминале
+MAX_CONCURRENT_POSITIONS: int = 5    # Не более 5 одновременно открытых позиций во всем терминале
 MAX_POSITIONS_PER_PAIR: int = 1      # Не более 1 позиции на одну валютную пару
 MAX_CURRENCY_EXPOSURE: int = 2       # Не более 2 пар с одинаковой валютой (защита от скачков USD/EUR)
 

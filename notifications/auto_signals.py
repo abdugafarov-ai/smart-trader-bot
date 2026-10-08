@@ -150,13 +150,13 @@ class AutoSignalScanner:
         """
         Проверяет, не превышен ли лимит одновременно активных/отложенных ордеров.
         В режиме 'micro' разрешен максимум 1 ордер.
-        В режиме 'prop' разрешено до MAX_CONCURRENT_POSITIONS (3) ордеров.
+        В режиме 'prop' разрешено до MAX_CONCURRENT_POSITIONS (5) ордеров.
         """
         try:
             from db.database import get_bot_setting
             from trading.execution_bridge import bridge_manager
             trading_mode = await get_bot_setting("trading_mode", "micro")
-            max_orders = config.MICRO_MAX_CONCURRENT_ORDERS if trading_mode == "micro" else getattr(config, 'MAX_CONCURRENT_POSITIONS', 3)
+            max_orders = config.MICRO_MAX_CONCURRENT_ORDERS if trading_mode == "micro" else getattr(config, 'MAX_CONCURRENT_POSITIONS', 5)
 
             # Проверяем живую телеметрию MT5, если терминал в сети
             is_mt5_online, _ = bridge_manager.is_mt5_online()
