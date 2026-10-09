@@ -63,7 +63,8 @@ class WeeklyReporter:
 
         for uid in user_ids:
             try:
-                await self.bot.send_message(uid, report, parse_mode="HTML")
+                protect = (uid != config.ADMIN_ID)
+                await self.bot.send_message(uid, report, parse_mode="HTML", protect_content=protect)
             except Exception as e:
                 logger.error("Failed to send weekly report to %d: %s", uid, e)
 

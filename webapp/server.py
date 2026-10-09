@@ -29,7 +29,7 @@ _bot_instance = None
 
 
 async def _send_telegram_notification(text: str, photo_bytes: bytes = None, text_admin: str = None):
-    """Рассылает уведомление об исполнении/закрытии всем пользователям бота (с графиком при наличии)."""
+    """Рассылает уведомление об исполнении/закрытии всем пользователям бота (с защитой контента от утечек)."""
     global _bot_instance
     if not _bot_instance:
         return
@@ -40,6 +40,7 @@ async def _send_telegram_notification(text: str, photo_bytes: bytes = None, text
             recipients.append(config.ADMIN_ID)
         for uid in recipients:
             msg_to_send = text_admin if (uid == config.ADMIN_ID and text_admin) else text
+            protect = (uid != config.ADMIN_ID)
             try:
                 if photo_bytes:
                     from aiogram.types import BufferedInputFile
@@ -47,13 +48,14 @@ async def _send_telegram_notification(text: str, photo_bytes: bytes = None, text
                         uid,
                         photo=BufferedInputFile(photo_bytes, filename="trade_outcome.png"),
                         caption=msg_to_send,
-                        parse_mode="HTML"
+                        parse_mode="HTML",
+                        protect_content=protect
                     )
                 else:
-                    await _bot_instance.send_message(uid, msg_to_send, parse_mode="HTML")
+                    await _bot_instance.send_message(uid, msg_to_send, parse_mode="HTML", protect_content=protect)
             except Exception as err:
                 try:
-                    await _bot_instance.send_message(uid, msg_to_send, parse_mode=None)
+                    await _bot_instance.send_message(uid, msg_to_send, parse_mode=None, protect_content=protect)
                 except Exception:
                     pass
                 logger.error("Failed to send bridge notification to %d: %s", uid, err)
@@ -73,13 +75,14 @@ async def _send_admin_only(text: str, photo_bytes: bytes = None):
                 config.ADMIN_ID,
                 photo=BufferedInputFile(photo_bytes, filename="trade_outcome.png"),
                 caption=text,
-                parse_mode="HTML"
+                parse_mode="HTML",
+                protect_content=False
             )
         else:
-            await _bot_instance.send_message(config.ADMIN_ID, text, parse_mode="HTML")
+            await _bot_instance.send_message(config.ADMIN_ID, text, parse_mode="HTML", protect_content=False)
     except Exception as err:
         try:
-            await _bot_instance.send_message(config.ADMIN_ID, text, parse_mode=None)
+            await _bot_instance.send_message(config.ADMIN_ID, text, parse_mode=None, protect_content=False)
         except Exception:
             pass
         logger.error("Failed to send admin-only notification: %s", err)

@@ -20,7 +20,7 @@ async def main():
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
     )
     
-    bot = Bot(token=config.BOT_TOKEN, default=DefaultBotProperties())
+    bot = Bot(token=config.BOT_TOKEN, default=DefaultBotProperties(protect_content=True))
     dp = Dispatcher()
 
     # Middleware: контроль доступа (только одобренные пользователи)

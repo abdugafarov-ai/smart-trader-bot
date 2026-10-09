@@ -1473,7 +1473,7 @@ async def cb_request_actions(callback: CallbackQuery):
                 await callback.answer("⚠️ Ошибка активации пробного периода. Попробуйте позже.", show_alert=True)
             return
 
-        # Платные тарифы (1m, 3m, 1y) — выставление инвойса с реквизитами
+        # Платные тарифы (1m, 3m, 1y) — выставление информации и прямая связь с администратором
         plan_info = {
             "1m": {"label": "💎 Тариф 1 Месяц", "price": "$50", "days": 30, "usd": 50.0},
             "3m": {"label": "🚀 Тариф 3 Месяца", "price": "$140 (скидка $10)", "days": 90, "usd": 140.0},
@@ -1481,147 +1481,62 @@ async def cb_request_actions(callback: CallbackQuery):
         }
         info = plan_info.get(plan_code, plan_info["1m"])
         from bot.keyboards import payment_invoice_keyboard
+        username = config.ADMIN_USERNAME
+        admin_url = f"https://t.me/{username}" if username else f"tg://user?id={config.ADMIN_ID}"
         invoice_text = (
-            f"💎 <b>ОФОРМЛЕНИЕ ПОДПИСКИ SMART TRADER BOT</b>\n"
+            f"💎 <b>ОФОРМЛЕНИЕ VIP-ПОДПИСКИ</b>\n"
             f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
             f"📦 <b>Выбранный план:</b> <b>{info['label']}</b>\n"
             f"💵 <b>Сумма к оплате:</b> <b>{info['price']}</b>\n"
             f"⏳ <b>Срок действия:</b> <b>{info['days']} дней</b>\n"
             f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            f"💳 <b>РЕКВИЗИТЫ ДЛЯ ОПЛАТЫ:</b>\n\n"
-            f"💵 <b>USDT (TRC-20):</b>\n"
-            f"<code>TNPn5XgKSm37482nE4Qj1N3i185x95gM7Z</code>\n"
-            f"<i>(Сеть TRON TRC-20 — копируется кликом)</i>\n\n"
-            f"💎 <b>TON / Telegram Wallet:</b>\n"
-            f"<code>UQDF28yH6mG9V4f31l9vC7qZ6y_sLw...</code> <i>(или по запросу)</i>\n\n"
-            f"💳 <b>Банковская карта (РФ / СНГ / UZS):</b>\n"
-            f"<i>Номер карты для перевода уточняйте у администратора</i>\n\n"
+            f"🔒 <b>ЗАКРЫТЫЙ ТОРГОВЫЙ ТЕРМИНАЛ:</b>\n"
+            f"Smart Trader Bot — приватный институциональный сервис.\n"
+            f"Выдача доступа и выбор удобного способа оплаты происходят напрямую через Администратора.\n\n"
+            f"💳 <b>ДОСТУПНЫЕ МЕТОДЫ ОПЛАТЫ:</b>\n"
+            f"• <b>USDT (TRC-20 / TON / BEP-20)</b>\n"
+            f"• <b>Банковская карта (РФ / СНГ / UZS)</b>\n"
+            f"• <b>Telegram Wallet / Криптовалюты</b>\n\n"
             f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"📌 <b>ИНСТРУКЦИЯ ПОСЛЕ ОПЛАТЫ:</b>\n"
-            f"1. Нажмите кнопку <b>«📸 Отправить чек об оплате»</b> ниже.\n"
-            f"2. Прикрепите скриншот или фото квитанции в этот чат.\n"
-            f"3. Бот мгновенно передаст чек администратору для активации!"
+            f"📌 <b>ИНСТРУКЦИЯ ДЛЯ ПОДКЛЮЧЕНИЯ:</b>\n"
+            f"1. Нажмите кнопку <b>«💬 Написать Администратору»</b> ниже.\n"
+            f"2. Сообщите выбранный тариф: <b>{info['label']}</b>.\n"
+            f"3. Администратор предоставит реквизиты и моментально включит вам доступ!"
         )
         await safe_edit(callback, invoice_text, reply_markup=payment_invoice_keyboard(plan_code), parse_mode="HTML")
         return
 
     elif action == "receipt":
         plan_code = parts[2] if len(parts) > 2 else "1m"
-        state = get_user_state(user_id)
-        state["awaiting_receipt_plan"] = plan_code
-        from bot.keyboards import cancel_receipt_keyboard
-        prompt_text = (
-            "📸 <b>ОТПРАВЬТЕ ЧЕК ОБ ОПЛАТЕ</b>\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "Отправьте фото, скриншот или файл квитанции об оплате в этот чат.\n\n"
-            "Бот моментально передаст его администратору для включения доступа! 🚀"
-        )
-        await safe_edit(callback, prompt_text, reply_markup=cancel_receipt_keyboard(), parse_mode="HTML")
+        from bot.keyboards import payment_invoice_keyboard
+        await safe_edit(callback, "Для оплаты и подключения свяжитесь с Администратором 👇", reply_markup=payment_invoice_keyboard(plan_code), parse_mode="HTML")
         return
 
 
-@router.message(F.photo)
-async def handle_payment_receipt_photo(message: Message):
-    """Приём чека об оплате в виде фото и прямая пересылка администратору (0 байт на диске VPS)."""
-    state = get_user_state(message.from_user.id)
-    plan_code = state.get("awaiting_receipt_plan")
-    if not plan_code:
+@router.message(F.photo | F.document | F.video | F.voice | F.audio | F.sticker | F.animation | F.video_note)
+async def handle_prohibited_media(message: Message):
+    """Строгая блокировка входящих медиафайлов, скриншотов и документов в закрытом боте."""
+    if message.from_user and message.from_user.id == config.ADMIN_ID:
+        state = get_user_state(message.from_user.id)
+        if state.get("broadcast_waiting_message"):
+            from bot.handlers import handle_admin_broadcast_message
+            return await handle_admin_broadcast_message(message)
         return
 
-    state.pop("awaiting_receipt_plan", None)
-    user_id = message.from_user.id
-    username = message.from_user.username or ""
-    first_name = message.from_user.first_name or "Клиент"
-
-    plan_info = {
-        "1m": {"label": "💎 Тариф 1 Месяц ($50)", "usd": 50.0, "days": 30},
-        "3m": {"label": "🚀 Тариф 3 Месяца ($140)", "usd": 140.0, "days": 90},
-        "1y": {"label": "👑 Тариф 1 Год ($500)", "usd": 500.0, "days": 365},
-    }
-    info = plan_info.get(plan_code, plan_info["1m"])
-
-    if config.ADMIN_ID:
-        try:
-            from bot.keyboards import admin_cheque_keyboard
-            un_text = f"@{html.escape(username)}" if username else f"ID: <code>{user_id}</code>"
-            safe_fn = html.escape(str(first_name or ""))
-            admin_caption = (
-                f"📸 <b>НОВЫЙ ЧЕК НА ОПЛАТУ!</b>\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                f"👤 Клиент: <b>{safe_fn}</b> ({un_text})\n"
-                f"🆔 Telegram ID: <code>{user_id}</code>\n"
-                f"📦 Выбран тариф: <b>{info['label']}</b>\n"
-                f"💵 Сумма: <b>${info['usd']:.2f}</b> ({info['days']} дн.)\n\n"
-                f"Подтвердить оплату и активировать подписку клиенту? 👇"
-            )
-            await message.bot.send_photo(
-                chat_id=config.ADMIN_ID,
-                photo=message.photo[-1].file_id,
-                caption=admin_caption,
-                reply_markup=admin_cheque_keyboard(user_id, plan_code),
-                parse_mode="HTML"
-            )
-        except Exception as e:
-            logger.error("Failed to forward receipt photo to admin: %s", e)
+    username = config.ADMIN_USERNAME
+    admin_url = f"https://t.me/{username}" if username else f"tg://user?id={config.ADMIN_ID}"
+    from aiogram.utils.keyboard import InlineKeyboardBuilder
+    from aiogram.types import InlineKeyboardButton
+    builder = InlineKeyboardBuilder()
+    builder.row(InlineKeyboardButton(text="💬 Написать Администратору", url=admin_url))
+    builder.row(InlineKeyboardButton(text="◀️ В Главное Меню", callback_data="menu"))
 
     await message.answer(
-        "✅ <b>Чек успешно получен и передан администратору!</b>\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "Администратор проверяет платёж. Как только оплата будет подтверждена, ваш доступ активируется моментально! 🔔",
-        reply_markup=back_keyboard(),
-        parse_mode="HTML"
-    )
-
-
-@router.message(F.document)
-async def handle_payment_receipt_document(message: Message):
-    """Приём чека об оплате в виде документа/файла (0 байт на диске VPS)."""
-    state = get_user_state(message.from_user.id)
-    plan_code = state.get("awaiting_receipt_plan")
-    if not plan_code:
-        return
-
-    state.pop("awaiting_receipt_plan", None)
-    user_id = message.from_user.id
-    username = message.from_user.username or ""
-    first_name = message.from_user.first_name or "Клиент"
-
-    plan_info = {
-        "1m": {"label": "💎 Тариф 1 Месяц ($50)", "usd": 50.0, "days": 30},
-        "3m": {"label": "🚀 Тариф 3 Месяца ($140)", "usd": 140.0, "days": 90},
-        "1y": {"label": "👑 Тариф 1 Год ($500)", "usd": 500.0, "days": 365},
-    }
-    info = plan_info.get(plan_code, plan_info["1m"])
-
-    if config.ADMIN_ID:
-        try:
-            from bot.keyboards import admin_cheque_keyboard
-            un_text = f"@{html.escape(username)}" if username else f"ID: <code>{user_id}</code>"
-            safe_fn = html.escape(str(first_name or ""))
-            admin_caption = (
-                f"📄 <b>НОВЫЙ ЧЕК/ДОКУМЕНТ НА ОПЛАТУ!</b>\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                f"👤 Клиент: <b>{safe_fn}</b> ({un_text})\n"
-                f"🆔 Telegram ID: <code>{user_id}</code>\n"
-                f"📦 Выбран тариф: <b>{info['label']}</b>\n"
-                f"💵 Сумма: <b>${info['usd']:.2f}</b> ({info['days']} дн.)\n\n"
-                f"Подтвердить оплату и активировать подписку клиенту? 👇"
-            )
-            await message.bot.send_document(
-                chat_id=config.ADMIN_ID,
-                document=message.document.file_id,
-                caption=admin_caption,
-                reply_markup=admin_cheque_keyboard(user_id, plan_code),
-                parse_mode="HTML"
-            )
-        except Exception as e:
-            logger.error("Failed to forward receipt doc to admin: %s", e)
-
-    await message.answer(
-        "✅ <b>Файл чека получен и передан администратору!</b>\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "Администратор проверяет платёж. Как только оплата будет подтверждена, ваш доступ активируется моментально! 🔔",
-        reply_markup=back_keyboard(),
+        "🔒 <b>ВХОДЯЩИЕ МЕДИА И СКРИНШОТЫ ЗАПРЕЩЕНЫ</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "Это закрытый VIP-терминал. Отправка фото, скриншотов, файлов и документов в чат бота строго запрещена правилами безопасности.\n\n"
+        "По всем вопросам подключения тарифов и оплаты пишите напрямую администратору:",
+        reply_markup=builder.as_markup(),
         parse_mode="HTML"
     )
 

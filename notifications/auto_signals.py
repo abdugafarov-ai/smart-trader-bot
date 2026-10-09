@@ -456,13 +456,16 @@ class AutoSignalScanner:
         photo = BufferedInputFile(chart_bytes, filename=f"signal_{symbol}.png")
         for uid in recipients:
             cap = caption_admin if (uid == config.ADMIN_ID and caption_admin) else caption
+            protect = (uid != config.ADMIN_ID)
             try:
                 await self.bot.send_photo(uid, photo=photo, caption=cap,
-                                          parse_mode="HTML", reply_markup=reply_markup)
+                                          parse_mode="HTML", reply_markup=reply_markup,
+                                          protect_content=protect)
             except Exception as e:
                 logger.error("Failed to send chart to %d: %s", uid, e)
                 try:
-                    await self.bot.send_message(uid, cap, parse_mode="HTML", reply_markup=reply_markup)
+                    await self.bot.send_message(uid, cap, parse_mode="HTML", reply_markup=reply_markup,
+                                                protect_content=protect)
                 except Exception as e2:
                     logger.error("Fallback text also failed for %d: %s", uid, e2)
 
@@ -470,7 +473,9 @@ class AutoSignalScanner:
         recipients = await self._get_notification_recipients()
         for uid in recipients:
             t = text_admin if (uid == config.ADMIN_ID and text_admin) else text
+            protect = (uid != config.ADMIN_ID)
             try:
-                await self.bot.send_message(uid, t, parse_mode="HTML", reply_markup=reply_markup)
+                await self.bot.send_message(uid, t, parse_mode="HTML", reply_markup=reply_markup,
+                                            protect_content=protect)
             except Exception as e:
                 logger.error("Failed to send to %d: %s", uid, e)

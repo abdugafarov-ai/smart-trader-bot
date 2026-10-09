@@ -57,7 +57,8 @@ class SignalTracker:
                 recipients.append(config.ADMIN_ID)
             for uid in recipients:
                 try:
-                    await self.bot.send_message(uid, text, parse_mode="HTML")
+                    protect = (uid != config.ADMIN_ID)
+                    await self.bot.send_message(uid, text, parse_mode="HTML", protect_content=protect)
                 except Exception as err:
                     logger.error("Failed to send tracker alert to %d: %s", uid, err)
         except Exception as e:
