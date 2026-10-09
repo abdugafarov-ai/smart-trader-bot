@@ -518,6 +518,41 @@ def request_options_keyboard(admin_username: str = "") -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
+def payment_invoice_keyboard(plan_code: str, admin_username: str = "") -> InlineKeyboardMarkup:
+    """Клавиатура с реквизитами оплаты и кнопкой отправки чека."""
+    builder = InlineKeyboardBuilder()
+    username = admin_username or config.ADMIN_USERNAME
+    admin_url = f"https://t.me/{username}" if username else f"tg://user?id={config.ADMIN_ID}"
+
+    builder.row(
+        InlineKeyboardButton(text="📸 Отправить чек об оплате", callback_data=f"req:receipt:{plan_code}")
+    )
+    builder.row(
+        InlineKeyboardButton(text="💬 Менеджер / Поддержка", url=admin_url),
+        InlineKeyboardButton(text="◀️ К тарифам", callback_data="req:plans")
+    )
+    return builder.as_markup()
+
+
+def cancel_receipt_keyboard() -> InlineKeyboardMarkup:
+    """Клавиатура отмены отправки чека."""
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="❌ Отмена", callback_data="req:plans")
+    )
+    return builder.as_markup()
+
+
+def admin_cheque_keyboard(user_id: int, plan_code: str) -> InlineKeyboardMarkup:
+    """Клавиатура администратора при получении чека об оплате."""
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="✅ Подтвердить оплату", callback_data=f"admin_approve_pay:{user_id}:{plan_code}"),
+        InlineKeyboardButton(text="❌ Отклонить", callback_data=f"admin_reject:{user_id}")
+    )
+    return builder.as_markup()
+
+
 def broadcast_cancel_keyboard() -> InlineKeyboardMarkup:
     """Клавиатура отмены режима рассылки."""
     builder = InlineKeyboardBuilder()

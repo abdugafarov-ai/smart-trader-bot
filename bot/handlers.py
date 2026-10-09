@@ -1426,47 +1426,257 @@ async def cb_request_actions(callback: CallbackQuery):
 
     elif action == "type":
         plan_code = parts[2] if len(parts) > 2 else "trial"
-        plan_names = {
-            "trial": "🎁 Бесплатный Тест-драйв (3 дня)",
-            "1m": "💎 Тариф 1 Месяц ($50)",
-            "3m": "🚀 Тариф 3 Месяца ($140)",
-            "1y": "👑 Тариф 1 Год ($500)"
+        if plan_code == "trial":
+            from db.users import has_used_trial, activate_trial
+            from bot.keyboards import request_options_keyboard, client_menu_keyboard
+            already_used = await has_used_trial(user_id)
+            if already_used:
+                await safe_edit(
+                    callback,
+                    "❌ <b>Вы уже использовали бесплатный пробный период!</b>\n\n"
+                    "Бесплатный 3-дневный тест-драйв предоставляется только один раз на аккаунт.\n\n"
+                    "Для продолжения получения институциональных сигналов выберите подходящий тариф ниже 👇",
+                    reply_markup=request_options_keyboard(),
+                    parse_mode="HTML"
+                )
+                return
+
+            ok = await activate_trial(user_id, username=username, first_name=first_name, days=3)
+            if ok:
+                success_text = (
+                    "🎉 <b>БЕСПЛАТНЫЙ ТЕСТ-ДРАЙВ АКТИВИРОВАН!</b>\n"
+                    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                    "Вам открыт полный доступ ко всем сигналам на <b>3 дня (72 часа)</b> без ограничений! 🚀\n\n"
+                    "• Все 17 инструментов (Forex мажоры, кроссы и Золото XAUUSD)\n"
+                    "• Алгоритмы Smart Money / ICT (BOS, OB, FVG, OTE)\n"
+                    "• Точки входа, Take Profit и Stop Loss с R:R от 1:2.5\n\n"
+                    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    "Нажмите кнопку ниже или отправьте /start, чтобы открыть меню! 📊"
+                )
+                await safe_edit(callback, success_text, reply_markup=client_menu_keyboard(), parse_mode="HTML")
+
+                if config.ADMIN_ID:
+                    try:
+                        safe_fn = html.escape(str(first_name or ""))
+                        un_text = f"@{html.escape(username)}" if username else f"ID: <code>{user_id}</code>"
+                        await callback.bot.send_message(
+                            config.ADMIN_ID,
+                            f"🎁 <b>НОВЫЙ ТЕСТ-ДРАЙВ АКТИВИРОВАН:</b>\n"
+                            f"👤 Имя: <b>{safe_fn}</b> ({un_text})\n"
+                            f"🆔 Telegram ID: <code>{user_id}</code>\n"
+                            f"⏳ Срок: 3 дня (72 часа) | Статус: Активен",
+                            parse_mode="HTML"
+                        )
+                    except Exception:
+                        pass
+            else:
+                await callback.answer("⚠️ Ошибка активации пробного периода. Попробуйте позже.", show_alert=True)
+            return
+
+        # Платные тарифы (1m, 3m, 1y) — выставление инвойса с реквизитами
+        plan_info = {
+            "1m": {"label": "💎 Тариф 1 Месяц", "price": "$50", "days": 30, "usd": 50.0},
+            "3m": {"label": "🚀 Тариф 3 Месяца", "price": "$140 (скидка $10)", "days": 90, "usd": 140.0},
+            "1y": {"label": "👑 Тариф 1 Год", "price": "$500 (скидка $100)", "days": 365, "usd": 500.0},
         }
-        plan_label = plan_names.get(plan_code, "PRO")
-
-        await request_access(user_id, username, first_name, tariff=plan_label)
-
-        await safe_edit(
-            callback,
-            f"📩 <b>ЗАЯВКА УСПЕШНО ПЕРЕДАНА АДМИНИСТРАТОРУ!</b>\n"
+        info = plan_info.get(plan_code, plan_info["1m"])
+        from bot.keyboards import payment_invoice_keyboard
+        invoice_text = (
+            f"💎 <b>ОФОРМЛЕНИЕ ПОДПИСКИ SMART TRADER BOT</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"📦 <b>Выбранный план:</b> <b>{info['label']}</b>\n"
+            f"💵 <b>Сумма к оплате:</b> <b>{info['price']}</b>\n"
+            f"⏳ <b>Срок действия:</b> <b>{info['days']} дней</b>\n"
             f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            f"Вы выбрали: <b>{plan_label}</b>\n\n"
-            f"Администратор проверяет заявку. Как только доступ будет одобрен, вам придёт мгновенное уведомление в этот чат! 🔔",
-            parse_mode="HTML"
+            f"💳 <b>РЕКВИЗИТЫ ДЛЯ ОПЛАТЫ:</b>\n\n"
+            f"💵 <b>USDT (TRC-20):</b>\n"
+            f"<code>TNPn5XgKSm37482nE4Qj1N3i185x95gM7Z</code>\n"
+            f"<i>(Сеть TRON TRC-20 — копируется кликом)</i>\n\n"
+            f"💎 <b>TON / Telegram Wallet:</b>\n"
+            f"<code>UQDF28yH6mG9V4f31l9vC7qZ6y_sLw...</code> <i>(или по запросу)</i>\n\n"
+            f"💳 <b>Банковская карта (РФ / СНГ / UZS):</b>\n"
+            f"<i>Номер карты для перевода уточняйте у администратора</i>\n\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"📌 <b>ИНСТРУКЦИЯ ПОСЛЕ ОПЛАТЫ:</b>\n"
+            f"1. Нажмите кнопку <b>«📸 Отправить чек об оплате»</b> ниже.\n"
+            f"2. Прикрепите скриншот или фото квитанции в этот чат.\n"
+            f"3. Бот мгновенно передаст чек администратору для активации!"
         )
+        await safe_edit(callback, invoice_text, reply_markup=payment_invoice_keyboard(plan_code), parse_mode="HTML")
+        return
 
-        # Уведомляем администратора с кнопками быстрого одобрения
+    elif action == "receipt":
+        plan_code = parts[2] if len(parts) > 2 else "1m"
+        state = get_user_state(user_id)
+        state["awaiting_receipt_plan"] = plan_code
+        from bot.keyboards import cancel_receipt_keyboard
+        prompt_text = (
+            "📸 <b>ОТПРАВЬТЕ ЧЕК ОБ ОПЛАТЕ</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "Отправьте фото, скриншот или файл квитанции об оплате в этот чат.\n\n"
+            "Бот моментально передаст его администратору для включения доступа! 🚀"
+        )
+        await safe_edit(callback, prompt_text, reply_markup=cancel_receipt_keyboard(), parse_mode="HTML")
+        return
+
+
+@router.message(F.photo)
+async def handle_payment_receipt_photo(message: Message):
+    """Приём чека об оплате в виде фото и прямая пересылка администратору (0 байт на диске VPS)."""
+    state = get_user_state(message.from_user.id)
+    plan_code = state.get("awaiting_receipt_plan")
+    if not plan_code:
+        return
+
+    state.pop("awaiting_receipt_plan", None)
+    user_id = message.from_user.id
+    username = message.from_user.username or ""
+    first_name = message.from_user.first_name or "Клиент"
+
+    plan_info = {
+        "1m": {"label": "💎 Тариф 1 Месяц ($50)", "usd": 50.0, "days": 30},
+        "3m": {"label": "🚀 Тариф 3 Месяца ($140)", "usd": 140.0, "days": 90},
+        "1y": {"label": "👑 Тариф 1 Год ($500)", "usd": 500.0, "days": 365},
+    }
+    info = plan_info.get(plan_code, plan_info["1m"])
+
+    if config.ADMIN_ID:
         try:
+            from bot.keyboards import admin_cheque_keyboard
             un_text = f"@{html.escape(username)}" if username else f"ID: <code>{user_id}</code>"
             safe_fn = html.escape(str(first_name or ""))
-            admin_msg = (
-                f"📩 <b>НОВАЯ ЗАЯВКА НА ДОСТУП</b>\n"
+            admin_caption = (
+                f"📸 <b>НОВЫЙ ЧЕК НА ОПЛАТУ!</b>\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                f"👤 Имя: <b>{safe_fn}</b>\n"
-                f"📛 Профиль: {un_text}\n"
+                f"👤 Клиент: <b>{safe_fn}</b> ({un_text})\n"
                 f"🆔 Telegram ID: <code>{user_id}</code>\n"
-                f"📦 <b>Желаемый план:</b> {plan_label}\n\n"
-                f"Выберите действие для активации тарифа 👇"
+                f"📦 Выбран тариф: <b>{info['label']}</b>\n"
+                f"💵 Сумма: <b>${info['usd']:.2f}</b> ({info['days']} дн.)\n\n"
+                f"Подтвердить оплату и активировать подписку клиенту? 👇"
             )
-            from bot.keyboards import admin_approve_keyboard
-            await callback.bot.send_message(
-                config.ADMIN_ID,
-                admin_msg,
-                reply_markup=admin_approve_keyboard(user_id),
+            await message.bot.send_photo(
+                chat_id=config.ADMIN_ID,
+                photo=message.photo[-1].file_id,
+                caption=admin_caption,
+                reply_markup=admin_cheque_keyboard(user_id, plan_code),
                 parse_mode="HTML"
             )
         except Exception as e:
-            logger.error("Failed to notify admin about request: %s", e)
+            logger.error("Failed to forward receipt photo to admin: %s", e)
+
+    await message.answer(
+        "✅ <b>Чек успешно получен и передан администратору!</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "Администратор проверяет платёж. Как только оплата будет подтверждена, ваш доступ активируется моментально! 🔔",
+        reply_markup=back_keyboard(),
+        parse_mode="HTML"
+    )
+
+
+@router.message(F.document)
+async def handle_payment_receipt_document(message: Message):
+    """Приём чека об оплате в виде документа/файла (0 байт на диске VPS)."""
+    state = get_user_state(message.from_user.id)
+    plan_code = state.get("awaiting_receipt_plan")
+    if not plan_code:
+        return
+
+    state.pop("awaiting_receipt_plan", None)
+    user_id = message.from_user.id
+    username = message.from_user.username or ""
+    first_name = message.from_user.first_name or "Клиент"
+
+    plan_info = {
+        "1m": {"label": "💎 Тариф 1 Месяц ($50)", "usd": 50.0, "days": 30},
+        "3m": {"label": "🚀 Тариф 3 Месяца ($140)", "usd": 140.0, "days": 90},
+        "1y": {"label": "👑 Тариф 1 Год ($500)", "usd": 500.0, "days": 365},
+    }
+    info = plan_info.get(plan_code, plan_info["1m"])
+
+    if config.ADMIN_ID:
+        try:
+            from bot.keyboards import admin_cheque_keyboard
+            un_text = f"@{html.escape(username)}" if username else f"ID: <code>{user_id}</code>"
+            safe_fn = html.escape(str(first_name or ""))
+            admin_caption = (
+                f"📄 <b>НОВЫЙ ЧЕК/ДОКУМЕНТ НА ОПЛАТУ!</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                f"👤 Клиент: <b>{safe_fn}</b> ({un_text})\n"
+                f"🆔 Telegram ID: <code>{user_id}</code>\n"
+                f"📦 Выбран тариф: <b>{info['label']}</b>\n"
+                f"💵 Сумма: <b>${info['usd']:.2f}</b> ({info['days']} дн.)\n\n"
+                f"Подтвердить оплату и активировать подписку клиенту? 👇"
+            )
+            await message.bot.send_document(
+                chat_id=config.ADMIN_ID,
+                document=message.document.file_id,
+                caption=admin_caption,
+                reply_markup=admin_cheque_keyboard(user_id, plan_code),
+                parse_mode="HTML"
+            )
+        except Exception as e:
+            logger.error("Failed to forward receipt doc to admin: %s", e)
+
+    await message.answer(
+        "✅ <b>Файл чека получен и передан администратору!</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "Администратор проверяет платёж. Как только оплата будет подтверждена, ваш доступ активируется моментально! 🔔",
+        reply_markup=back_keyboard(),
+        parse_mode="HTML"
+    )
+
+
+@router.callback_query(F.data.startswith("admin_approve_pay:"))
+async def cb_admin_approve_pay(callback: CallbackQuery):
+    """Админ подтверждает оплату по чеку и активирует подписку."""
+    if callback.from_user.id != config.ADMIN_ID:
+        await callback.answer("❌ Только администратор!", show_alert=True)
+        return
+
+    parts = callback.data.split(":")
+    target_id = int(parts[1])
+    plan_code = parts[2] if len(parts) > 2 else "1m"
+
+    plan_info = {
+        "1m": {"label": "PRO (1 мес)", "usd": 50.0, "days": 30},
+        "3m": {"label": "PRO (3 мес)", "usd": 140.0, "days": 90},
+        "1y": {"label": "PRO (1 год)", "usd": 500.0, "days": 365},
+    }
+    info = plan_info.get(plan_code, plan_info["1m"])
+
+    from db.users import approve_user, record_payment
+    await approve_user(target_id, days=info["days"], tariff=info["label"])
+    await record_payment(
+        telegram_id=target_id,
+        amount_usd=info["usd"],
+        days_added=info["days"],
+        tariff=info["label"],
+        payment_method="Чек / USDT",
+        comment="Оплата подтверждена по чеку",
+        created_by=config.ADMIN_ID
+    )
+
+    confirm_suffix = f"\n\n✅ ОПЛАТА ПОДТВЕРЖДЕНА (+${info['usd']:.2f} в кассу CRM, {info['days']} дней)"
+    try:
+        if callback.message.caption:
+            await callback.message.edit_caption(caption=callback.message.caption + confirm_suffix, parse_mode=None)
+        elif callback.message.text:
+            await callback.message.edit_text(text=callback.message.text + confirm_suffix, parse_mode=None)
+    except Exception:
+        pass
+
+    try:
+        await callback.bot.send_message(
+            target_id,
+            f"🎉 <b>ВАША ОПЛАТА УСПЕШНО ПОДТВЕРЖДЕНА!</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"Вам активирован тариф <b>{info['label']}</b> на <b>{info['days']} дней</b>! 🚀\n\n"
+            f"Все институциональные сигналы Smart Money / ICT открыты.\n"
+            f"Отправьте /start чтобы открыть терминал и начать работу!",
+            parse_mode="HTML"
+        )
+    except Exception:
+        pass
 
 
 @router.callback_query(F.data.startswith("admin_approve_trial:"))
@@ -1506,8 +1716,17 @@ async def cb_admin_approve_30(callback: CallbackQuery):
         return
 
     target_id = int(callback.data.split(":")[1])
-    from db.users import approve_user
+    from db.users import approve_user, record_payment
     await approve_user(target_id, days=30, tariff="PRO (1 мес)")
+    await record_payment(
+        telegram_id=target_id,
+        amount_usd=50.0,
+        days_added=30,
+        tariff="PRO (1 мес)",
+        payment_method="Админ CRM",
+        comment="Одобрено в CRM",
+        created_by=config.ADMIN_ID
+    )
 
     await callback.message.edit_text(
         callback.message.text + "\n\n✅ ОДОБРЕНО (Тариф PRO активирован на 30 дней, $50)",
@@ -1535,8 +1754,17 @@ async def cb_admin_approve_90(callback: CallbackQuery):
         return
 
     target_id = int(callback.data.split(":")[1])
-    from db.users import approve_user
+    from db.users import approve_user, record_payment
     await approve_user(target_id, days=90, tariff="PRO (3 мес)")
+    await record_payment(
+        telegram_id=target_id,
+        amount_usd=140.0,
+        days_added=90,
+        tariff="PRO (3 мес)",
+        payment_method="Админ CRM",
+        comment="Одобрено в CRM",
+        created_by=config.ADMIN_ID
+    )
 
     await callback.message.edit_text(
         callback.message.text + "\n\n🚀 ОДОБРЕНО (Тариф PRO активирован на 90 дней, $140)",
@@ -1563,8 +1791,17 @@ async def cb_admin_approve_365(callback: CallbackQuery):
         return
 
     target_id = int(callback.data.split(":")[1])
-    from db.users import approve_user
+    from db.users import approve_user, record_payment
     await approve_user(target_id, days=365, tariff="PRO (1 год)")
+    await record_payment(
+        telegram_id=target_id,
+        amount_usd=500.0,
+        days_added=365,
+        tariff="PRO (1 год)",
+        payment_method="Админ CRM",
+        comment="Одобрено в CRM",
+        created_by=config.ADMIN_ID
+    )
 
     await callback.message.edit_text(
         callback.message.text + "\n\n👑 ОДОБРЕНО (Тариф PRO активирован на 1 год, $500)",

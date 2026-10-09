@@ -338,12 +338,12 @@ def format_signal_result(signal: dict, status: str, close_price: float, pnl_pips
 
 
 def format_manual_open(symbol: str, order_type: str, volume: float, price: float) -> str:
-    """Уведомление о ручном открытии сделки пользователем в MT5."""
+    """Уведомление о ручном открытии сделки пользователем в MT5 (только для Администратора)."""
     clean_type = order_type.upper()
     emoji = "🟢" if "BUY" in clean_type else "🔴"
     price_str = format_price(price, symbol)
     return (
-        f"👑 <b>Мой повелитель открыл сделку</b>\n"
+        f"👑 <b>MT5: РУЧНОЕ ОТКРЫТИЕ СДЕЛКИ</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         f"• Пара: <b>{symbol}</b> ({emoji} <b>{clean_type}</b>)\n"
         f"• Объем: <code>{volume:.2f} лот</code>\n"
@@ -354,19 +354,19 @@ def format_manual_open(symbol: str, order_type: str, volume: float, price: float
 
 
 def format_manual_close(symbol: str, profit: float, pnl_pips: float, price: float) -> str:
-    """Уведомление о досрочном ручном закрытии сделки пользователем в MT5."""
+    """Уведомление о досрочном ручном закрытии сделки пользователем в MT5 (только для Администратора)."""
     profit_sign = "+" if profit >= 0 else ""
     pips_sign = "+" if pnl_pips >= 0 else ""
     price_str = format_price(price, symbol)
     profit_emoji = "💵" if profit > 0 else ("🛡" if profit == 0 else "📉")
     return (
-        f"👑 <b>Мой повелитель решил закрыть сделку</b>\n"
+        f"👑 <b>MT5: РУЧНОЕ ЗАКРЫТИЕ СДЕЛКИ</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         f"• Пара: <b>{symbol}</b>\n"
         f"• Итог: {profit_emoji} <b>{profit_sign}{profit:.2f} USD</b> ({pips_sign}{pnl_pips:.1f} pips)\n"
         f"• Цена закрытия: <code>{price_str}</code>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"💼 <i>Сделка закрыта вручную до достижения TP/SL.</i>"
+        f"💼 <i>Сделка закрыта вручную в терминале MT5.</i>"
     )
 
 

@@ -85,28 +85,43 @@ async def main():
             except Exception as e:
                 logging.error(f"Error sending startup msg: {e}")
 
-        # Регистрация меню команд и описания в Telegram
+        # Регистрация меню команд и описания в Telegram со строгой изоляцией ролей
         try:
-            from aiogram.types import BotCommand
-            await bot.set_my_commands([
-                BotCommand(command="start", description="🏛 Главное меню терминала"),
-                BotCommand(command="request", description="💎 Тарифы и заявка на доступ"),
-                BotCommand(command="terminal", description="🖥 Пульт управления MetaTrader 5"),
-                BotCommand(command="crm", description="👥 Управление клиентами (CRM)"),
-                BotCommand(command="broadcast", description="📢 Рассылка объявлений клиентам"),
-                BotCommand(command="account", description="💼 Баланс и открытые позиции MT5"),
-                BotCommand(command="stats", description="📊 Статистика & Win-Rate брокера"),
-                BotCommand(command="history", description="📜 Журнал последних сделок"),
-                BotCommand(command="autotrade", description="⚙️ Автопилот советника MT5"),
-                BotCommand(command="lot", description="🔹 Задать лот: /lot 0.01"),
-                BotCommand(command="risk", description="⚖️ Задать риск: /risk 1.0"),
-                BotCommand(command="sessions", description="⏰ Расписание торговых сессий"),
-                BotCommand(command="news", description="📰 Календарь важных новостей"),
-                BotCommand(command="server", description="🎛️ Состояние сервера (VPS Health)"),
-                BotCommand(command="clean", description="🧹 Очистить кэш и мусор от зависаний"),
-                BotCommand(command="reset_drawdown", description="🛡️ Сбросить защиту просадки"),
-                BotCommand(command="help", description="📖 Справочник и документация"),
-            ])
+            from aiogram.types import BotCommand, BotCommandScopeDefault, BotCommandScopeChat
+
+            # Публичные команды для обычных клиентов (БЕЗ админских пультов!)
+            client_commands = [
+                BotCommand(command="start", description="🏛 Главное меню"),
+                BotCommand(command="request", description="💎 Тарифы и подписка"),
+                BotCommand(command="stats", description="📊 Статистика сигналов"),
+                BotCommand(command="history", description="📜 Журнал сделок"),
+                BotCommand(command="sessions", description="⏰ Торговые сессии"),
+                BotCommand(command="news", description="📰 Календарь новостей"),
+                BotCommand(command="help", description="📖 Справка и поддержка"),
+            ]
+            await bot.set_my_commands(client_commands, scope=BotCommandScopeDefault())
+
+            # Персональные команды администратора (со всеми пультами управления)
+            if config.ADMIN_ID:
+                admin_commands = [
+                    BotCommand(command="start", description="🏛 Главное меню"),
+                    BotCommand(command="terminal", description="🖥 Пульт MetaTrader 5"),
+                    BotCommand(command="crm", description="👥 Управление клиентами (CRM)"),
+                    BotCommand(command="account", description="💼 Баланс и позиции MT5"),
+                    BotCommand(command="broadcast", description="📢 Рассылка клиентам"),
+                    BotCommand(command="autotrade", description="⚙️ Автопилот советника"),
+                    BotCommand(command="lot", description="🔹 Задать лот: /lot 0.01"),
+                    BotCommand(command="risk", description="⚖️ Задать риск: /risk 1.0"),
+                    BotCommand(command="stats", description="📊 Статистика сигналов"),
+                    BotCommand(command="history", description="📜 Журнал сделок"),
+                    BotCommand(command="sessions", description="⏰ Торговые сессии"),
+                    BotCommand(command="news", description="📰 Календарь новостей"),
+                    BotCommand(command="server", description="🎛️ Состояние VPS"),
+                    BotCommand(command="clean", description="🧹 Очистить кэш / мусор"),
+                    BotCommand(command="reset_drawdown", description="🛡️ Сбросить просадку"),
+                    BotCommand(command="help", description="📖 Справочник"),
+                ]
+                await bot.set_my_commands(admin_commands, scope=BotCommandScopeChat(chat_id=config.ADMIN_ID))
 
             await bot.set_my_short_description(
                 "Автономный торговый комплекс: SMC/ICT анализ 17 пар и авто-торговля в MetaTrader 5 со строгим риск-менеджментом."

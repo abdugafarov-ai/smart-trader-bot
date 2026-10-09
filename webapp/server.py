@@ -61,6 +61,30 @@ async def _send_telegram_notification(text: str, photo_bytes: bytes = None, text
         logger.error("Error sending bridge notification: %s", e)
 
 
+async def _send_admin_only(text: str, photo_bytes: bytes = None):
+    """Отправляет уведомление ИСКЛЮЧИТЕЛЬНО администратору (ручные сделки, ошибки брокера, статус терминала)."""
+    global _bot_instance
+    if not _bot_instance or not config.ADMIN_ID:
+        return
+    try:
+        if photo_bytes:
+            from aiogram.types import BufferedInputFile
+            await _bot_instance.send_photo(
+                config.ADMIN_ID,
+                photo=BufferedInputFile(photo_bytes, filename="trade_outcome.png"),
+                caption=text,
+                parse_mode="HTML"
+            )
+        else:
+            await _bot_instance.send_message(config.ADMIN_ID, text, parse_mode="HTML")
+    except Exception as err:
+        try:
+            await _bot_instance.send_message(config.ADMIN_ID, text, parse_mode=None)
+        except Exception:
+            pass
+        logger.error("Failed to send admin-only notification: %s", err)
+
+
 async def handle_status(request: web.Request) -> web.Response:
     """Возвращает статус локального моста MT5."""
     return web.json_response({
@@ -233,60 +257,103 @@ async def bridge_get_orders(request: web.Request) -> web.Response:
                             if is_manual:
                                 msg = format_manual_close(sym, profit_val, pnl_pips, close_p)
                                 status_str = "MANUAL_CLOSE"
-                            elif profit_val > 0:
-                                msg = (
-                                    f"🏆 <b>ТЕЙК-ПРОФИТ ВЗЯТ (METATRADER 5)!</b>\n"
-                                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                                    f"📊 <b>{sym}</b> | <code>{deal_type} {lot} lot</code>\n"
-                                    f"💵 Результат: <b>+{profit_val:.2f} USD</b> (+{abs(pnl_pips):.1f} pips)\n"
-                                    f"📍 Цена закрытия: <code>{close_p}</code>\n"
-                                    f"🎫 Билет: <code>#{ticket_no}</code>\n"
-                                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                                    f"🎯 <i>Цель полностью достигнута. Прибыль зафиксирована в банке.</i>"
-                                )
-                                status_str = "TP"
-                            elif profit_val < 0:
-                                msg = (
-                                    f"🛑 <b>СТОП-ЛОСС СРАБОТАЛ (METATRADER 5)</b>\n"
-                                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                                    f"📊 <b>{sym}</b> | <code>{deal_type} {lot} lot</code>\n"
-                                    f"📉 Фиксация убытка: <b>-{abs(profit_val):.2f} USD</b> (-{abs(pnl_pips):.1f} pips)\n"
-                                    f"📍 Цена выхода: <code>{close_p}</code>\n"
-                                    f"🎫 Билет: <code>#{ticket_no}</code>\n\n"
-                                    f"🛑 <b>РАЗБОР СТОПА:</b>\n"
-                                    f"• Импульсный пробой уровня / снятие ликвидности рынком.\n"
-                                    f"• Риск строго ограничен 1.0% депозита. Капитал защищен.\n"
-                                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                                    f"💼 <i>Дисциплина и мани-менеджмент сохраняют депозит.</i>"
-                                )
-                                status_str = "SL"
+                                chart_bytes = None
+                                try:
+                                    df_c = await fetcher.fetch_ohlcv(sym, "H1", limit=60)
+                                    if df_c is not None and not df_c.empty:
+                                        chart_bytes = generate_outcome_chart(
+                                            df=df_c, symbol=sym, direction=direction,
+                                            entry=entry_p, stop_loss=sl_p, take_profit=tp_p,
+                                            close_price=close_p, status=status_str,
+                                            profit_usd=profit_val, timeframe="H1"
+                                        )
+                                except Exception as chart_err:
+                                    logger.error("Outcome chart generation error for sync_broker_deals: %s", chart_err)
+                                await _send_admin_only(msg, photo_bytes=chart_bytes)
                             else:
-                                msg = (
-                                    f"🛡 <b>СДЕЛКА ЗАКРЫТА В БЕЗУБЫТОК!</b>\n"
-                                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                                    f"📊 <b>{sym}</b> | <code>{deal_type} {lot} lot</code>\n"
-                                    f"💵 Результат: <b>0.00 USD</b>\n"
-                                    f"📍 Цена закрытия: <code>{close_p}</code>\n"
-                                    f"🎫 Билет: <code>#{ticket_no}</code>\n"
-                                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                                    f"💼 <i>Позиция закрыта в безубыток без риска для баланса.</i>"
-                                )
-                                status_str = "CLOSED"
-
-                            chart_bytes = None
-                            try:
-                                df_c = await fetcher.fetch_ohlcv(sym, "H1", limit=60)
-                                if df_c is not None and not df_c.empty:
-                                    chart_bytes = generate_outcome_chart(
-                                        df=df_c, symbol=sym, direction=direction,
-                                        entry=entry_p, stop_loss=sl_p, take_profit=tp_p,
-                                        close_price=close_p, status=status_str,
-                                        profit_usd=profit_val, timeframe="H1"
+                                if profit_val > 0:
+                                    msg_admin = (
+                                        f"🏆 <b>ТЕЙК-ПРОФИТ ВЗЯТ (METATRADER 5)!</b>\n"
+                                        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                                        f"📊 <b>{sym}</b> | <code>{deal_type} {lot} lot</code>\n"
+                                        f"💵 Результат: <b>+{profit_val:.2f} USD</b> (+{abs(pnl_pips):.1f} pips)\n"
+                                        f"📍 Цена закрытия: <code>{close_p}</code>\n"
+                                        f"🎫 Билет: <code>#{ticket_no}</code>\n"
+                                        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                                        f"🎯 <i>Цель полностью достигнута. Прибыль зафиксирована в банке.</i>"
                                     )
-                            except Exception as chart_err:
-                                logger.error("Outcome chart generation error for sync_broker_deals: %s", chart_err)
+                                    msg_client = (
+                                        f"🏆 <b>ТЕЙК-ПРОФИТ ВЗЯТ (СИГНАЛ ЗАКРЫТ)!</b>\n"
+                                        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                                        f"📊 <b>{sym}</b> | <code>{deal_type}</code>\n"
+                                        f"📈 Результат: <b>+{abs(pnl_pips):.1f} pips</b> (Цель достигнута 🎯)\n"
+                                        f"📍 Цена выхода: <code>{close_p}</code>\n"
+                                        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                                        f"🎯 <i>Цель полностью достигнута по алгоритму ICT/SMC. Прибыль зафиксирована.</i>"
+                                    )
+                                    status_str = "TP"
+                                elif profit_val < 0:
+                                    msg_admin = (
+                                        f"🛑 <b>СТОП-ЛОСС СРАБОТАЛ (METATRADER 5)</b>\n"
+                                        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                                        f"📊 <b>{sym}</b> | <code>{deal_type} {lot} lot</code>\n"
+                                        f"📉 Фиксация убытка: <b>-{abs(profit_val):.2f} USD</b> (-{abs(pnl_pips):.1f} pips)\n"
+                                        f"📍 Цена выхода: <code>{close_p}</code>\n"
+                                        f"🎫 Билет: <code>#{ticket_no}</code>\n\n"
+                                        f"🛑 <b>РАЗБОР СТОПА:</b>\n"
+                                        f"• Импульсный пробой уровня / снятие ликвидности рынком.\n"
+                                        f"• Риск строго ограничен 1.0% депозита. Капитал защищен.\n"
+                                        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                                        f"💼 <i>Дисциплина и мани-менеджмент сохраняют депозит.</i>"
+                                    )
+                                    msg_client = (
+                                        f"🛑 <b>СТОП-ЛОСС СРАБОТАЛ (ФИКСАЦИЯ УБЫТКА)</b>\n"
+                                        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                                        f"📊 <b>{sym}</b> | <code>{deal_type}</code>\n"
+                                        f"📉 Итог: <b>-{abs(pnl_pips):.1f} pips</b>\n"
+                                        f"📍 Цена выхода: <code>{close_p}</code>\n\n"
+                                        f"🛑 <b>РАЗБОР СТОПА:</b>\n"
+                                        f"• Импульсный пробой уровня / снятие ликвидности рынком.\n"
+                                        f"• Риск строго ограничен 1.0% депозита. Капитал защищен.\n"
+                                        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                                        f"💼 <i>Дисциплина и мани-менеджмент сохраняют депозит.</i>"
+                                    )
+                                    status_str = "SL"
+                                else:
+                                    msg_admin = (
+                                        f"🛡 <b>СДЕЛКА ЗАКРЫТА В БЕЗУБЫТОК!</b>\n"
+                                        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                                        f"📊 <b>{sym}</b> | <code>{deal_type} {lot} lot</code>\n"
+                                        f"💵 Результат: <b>0.00 USD</b>\n"
+                                        f"📍 Цена закрытия: <code>{close_p}</code>\n"
+                                        f"🎫 Билет: <code>#{ticket_no}</code>\n"
+                                        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                                        f"💼 <i>Позиция закрыта в безубыток без риска для баланса.</i>"
+                                    )
+                                    msg_client = (
+                                        f"🛡 <b>СДЕЛКА ЗАКРЫТА В БЕЗУБЫТОК!</b>\n"
+                                        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                                        f"📊 <b>{sym}</b> | <code>{deal_type}</code>\n"
+                                        f"📍 Цена закрытия: <code>{close_p}</code>\n"
+                                        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                                        f"💼 <i>Позиция закрыта в безубыток без риска для баланса.</i>"
+                                    )
+                                    status_str = "CLOSED"
 
-                            await _send_telegram_notification(msg, photo_bytes=chart_bytes)
+                                chart_bytes = None
+                                try:
+                                    df_c = await fetcher.fetch_ohlcv(sym, "H1", limit=60)
+                                    if df_c is not None and not df_c.empty:
+                                        chart_bytes = generate_outcome_chart(
+                                            df=df_c, symbol=sym, direction=direction,
+                                            entry=entry_p, stop_loss=sl_p, take_profit=tp_p,
+                                            close_price=close_p, status=status_str,
+                                            profit_usd=profit_val, timeframe="H1"
+                                        )
+                                except Exception as chart_err:
+                                    logger.error("Outcome chart generation error for sync_broker_deals: %s", chart_err)
+
+                                await _send_telegram_notification(msg_client, photo_bytes=chart_bytes, text_admin=msg_admin)
                 except Exception as hist_err:
                     logger.error("Failed to sync broker deals from EA: %s", hist_err)
 
@@ -546,7 +613,7 @@ async def bridge_post_report(request: web.Request) -> web.Response:
             )
             await _send_telegram_notification(msg_client, text_admin=msg_admin)
 
-        # 5. Вход отклонен роботом (R:R < 1.8, превышен лимит или ошибка терминала)
+        # 5. Вход отклонен роботом (R:R < 1.8, превышен лимит или ошибка терминала) — ТОЛЬКО АДМИНИСТРАТОРУ
         elif action.startswith("REJECTED"):
             await reject_signal_by_broker(symbol, reason, signal_id=sig_id)
             import html
@@ -575,17 +642,17 @@ async def bridge_post_report(request: web.Request) -> web.Response:
                     f"❌ Причина: <code>{safe_reason}</code>\n\n"
                     f"💼 <i>Ордер в MT5 НЕ был открыт. Проверьте статус терминала.</i>"
                 )
-            await _send_telegram_notification(msg)
+            await _send_admin_only(msg)
 
-        # Ручное открытие сделки пользователем в MT5
+        # Ручное открытие сделки пользователем в MT5 — ТОЛЬКО АДМИНИСТРАТОРУ
         elif action == "MANUAL_OPEN":
             volume = float(data.get("profit") or 0.01)
             order_type = reason or "BUY"
             from utils.formatters import format_manual_open
             msg = format_manual_open(symbol, order_type, volume, price)
-            await _send_telegram_notification(msg)
+            await _send_admin_only(msg)
 
-        # Ручное закрытие сделки пользователем в MT5
+        # Ручное закрытие сделки пользователем в MT5 — ТОЛЬКО АДМИНИСТРАТОРУ
         elif action == "MANUAL_CLOSE":
             sig = await close_signal_by_broker(symbol, price, profit, "MANUAL_CLOSE")
             pip_mult = 100.0 if 'JPY' in symbol else (10.0 if 'XAU' in symbol else 10000.0)
@@ -628,7 +695,7 @@ async def bridge_post_report(request: web.Request) -> web.Response:
                 except Exception:
                     pass
 
-            await _send_telegram_notification(msg, photo_bytes=chart_bytes)
+            await _send_admin_only(msg, photo_bytes=chart_bytes)
 
         # Позиция закрыта в MT5 (TP, SL, безубыток)
         elif action in ("DEAL_CLOSED", "STALE_PROFIT_CLOSE", "CLOSED"):
@@ -644,7 +711,7 @@ async def bridge_post_report(request: web.Request) -> web.Response:
             pnl_pips = (price - entry if direction == 'LONG' else entry - price) * pip_mult if entry else 0.0
 
             if is_tp:
-                msg = (
+                msg_admin = (
                     f"🏆 <b>ТЕЙК-ПРОФИТ ВЗЯТ (METATRADER 5)!</b>\n"
                     f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
                     f"📊 <b>{symbol}</b> | <code>{direction}</code>\n"
@@ -654,8 +721,17 @@ async def bridge_post_report(request: web.Request) -> web.Response:
                     f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
                     f"🎯 <i>Цель полностью достигнута. Прибыль зафиксирована в банке.</i>"
                 )
+                msg_client = (
+                    f"🏆 <b>ТЕЙК-ПРОФИТ ВЗЯТ (СИГНАЛ ЗАКРЫТ)!</b>\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"📊 <b>{symbol}</b> | <code>{direction}</code>\n"
+                    f"📈 Результат: <b>+{abs(pnl_pips):.1f} pips</b> (Цель достигнута 🎯)\n"
+                    f"📍 Цена выхода: <code>{price:.5f}</code>\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"🎯 <i>Сделка полностью закрыта с фиксацией прибыли по алгоритму ICT/SMC.</i>"
+                )
             elif is_sl:
-                msg = (
+                msg_admin = (
                     f"🛑 <b>СТОП-ЛОСС СРАБОТАЛ (METATRADER 5)</b>\n"
                     f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
                     f"📊 <b>{symbol}</b> | <code>{direction}</code>\n"
@@ -668,14 +744,34 @@ async def bridge_post_report(request: web.Request) -> web.Response:
                     f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
                     f"💼 <i>Дисциплина и мани-менеджмент сохраняют депозит.</i>"
                 )
+                msg_client = (
+                    f"🛑 <b>СТОП-ЛОСС СРАБОТАЛ (ФИКСАЦИЯ УБЫТКА)</b>\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"📊 <b>{symbol}</b> | <code>{direction}</code>\n"
+                    f"📉 Итог: <b>-{abs(pnl_pips):.1f} pips</b>\n"
+                    f"📍 Цена выхода: <code>{price:.5f}</code>\n\n"
+                    f"🛑 <b>РАЗБОР СТОПА:</b>\n"
+                    f"• Импульсный пробой уровня / снятие ликвидности рынком.\n"
+                    f"• Риск строго ограничен 1.0% депозита. Капитал защищен.\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"💼 <i>Дисциплина и мани-менеджмент сохраняют депозит.</i>"
+                )
             else:
-                msg = (
+                msg_admin = (
                     f"🛡 <b>СДЕЛКА ЗАКРЫТА В БЕЗУБЫТОК!</b>\n"
                     f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
                     f"📊 <b>{symbol}</b> | <code>{direction}</code>\n"
                     f"💵 Результат: <b>0.00 USD</b>\n"
                     f"📍 Цена закрытия: <code>{price:.5f}</code>\n"
                     f"🎫 Билет сделки: <code>#{ticket}</code>\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"💼 <i>Позиция закрыта в безубыток без риска для баланса.</i>"
+                )
+                msg_client = (
+                    f"🛡 <b>СДЕЛКА ЗАКРЫТА В БЕЗУБЫТОК!</b>\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"📊 <b>{symbol}</b> | <code>{direction}</code>\n"
+                    f"📍 Цена закрытия: <code>{price:.5f}</code>\n"
                     f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
                     f"💼 <i>Позиция закрыта в безубыток без риска для баланса.</i>"
                 )
@@ -711,7 +807,7 @@ async def bridge_post_report(request: web.Request) -> web.Response:
                 except Exception:
                     pass
 
-            await _send_telegram_notification(msg, photo_bytes=chart_bytes)
+            await _send_telegram_notification(msg_client, photo_bytes=chart_bytes, text_admin=msg_admin)
 
         return web.json_response({"status": "ok", "acknowledged": True})
     except Exception as e:

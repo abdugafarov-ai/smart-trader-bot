@@ -34,6 +34,15 @@ class AccessControlMiddleware(BaseMiddleware):
                 if user_id:
                     asyncio.create_task(log_user_activity(user_id))
                 return await handler(event, data)
+            # Пропускаем отправку чека клиентом (фото / документ)
+            if user_id:
+                try:
+                    from bot.handlers import get_user_state
+                    if get_user_state(user_id).get("awaiting_receipt_plan"):
+                        asyncio.create_task(log_user_activity(user_id))
+                        return await handler(event, data)
+                except Exception:
+                    pass
         elif isinstance(event, CallbackQuery):
             user_id = event.from_user.id if event.from_user else None
             # Пропускаем callback-и для заявок, триалов и информации о подписке

@@ -54,6 +54,7 @@ async def init_users_table():
             ("reminder_3d_sent", "INTEGER DEFAULT 0"),
             ("reminder_1d_sent", "INTEGER DEFAULT 0"),
             ("admin_notes", "TEXT DEFAULT ''"),
+            ("trial_used", "INTEGER DEFAULT 0"),
         ]
         await db.execute("""
             CREATE TABLE IF NOT EXISTS crm_payments (
@@ -308,23 +309,47 @@ async def approve_user(telegram_id: int, days: int = 30, tariff: str = "PRO") ->
         return False
 
 
-async def activate_trial(telegram_id: int, days: int = 3) -> bool:
-    """Активирует бесплатный тест-драйв на указанное количество дней (по умолчанию 3)."""
+async def activate_trial(telegram_id: int, username: str = "", first_name: str = "", days: int = 3) -> bool:
+    """Активирует бесплатный тест-драйв на указанное количество дней (по умолчанию 3) и устанавливает trial_used = 1."""
     try:
         now = datetime.now(timezone.utc)
         expires_at = (now + timedelta(days=days)).isoformat()
+        now_iso = now.isoformat()
         async with aiosqlite.connect(str(DB_PATH)) as db:
-            await db.execute(
-                """UPDATE users 
-                   SET status = 'approved', approved_at = ?, tariff = 'TRIAL (3 дня)', expires_at = ?,
-                       is_lifetime = 0, reminder_3d_sent = 0, reminder_1d_sent = 0
-                   WHERE telegram_id = ?""",
-                (now.isoformat(), expires_at, telegram_id),
-            )
+            cursor = await db.execute("SELECT status FROM users WHERE telegram_id = ?", (telegram_id,))
+            row = await cursor.fetchone()
+            if row is not None:
+                await db.execute(
+                    """UPDATE users 
+                       SET status = 'approved', approved_at = ?, tariff = 'TRIAL (3 дня)', expires_at = ?,
+                           is_lifetime = 0, reminder_3d_sent = 0, reminder_1d_sent = 0, trial_used = 1
+                       WHERE telegram_id = ?""",
+                    (now_iso, expires_at, telegram_id),
+                )
+            else:
+                await db.execute(
+                    """INSERT INTO users (telegram_id, username, first_name, status, tariff, requested_at, approved_at, expires_at, last_seen, activity_count, trial_used)
+                       VALUES (?, ?, ?, 'approved', 'TRIAL (3 дня)', ?, ?, ?, ?, 1, 1)""",
+                    (telegram_id, username or "", first_name or "", now_iso, now_iso, expires_at, now_iso),
+                )
             await db.commit()
             return True
     except Exception as e:
         logger.error("activate_trial error: %s", e)
+        return False
+
+
+async def has_used_trial(telegram_id: int) -> bool:
+    """Проверяет, использовал ли пользователь бесплатный 3-дневный пробный период."""
+    try:
+        async with aiosqlite.connect(str(DB_PATH)) as db:
+            cursor = await db.execute("SELECT trial_used FROM users WHERE telegram_id = ?", (telegram_id,))
+            row = await cursor.fetchone()
+            if row and row[0]:
+                return bool(row[0])
+            return False
+    except Exception as e:
+        logger.error("has_used_trial error: %s", e)
         return False
 
 
