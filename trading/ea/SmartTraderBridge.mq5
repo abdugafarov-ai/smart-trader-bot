@@ -32,7 +32,7 @@ ulong    processed_signals[];
 string   common_pairs[] = {
    "EURUSD", "GBPUSD", "USDJPY", "USDCHF", "AUDUSD", "NZDUSD", "USDCAD",
    "EURGBP", "EURJPY", "GBPJPY", "EURAUD", "GBPAUD", "EURCHF", "CADJPY",
-   "AUDCAD", "AUDNZD", "XAUUSD"
+   "AUDCAD", "AUDNZD"
 };
 
 string GetBrokerSymbol(string standard_pair);

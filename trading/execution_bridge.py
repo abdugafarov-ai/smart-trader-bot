@@ -294,10 +294,10 @@ class ExecutionBridge:
         if not is_online:
             return False, f"MT5 не в сети (задержка {ping}с)"
 
-        # 5. Проверка режима депозита: в режиме 'micro' золото отключено
+        # 5. Жесткий запрет на золото (XAUUSD) для безопасности депозита
         sym_u = symbol.upper()
-        if trading_mode == "micro" and sym_u == "XAUUSD":
-            return False, "Золото (XAUUSD) отключено в режиме «Микро-депозит»"
+        if sym_u in ["XAUUSD", "GOLD"] or "XAU" in sym_u:
+            return False, "Золото (XAUUSD) ПОЛНОСТЬЮ ОТКЛЮЧЕНО в настройках робота"
 
         # 6. Лимит одновременно активных слотов (позиции + отложенные ордера)
         positions = self.mt5_telemetry.get("positions") or []

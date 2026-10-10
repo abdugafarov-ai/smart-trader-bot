@@ -39,11 +39,10 @@ PAIRS_CROSSES: list[str] = [
     "EURGBP", "EURJPY", "GBPJPY", "EURAUD", "GBPAUD",
     "EURCHF", "CADJPY", "AUDCAD", "AUDNZD",
 ]
-PAIRS_COMMODITIES: list[str] = [
-    "XAUUSD",
-]
+PAIRS_COMMODITIES: list[str] = []
 PAIRS_INDICES: list[str] = []
 PAIRS_CRYPTO: list[str] = []
+BANNED_PAIRS: list[str] = ["XAUUSD", "GOLD"]
 
 ALL_PAIRS: list[str] = (
     PAIRS_MAJORS + PAIRS_CROSSES + PAIRS_COMMODITIES
@@ -116,7 +115,6 @@ PAIR_CURRENCIES: dict[str, list[str]] = {
     "EURAUD": ["EUR", "AUD"], "GBPAUD": ["GBP", "AUD"],
     "EURCHF": ["EUR", "CHF"], "CADJPY": ["CAD", "JPY"],
     "AUDCAD": ["AUD", "CAD"], "AUDNZD": ["AUD", "NZD"],
-    "XAUUSD": ["USD"],
 }
 
 
@@ -148,8 +146,6 @@ PAIR_ACTIVE_SESSIONS = {
     "AUDCAD": [(0, 9), (12, 20)], "AUDNZD": [(0, 6)],
     # JPY crosses — Tokyo + London
     "CADJPY": [(0, 9), (12, 20)],
-    # Gold — London + NY only
-    "XAUUSD": [(7, 20)],
 }
 
 # ── Correlation Groups (для ограничения одновременных ордеров) ──
@@ -228,7 +224,6 @@ MAX_SPREAD_PIPS: dict[str, float] = {
     "CADJPY": 3.5,
     "AUDCAD": 3.5,
     "AUDNZD": 3.5,
-    "XAUUSD": 5.0,  # Для золота 5 пунктов = $0.50 спреда
     "DEFAULT": 4.0
 }
 

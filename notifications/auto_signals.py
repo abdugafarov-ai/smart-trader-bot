@@ -254,6 +254,10 @@ class AutoSignalScanner:
 
         for symbol in scan_list:
             try:
+                # ── ФИЛЬТР: Полный запрет золота и запрещенных пар ──
+                if symbol in getattr(config, "BANNED_PAIRS", ["XAUUSD", "GOLD"]) or "XAU" in symbol:
+                    continue
+
                 # ── ФИЛЬТР 0: Исключение пар для режима Микро ($12) ──
                 if trading_mode == "micro" and symbol in getattr(config, "MICRO_EXCLUDED_PAIRS", ["XAUUSD"]):
                     continue

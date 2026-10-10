@@ -124,12 +124,12 @@ async def main():
                 await bot.set_my_commands(admin_commands, scope=BotCommandScopeChat(chat_id=config.ADMIN_ID))
 
             await bot.set_my_short_description(
-                "Автономный торговый комплекс: SMC/ICT анализ 17 пар и авто-торговля в MetaTrader 5 со строгим риск-менеджментом."
+                "Автономный торговый комплекс: SMC/ICT анализ 16 Forex пар и авто-торговля в MetaTrader 5 со строгим риск-менеджментом."
             )
 
             await bot.set_my_description(
                 "Автономный торговый комплекс Smart Trader с интеграцией в MetaTrader 5:\n\n"
-                "• 17 торговых инструментов (Forex мажоры, кроссы и Золото XAUUSD)\n"
+                "• 16 торговых инструментов (Forex мажоры и кроссы, Золото исключено)\n"
                 "• Институциональная стратегия Smart Money / ICT (BOS, OB, FVG, OTE)\n"
                 "• Авто-выставление лимитных ордеров со Stop Loss и Take Profit (R:R 1:2.5 – 1:4.0)\n"
                 "• Режим Pure Swing: сделки дышат без копеечных выбиваний по безубытку\n"
