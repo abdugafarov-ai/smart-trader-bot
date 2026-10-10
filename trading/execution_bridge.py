@@ -40,8 +40,8 @@ class ExecutionBridge:
         self.live_quotes: Dict[str, Dict[str, Any]] = {}
 
         # Институциональный риск-менеджмент для реального счёта
-        self.max_daily_loss_pct: float = getattr(config, 'MAX_DAILY_DRAWDOWN_PCT', 3.0)
-        self.max_concurrent_positions: int = getattr(config, 'MAX_CONCURRENT_POSITIONS', 5)
+        self.max_daily_loss_pct: float = getattr(config, 'MAX_DAILY_DRAWDOWN_PCT', 2.5)
+        self.max_concurrent_positions: int = getattr(config, 'MAX_CONCURRENT_POSITIONS', 4)
         self.daily_loss_locked: bool = False
         self.daily_lock_reason: str = ""
         self.daily_lock_alerted_date: str = ""

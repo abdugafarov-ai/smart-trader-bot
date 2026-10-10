@@ -12,7 +12,7 @@
 input string   InpServerUrl    = "http://127.0.0.1:8080"; // URL сервера Smart Trader Bot
 input int      InpPollInterval = 3;                       // Опрос каждые N секунд
 input int      InpMagicNumber  = 888001;                   // Magic Number
-input double   InpFixedLot     = 0.01;                     // Торговый лот
+input double   InpFixedLot     = 0.03;                     // Торговый лот
 input int      InpSlippage     = 10;                       // Проскальзывание
 
 int OnInit()

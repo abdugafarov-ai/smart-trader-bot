@@ -19,12 +19,12 @@ input int      InpPollInterval = 3;                       // Опрос серв
 input ulong    InpMagicNumber  = 888001;                   // Magic Number ордеров
 
 input group "=== УПРАВЛЕНИЕ РИСКОМ ==="
-input int      InpMaxOpenOrders = 3;                       // Макс. одновременно активных позиций/ордеров
+input int      InpMaxOpenOrders = 4;                       // Макс. одновременно активных позиций/ордеров
 input bool     InpUseAutoRisk  = false;                    // Использовать расчет лота от баланса (%)
 input double   InpRiskPercent  = 1.0;                      // Процент риска на сделку (%)
-input double   InpFixedLot     = 0.01;                     // Фиксированный лот (если AutoRisk = false)
+input double   InpFixedLot     = 0.03;                     // Фиксированный лот (если AutoRisk = false)
 input int      InpSlippage     = 20;                       // Проскальзывание в пунктах
-input bool     InpUseAutoBE    = true;                     // Использовать авто-безубыток (+1.0R защищен)
+input bool     InpUseAutoBE    = false;                    // Pure Swing (сделки дышат до полного Take Profit)
 
 //--- Глобальные переменные
 ulong    processed_signals[];

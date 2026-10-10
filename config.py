@@ -67,7 +67,7 @@ WEBAPP_URL: str = ""
 # ── Auto-Trading Bridge (MetaTrader 4/5) ───────────────────
 AUTOTRADE_ENABLED: bool = os.getenv("AUTOTRADE_ENABLED", "true").lower() in ("true", "1", "yes")
 AUTOTRADE_DEFAULT_RISK: float = float(os.getenv("AUTOTRADE_DEFAULT_RISK", "1.0"))
-AUTOTRADE_DEFAULT_LOT: float = float(os.getenv("AUTOTRADE_DEFAULT_LOT", "0.01"))
+AUTOTRADE_DEFAULT_LOT: float = float(os.getenv("AUTOTRADE_DEFAULT_LOT", "0.03"))
 
 # ── Стиль графиков (ict, dark, light) ────────────────────
 CHART_THEME: str = os.getenv("CHART_THEME", "ict")
