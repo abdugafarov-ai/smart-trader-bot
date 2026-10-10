@@ -276,6 +276,11 @@ class ExecutionBridge:
         Институциональная 10-факторная валидация перед открытием ордера на реальные деньги.
         Возвращает (allowed: bool, reason: str).
         """
+        # 0. Абсолютный запрет на золото (XAUUSD) и запрещённые инструменты
+        sym_u = symbol.upper()
+        if sym_u in ["XAUUSD", "GOLD"] or "XAU" in sym_u or sym_u in getattr(config, "BANNED_PAIRS", []):
+            return False, "Золото (XAUUSD) ПОЛНОСТЬЮ ОТКЛЮЧЕНО в настройках робота"
+
         # 1. Проверка активности автопилота
         if not self.enabled:
             return False, "Автопилот выключен"
@@ -293,11 +298,6 @@ class ExecutionBridge:
         is_online, ping = self.is_mt5_online()
         if not is_online:
             return False, f"MT5 не в сети (задержка {ping}с)"
-
-        # 5. Жесткий запрет на золото (XAUUSD) для безопасности депозита
-        sym_u = symbol.upper()
-        if sym_u in ["XAUUSD", "GOLD"] or "XAU" in sym_u:
-            return False, "Золото (XAUUSD) ПОЛНОСТЬЮ ОТКЛЮЧЕНО в настройках робота"
 
         # 6. Лимит одновременно активных слотов (позиции + отложенные ордера)
         positions = self.mt5_telemetry.get("positions") or []
