@@ -44,6 +44,16 @@ class AutoSignalScanner:
         self._daily_reset_date: str = ""
         self._last_signal_time: dict[str, datetime] = {}  # symbol -> last signal time
 
+    async def _run_continuous_news_monitor(self):
+        """Непрерывный мониторинг макроэкономических новостей каждую минуту (60 сек)."""
+        logger.info("Continuous News Monitor started (interval: 60s).")
+        while self.is_running:
+            try:
+                await self.check_news()
+            except Exception as e:
+                logger.error("Continuous news check error: %s", e)
+            await asyncio.sleep(60)
+
     async def start(self):
         self.is_running = True
         logger.info("AutoSignalScanner v3 started. Scanning %d pairs every %d min. "
@@ -51,10 +61,11 @@ class AutoSignalScanner:
                      "Daily Limit: %d | Cooldown: %dh",
                      len(self.symbols), self.interval_minutes,
                      config.MAX_SIGNALS_PER_DAY, config.SIGNAL_COOLDOWN_HOURS)
+        # Запускаем независимый 60-секундный цикл мониторинга новостей
+        asyncio.create_task(self._run_continuous_news_monitor())
         while self.is_running:
             try:
                 await self.scan_and_notify()
-                await self.check_news()
             except Exception as e:
                 logger.error("Scan error: %s", e, exc_info=True)
             await asyncio.sleep(self.interval_minutes * 60)
