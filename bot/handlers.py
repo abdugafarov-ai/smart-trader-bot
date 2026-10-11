@@ -336,7 +336,7 @@ async def cmd_start(message: Message):
             "🏛 <b>ДОБРО ПОЖАЛОВАТЬ В SMART TRADER TERMINAL</b>\n"
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
             "🎯 <b>Профессиональные торговые сигналы Smart Money / ICT:</b>\n"
-            "• 17 торговых инструментов (Forex Majors + Crosses + Золото)\n"
+            "• 16 торговых инструментов Forex (Мажоры и Кроссы, Золото исключено)\n"
             "• Точные уровни входа (Entry, Stop Loss, Take Profit 1 & 2)\n"
             "• Анализ институционального капитала в реальном времени\n\n"
             "🎁 <b>Активируйте бесплатный тест-драйв на 3 дня</b> или отправьте заявку на доступ нажатием кнопки ниже 👇",
@@ -711,7 +711,7 @@ async def cb_menu_actions(callback: CallbackQuery):
                 "• Макс. стоп-лосс: по структуре ICT/SMC\n"
                 "• Режим сделок: <b>Pure Swing</b> (удержание до полного Take Profit)"
             )
-            pool_str = "17 пар (Форекс + Золото)"
+            pool_str = "16 пар Forex (Мажоры и Кроссы, Золото исключено)"
 
         lot_display = f"{bridge_manager.default_lot:.2f}"
         if getattr(bridge_manager, 'lot_mode', 'fixed') == "fixed":
@@ -995,7 +995,7 @@ async def cb_autotrade_actions(callback: CallbackQuery):
             "• Макс. стоп-лосс: по структуре ICT/SMC\n"
             "• Режим сделок: <b>Pure Swing</b> (удержание до полного Take Profit)"
         )
-        pool_str = "17 пар (Форекс + Золото)"
+        pool_str = "16 пар Forex (Мажоры и Кроссы, Золото исключено)"
 
     lot_display = f"{bridge_manager.default_lot:.2f}"
     if getattr(bridge_manager, 'lot_mode', 'fixed') == "fixed":
@@ -1248,7 +1248,7 @@ async def handle_user_text_input(message: Message):
                 "• Макс. стоп-лосс: по структуре ICT/SMC\n"
                 "• Режим сделок: <b>Pure Swing</b> (удержание до полного Take Profit)"
             )
-            pool_str = "17 пар (Форекс + Золото)"
+            pool_str = "16 пар Forex (Мажоры и Кроссы, Золото исключено)"
 
         text = (
             f"✅ <b>Рабочий лот успешно установлен: {val:.2f}</b>\n\n"
@@ -1447,7 +1447,7 @@ async def cb_request_actions(callback: CallbackQuery):
                     "🎉 <b>БЕСПЛАТНЫЙ ТЕСТ-ДРАЙВ АКТИВИРОВАН!</b>\n"
                     "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
                     "Вам открыт полный доступ ко всем сигналам на <b>3 дня (72 часа)</b> без ограничений! 🚀\n\n"
-                    "• Все 17 инструментов (Forex мажоры, кроссы и Золото XAUUSD)\n"
+                    "• Все 16 инструментов Forex (Золото исключено)\n"
                     "• Алгоритмы Smart Money / ICT (BOS, OB, FVG, OTE)\n"
                     "• Точки входа, Take Profit и Stop Loss с R:R от 1:2.5\n\n"
                     "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"

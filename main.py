@@ -92,8 +92,9 @@ async def main():
             # Публичные команды для обычных клиентов (БЕЗ админских пультов!)
             client_commands = [
                 BotCommand(command="start", description="🏛 Главное меню"),
-                BotCommand(command="request", description="💎 Тарифы и подписка"),
-                BotCommand(command="stats", description="📊 Статистика сигналов"),
+                BotCommand(command="terminal", description="🖥 Пульт MetaTrader 5"),
+                BotCommand(command="account", description="💼 Баланс и позиции MT5"),
+                BotCommand(command="stats", description="📊 Статистика челленджа"),
                 BotCommand(command="history", description="📜 Журнал сделок"),
                 BotCommand(command="sessions", description="⏰ Торговые сессии"),
                 BotCommand(command="news", description="📰 Календарь новостей"),
@@ -106,25 +107,23 @@ async def main():
                 admin_commands = [
                     BotCommand(command="start", description="🏛 Главное меню"),
                     BotCommand(command="terminal", description="🖥 Пульт MetaTrader 5"),
-                    BotCommand(command="crm", description="👥 Управление клиентами (CRM)"),
-                    BotCommand(command="account", description="💼 Баланс и позиции MT5"),
-                    BotCommand(command="broadcast", description="📢 Рассылка клиентам"),
-                    BotCommand(command="autotrade", description="⚙️ Автопилот советника"),
-                    BotCommand(command="lot", description="🔹 Задать лот: /lot 0.01"),
+                                        BotCommand(command="account", description="💼 Баланс и позиции MT5"),
+                                        BotCommand(command="autotrade", description="⚙️ Автопилот советника"),
+                    BotCommand(command="lot", description="🔹 Задать лот: /lot 0.03"),
                     BotCommand(command="risk", description="⚖️ Задать риск: /risk 1.0"),
-                    BotCommand(command="stats", description="📊 Статистика сигналов"),
+                    BotCommand(command="stats", description="📊 Статистика челленджа"),
                     BotCommand(command="history", description="📜 Журнал сделок"),
                     BotCommand(command="sessions", description="⏰ Торговые сессии"),
                     BotCommand(command="news", description="📰 Календарь новостей"),
                     BotCommand(command="server", description="🎛️ Состояние VPS"),
                     BotCommand(command="clean", description="🧹 Очистить кэш / мусор"),
                     BotCommand(command="reset_drawdown", description="🛡️ Сбросить просадку"),
-                    BotCommand(command="help", description="📖 Справочник"),
+                    BotCommand(command="help", description="📖 Регламент челленджа"),
                 ]
                 await bot.set_my_commands(admin_commands, scope=BotCommandScopeChat(chat_id=config.ADMIN_ID))
 
             await bot.set_my_short_description(
-                "Автономный торговый комплекс: SMC/ICT анализ 16 Forex пар и авто-торговля в MetaTrader 5 со строгим риск-менеджментом."
+                "Smart Trader: SMC/ICT торговля FundingPips ($5,000) в MetaTrader 5 со строгим риск-контролем."
             )
 
             await bot.set_my_description(
