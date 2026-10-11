@@ -19,6 +19,10 @@ def admin_menu_keyboard() -> InlineKeyboardMarkup:
         InlineKeyboardButton(text="🖥 Мой Терминал MT5", callback_data="menu:terminal"),
         InlineKeyboardButton(text="⚙️ Автопилот", callback_data="menu:autotrade")
     )
+    # 2. CRM Управление клиентами и подписками
+    builder.row(
+        InlineKeyboardButton(text="👥 Управление Клиентами (CRM)", callback_data="menu:crm")
+    )
     # 3. Результаты и история
     builder.row(
         InlineKeyboardButton(text="📊 Статистика & Win-Rate", callback_data="menu:stats"),
