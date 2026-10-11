@@ -460,6 +460,19 @@ async def bridge_get_orders(request: web.Request) -> web.Response:
                 logger.debug("Signal #%s (%s) held by Risk Guard: %s", sig.get("id"), sym, hold_reason)
                 continue
 
+            # Институциональная проверка R:R (строго >= 1:2.0)
+            entry_p = float(sig.get("entry_price") or 0.0)
+            sl_p = float(sig.get("stop_loss") or 0.0)
+            tp_p = float(sig.get("take_profit_1") or sig.get("take_profit_2") or 0.0)
+            if entry_p > 0 and sl_p > 0 and tp_p > 0:
+                risk_d = abs(entry_p - sl_p)
+                reward_d = abs(tp_p - entry_p)
+                if risk_d > 0:
+                    sig_rr = reward_d / risk_d
+                    if sig_rr < 1.99:
+                        logger.warning("Signal #%s (%s) rejected: R:R %.2f < 1:2.0 (Strict R:R Rule)", sig.get("id"), sym, sig_rr)
+                        continue
+
             # Проверка лимита свободных слотов в текущем цикле отправки
             if (current_active_slots + len(orders)) >= max_allowed_slots:
                 logger.info("Batch slot capacity reached: %d/%d (holding remaining signals)",

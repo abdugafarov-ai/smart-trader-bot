@@ -77,7 +77,7 @@ class AutoSignalScanner:
         try:
             from news.economic_calendar import EconomicCalendar
             calendar = EconomicCalendar(config.TIMEZONE)
-            events = await calendar.get_upcoming_high_impact(within_minutes=30)
+            events = await calendar.get_upcoming_high_impact(within_minutes=30, post_minutes=30)
             for event in events:
                 for pair in event.affected_pairs:
                     blocked.add(pair)
