@@ -94,18 +94,32 @@ class DataFetcher:
             return 3 * 60   # 3 минуты для интрадей
         return 15 * 60      # 15 минут для H4+
 
-    def _get_cache_key(self, symbol: str, timeframe: str) -> str:
-        return f"{symbol.upper()}_{timeframe.upper()}"
+    @staticmethod
+    def normalize_symbol(symbol: str) -> str:
+        """
+        Нормализует тикер брокера к каноническому виду (например, XAUUSDm, XAUUSD.pro, GOLD -> XAUUSD).
+        """
+        if not symbol:
+            return ""
+        sym = symbol.upper().strip().replace("/", "").replace("=X", "")
+        if sym in ("XAUUSD", "GOLD", "GOLDM") or sym.startswith("XAUUSD") or sym.startswith("GOLD."):
+            return "XAUUSD"
+        forex_set = set(KRAKEN_SYMBOL_MAP.keys()) | set(getattr(config, "FOREX_PAIRS", {}).keys())
+        if len(sym) > 6 and sym[:6] in forex_set:
+            return sym[:6]
+        return sym
 
-    async def fetch_ohlcv(self, symbol: str, timeframe: str = 'H4', limit: int = 300) -> pd.DataFrame:
+    def _get_cache_key(self, symbol: str, timeframe: str) -> str:
+        return f"{self.normalize_symbol(symbol)}_{timeframe.upper()}"
+
+    async def fetch_ohlcv(self, symbol: str, timeframe: str = 'M15', limit: int = 300) -> pd.DataFrame:
         """
-        Получает исторические свечи OHLCV из брокерских и межбанковских источников:
+        Получает исторические закрытые свечи OHLCV из брокерских и межбанковских источников:
         1. Проверяет кэш
-        2. Проверяет файлы баров MetaTrader 5
-        3. Запрашивает через институциональные биржевые API (Binance / Kraken)
-        4. Накладывает живую цену брокера из MT5
+        2. Проверяет файлы закрытых баров MetaTrader 5
+        3. Запрашивает через институциональные биржевые API (Binance / Kraken) — кроме XAUUSD
         """
-        sym_clean = symbol.upper().replace("/", "").replace("=X", "")
+        sym_clean = self.normalize_symbol(symbol)
         cache_key = self._get_cache_key(sym_clean, timeframe)
 
         if cache_key in self._cache:
@@ -120,25 +134,28 @@ class DataFetcher:
             return await self.fetch_dxy(timeframe, limit)
 
         # 1. Проверяем наличие баров, экспортированных советником MT5 напрямую
-        df = self._read_mt5_bars(sym_clean, timeframe, limit)
+        df = self._read_mt5_bars(sym_clean, timeframe, limit, closed_only=True)
 
-        # 2. Если баров MT5 нет — получаем через CCXT
+        # 2. Если баров MT5 нет — получаем через CCXT (строго запрещено для XAUUSD)
         if df is None or df.empty or len(df) < 20:
             try:
+                forex_set = set(KRAKEN_SYMBOL_MAP.keys()) | set(getattr(config, "FOREX_PAIRS", {}).keys())
                 if config.is_crypto(sym_clean):
                     df = await self._fetch_crypto_binance(sym_clean, timeframe, limit)
                 elif sym_clean == "XAUUSD":
                     # Hard Rule: For live trading and signals on XAUUSD, never mix or fallback to PAXG!
                     logger.warning("MT5 broker candles unavailable for XAUUSD %s. Refusing PAXG fallback (NO TRADE).", timeframe)
                     return pd.DataFrame(columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-                else:
+                elif sym_clean in forex_set:
                     df = await self._fetch_forex_kraken(sym_clean, timeframe, limit)
+                else:
+                    logger.warning("Unsupported or unknown symbol %s (normalized: %s).", symbol, sym_clean)
+                    return pd.DataFrame(columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
             except Exception as ex:
                 logger.warning("CCXT fetch error for %s %s: %s", sym_clean, timeframe, ex)
 
         if df is not None and not df.empty:
-            # Note: Closed historical bars must remain strictly immutable to prevent repainting / false confirmation.
-            # Live bid/ask quote is queried separately via get_live_price() during order execution.
+            # Closed historical bars remain strictly immutable to prevent repainting / false confirmation.
             self._cache[cache_key] = {
                 'timestamp': time.time(),
                 'data': df.copy()
@@ -148,16 +165,18 @@ class DataFetcher:
         return pd.DataFrame(columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
 
     def _read_mt5_bars(self, symbol: str, timeframe: str, limit: int = 300, closed_only: bool = True) -> Optional[pd.DataFrame]:
-        """Читает реальные бары брокера, экспортированные советником MT5."""
+        """Читает и валидирует реальные бары брокера, экспортированные советником MT5."""
         if not os.path.exists(MT5_FILES_DIR):
             return None
-        fname = f"candles_{symbol}_{timeframe}.csv"
+        sym_norm = self.normalize_symbol(symbol)
+        fname = f"candles_{sym_norm}_{timeframe}.csv"
         fpath = os.path.join(MT5_FILES_DIR, fname)
         if not os.path.exists(fpath):
             return None
         try:
             df = pd.read_csv(fpath)
-            if df.empty or 'close' not in df.columns:
+            required_cols = {'open', 'high', 'low', 'close'}
+            if df.empty or not required_cols.issubset(df.columns):
                 return None
             if 'volume' not in df.columns:
                 df['volume'] = 100.0
@@ -165,7 +184,39 @@ class DataFetcher:
                 df[col] = pd.to_numeric(df[col], errors='coerce')
             df['volume'] = pd.to_numeric(df['volume'], errors='coerce').fillna(100.0)
             df = df.dropna(subset=['open', 'high', 'low', 'close']).reset_index(drop=True)
-            # If closed_only is True, drop the last row which is the current unclosed live candle in MT5 export
+            if df.empty:
+                return None
+
+            # Validate OHLC integrity invariants (no negative/zero prices, high >= max(open, close), low <= min(open, close))
+            valid_ohlc = (
+                (df['open'] > 0) &
+                (df['high'] > 0) &
+                (df['low'] > 0) &
+                (df['close'] > 0) &
+                (df['high'] >= df['low']) &
+                (df['high'] >= df['open']) &
+                (df['high'] >= df['close']) &
+                (df['low'] <= df['open']) &
+                (df['low'] <= df['close'])
+            )
+            df = df.loc[valid_ohlc].reset_index(drop=True)
+            if df.empty:
+                return None
+
+            # Deduplicate and sort chronologically if timestamp column exists
+            if 'timestamp' in df.columns:
+                dt_parsed = pd.to_datetime(df['timestamp'], errors='coerce')
+                if dt_parsed.notna().any():
+                    df = (
+                        df.loc[dt_parsed.notna()]
+                        .assign(_dt=dt_parsed[dt_parsed.notna()])
+                        .drop_duplicates(subset=['_dt'], keep='last')
+                        .sort_values('_dt')
+                        .drop(columns=['_dt'])
+                        .reset_index(drop=True)
+                    )
+
+            # If closed_only is True, drop the last row which is the current unclosed forming candle in MT5 export
             if closed_only and len(df) > 1:
                 df = df.iloc[:-1].reset_index(drop=True)
             df = df.tail(limit).reset_index(drop=True)
@@ -175,39 +226,32 @@ class DataFetcher:
             return None
 
     async def _fetch_crypto_binance(self, symbol: str, timeframe: str, limit: int = 300) -> pd.DataFrame:
-        """Получает крипто-свечи с Binance через CCXT."""
-        tf = config.TIMEFRAME_MAP_CCXT.get(timeframe, '4h')
+        """Получает закрытые крипто-свечи с Binance через CCXT."""
+        tf = config.TIMEFRAME_MAP_CCXT.get(timeframe, '15m')
         pair = f"{symbol[:-4]}/{symbol[-4:]}" if symbol.endswith('USDT') else symbol
-        ohlcv = await asyncio.to_thread(self.binance.fetch_ohlcv, pair, tf, limit=limit)
+        ohlcv = await asyncio.to_thread(self.binance.fetch_ohlcv, pair, tf, limit=limit + 1)
         df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
         df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-        return df
-
-    async def _fetch_gold_binance(self, timeframe: str, limit: int = 300) -> pd.DataFrame:
-        """
-        Получает свечи золота (XAUUSD) через институциональный токен PAXG/USDT на Binance.
-        PAXG обеспечен 1:1 физической тройской унцией золота Лондонского стандарта.
-        """
-        tf = config.TIMEFRAME_MAP_CCXT.get(timeframe, '4h')
-        ohlcv = await asyncio.to_thread(self.binance.fetch_ohlcv, 'PAXG/USDT', tf, limit=limit)
-        df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-        return df
+        if len(df) > 1:
+            df = df.iloc[:-1].reset_index(drop=True)
+        return df.tail(limit).reset_index(drop=True)
 
     async def _fetch_forex_kraken(self, symbol: str, timeframe: str, limit: int = 300) -> pd.DataFrame:
         """
-        Получает Forex свечи через CCXT Kraken.
+        Получает закрытые Forex свечи через CCXT Kraken.
         Kraken предоставляет бесплатный, высокоточный публичный поток котировок без ключей.
         """
-        tf = config.TIMEFRAME_MAP_CCXT.get(timeframe, '4h')
+        tf = config.TIMEFRAME_MAP_CCXT.get(timeframe, '15m')
         kraken_pair = KRAKEN_SYMBOL_MAP.get(symbol)
         if not kraken_pair:
             kraken_pair = f"{symbol[:3]}/{symbol[3:]}"
 
-        ohlcv = await asyncio.to_thread(self.kraken.fetch_ohlcv, kraken_pair, tf, limit=limit)
+        ohlcv = await asyncio.to_thread(self.kraken.fetch_ohlcv, kraken_pair, tf, limit=limit + 1)
         df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
         df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-        return df
+        if len(df) > 1:
+            df = df.iloc[:-1].reset_index(drop=True)
+        return df.tail(limit).reset_index(drop=True)
 
     def get_dxy_bars_sync(
         self,
@@ -216,10 +260,11 @@ class DataFetcher:
         df_eur_override: Optional[pd.DataFrame] = None
     ) -> pd.DataFrame:
         """
-        Синхронно рассчитывает синтетический индекс доллара (DXY) по институциональной формуле ICE:
-        DXY = 50.14348112 * (EURUSD^-0.576) * (USDJPY^0.136) * (GBPUSD^-0.119) * (USDCAD^0.091) * (USDSEK^0.042) * (USDCHF^0.036)
-        С выравниванием по общим таймстемпам брокерских баров.
+        Синхронно рассчитывает синтетический индекс доллара (DXY) по формуле ICE
+        только при наличии реальных синхронизированных баров всех валютных пар.
+        Никаких искусственных констант-заглушек при отсутствии данных.
         """
+        empty_df = pd.DataFrame(columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
         try:
             if df_eur_override is not None and not df_eur_override.empty:
                 df_eur = df_eur_override.copy()
@@ -231,82 +276,73 @@ class DataFetcher:
             df_chf = self._read_mt5_bars("USDCHF", timeframe, limit=limit)
             df_cad = self._read_mt5_bars("USDCAD", timeframe, limit=limit)
 
-            if df_eur is None or df_eur.empty:
-                return pd.DataFrame(columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            # Strictly require real data for all major DXY basket components (no fake constant prices)
+            for comp_df in (df_eur, df_gbp, df_jpy, df_chf, df_cad):
+                if comp_df is None or comp_df.empty:
+                    return empty_df
 
             # Align on timestamp
-            for d in [df_eur, df_gbp, df_jpy, df_chf, df_cad]:
-                if d is not None and not d.empty:
-                    if 'timestamp' in d.columns:
-                        dt_s = pd.to_datetime(d['timestamp'])
-                    elif isinstance(d.index, pd.DatetimeIndex):
-                        dt_s = pd.to_datetime(d.index)
-                    else:
-                        dt_s = pd.to_datetime(d.iloc[:, 0])
-                    if getattr(dt_s.dt, 'tz', None) is not None:
-                        dt_s = dt_s.dt.tz_localize(None)
-                    d['dt'] = dt_s
+            prepared = []
+            for suffix, d in [('eur', df_eur), ('gbp', df_gbp), ('jpy', df_jpy), ('chf', df_chf), ('cad', df_cad)]:
+                d_copy = d.copy()
+                if 'timestamp' in d_copy.columns:
+                    dt_s = pd.to_datetime(d_copy['timestamp'], errors='coerce')
+                elif isinstance(d_copy.index, pd.DatetimeIndex):
+                    dt_s = pd.to_datetime(d_copy.index, errors='coerce')
+                else:
+                    dt_s = pd.to_datetime(d_copy.iloc[:, 0], errors='coerce')
+                if getattr(dt_s.dt, 'tz', None) is not None:
+                    dt_s = dt_s.dt.tz_localize(None)
+                d_copy['dt'] = dt_s
+                d_copy = d_copy.dropna(subset=['dt', 'open', 'high', 'low', 'close'])
+                d_copy = d_copy[['dt', 'open', 'high', 'low', 'close']].rename(
+                    columns={
+                        'open': f'open_{suffix}',
+                        'high': f'high_{suffix}',
+                        'low': f'low_{suffix}',
+                        'close': f'close_{suffix}',
+                    }
+                )
+                prepared.append(d_copy)
 
-            m = df_eur[['dt', 'open', 'high', 'low', 'close']].copy()
-            m = m.rename(columns={'open': 'open_eur', 'high': 'high_eur', 'low': 'low_eur', 'close': 'close_eur'})
+            m = prepared[0]
+            for other in prepared[1:]:
+                m = pd.merge(m, other, on='dt', how='inner')
 
-            if df_gbp is not None and not df_gbp.empty:
-                m = pd.merge(m, df_gbp[['dt', 'open', 'high', 'low', 'close']], on='dt', how='left')
-                m = m.rename(columns={'open': 'open_gbp', 'high': 'high_gbp', 'low': 'low_gbp', 'close': 'close_gbp'})
-                m['close_gbp'] = m['close_gbp'].fillna(1.27)
-                m['open_gbp'] = m['open_gbp'].fillna(1.27)
-                m['high_gbp'] = m['high_gbp'].fillna(1.27)
-                m['low_gbp'] = m['low_gbp'].fillna(1.27)
-            else:
-                m['open_gbp'] = m['high_gbp'] = m['low_gbp'] = m['close_gbp'] = 1.27
+            if m.empty:
+                return empty_df
 
-            if df_jpy is not None and not df_jpy.empty:
-                m = pd.merge(m, df_jpy[['dt', 'open', 'high', 'low', 'close']], on='dt', how='left')
-                m = m.rename(columns={'open': 'open_jpy', 'high': 'high_jpy', 'low': 'low_jpy', 'close': 'close_jpy'})
-                m['close_jpy'] = m['close_jpy'].fillna(150.0)
-                m['open_jpy'] = m['open_jpy'].fillna(150.0)
-                m['high_jpy'] = m['high_jpy'].fillna(150.0)
-                m['low_jpy'] = m['low_jpy'].fillna(150.0)
-            else:
-                m['open_jpy'] = m['high_jpy'] = m['low_jpy'] = m['close_jpy'] = 150.0
+            # Optional USDSEK if exported by broker, otherwise re-normalize weights across the 5 available majors (95.8% of DXY basket)
+            df_sek = self._read_mt5_bars("USDSEK", timeframe, limit=limit)
+            if df_sek is not None and not df_sek.empty and 'timestamp' in df_sek.columns:
+                df_sek_c = df_sek.copy()
+                dt_sek = pd.to_datetime(df_sek_c['timestamp'], errors='coerce')
+                if getattr(dt_sek.dt, 'tz', None) is not None:
+                    dt_sek = dt_sek.dt.tz_localize(None)
+                df_sek_c['dt'] = dt_sek
+                df_sek_c = df_sek_c[['dt', 'open', 'high', 'low', 'close']].rename(
+                    columns={'open': 'open_sek', 'high': 'high_sek', 'low': 'low_sek', 'close': 'close_sek'}
+                )
+                m_sek = pd.merge(m, df_sek_c, on='dt', how='inner')
+                if not m_sek.empty:
+                    m = m_sek
+                    k = 50.14348112
+                    dxy = pd.DataFrame()
+                    dxy['timestamp'] = m['dt']
+                    dxy['open'] = k * (m['open_eur'] ** -0.576) * (m['open_jpy'] ** 0.136) * (m['open_gbp'] ** -0.119) * (m['open_cad'] ** 0.091) * (m['open_sek'] ** 0.042) * (m['open_chf'] ** 0.036)
+                    dxy['close'] = k * (m['close_eur'] ** -0.576) * (m['close_jpy'] ** 0.136) * (m['close_gbp'] ** -0.119) * (m['close_cad'] ** 0.091) * (m['close_sek'] ** 0.042) * (m['close_chf'] ** 0.036)
+                    dxy['high'] = k * (m['low_eur'] ** -0.576) * (m['high_jpy'] ** 0.136) * (m['low_gbp'] ** -0.119) * (m['high_cad'] ** 0.091) * (m['high_sek'] ** 0.042) * (m['high_chf'] ** 0.036)
+                    dxy['low'] = k * (m['high_eur'] ** -0.576) * (m['low_jpy'] ** 0.136) * (m['high_gbp'] ** -0.119) * (m['low_cad'] ** 0.091) * (m['low_sek'] ** 0.042) * (m['low_chf'] ** 0.036)
+                    dxy['volume'] = 100.0
+                    return dxy.tail(limit).reset_index(drop=True)
 
-            if df_chf is not None and not df_chf.empty:
-                m = pd.merge(m, df_chf[['dt', 'open', 'high', 'low', 'close']], on='dt', how='left')
-                m = m.rename(columns={'open': 'open_chf', 'high': 'high_chf', 'low': 'low_chf', 'close': 'close_chf'})
-                m['close_chf'] = m['close_chf'].fillna(0.90)
-                m['open_chf'] = m['open_chf'].fillna(0.90)
-                m['high_chf'] = m['high_chf'].fillna(0.90)
-                m['low_chf'] = m['low_chf'].fillna(0.90)
-            else:
-                m['open_chf'] = m['high_chf'] = m['low_chf'] = m['close_chf'] = 0.90
-
-            if df_cad is not None and not df_cad.empty:
-                m = pd.merge(m, df_cad[['dt', 'open', 'high', 'low', 'close']], on='dt', how='left')
-                m = m.rename(columns={'open': 'open_cad', 'high': 'high_cad', 'low': 'low_cad', 'close': 'close_cad'})
-                m['close_cad'] = m['close_cad'].fillna(1.35)
-                m['open_cad'] = m['open_cad'].fillna(1.35)
-                m['high_cad'] = m['high_cad'].fillna(1.35)
-                m['low_cad'] = m['low_cad'].fillna(1.35)
-            else:
-                m['open_cad'] = m['high_cad'] = m['low_cad'] = m['close_cad'] = 1.35
-
-            usdsek = 10.5
-            k = 50.14348112 * (usdsek ** 0.042)
-
-            dxy = pd.DataFrame()
-            dxy['timestamp'] = m['dt']
-            dxy['open'] = k * (m['open_eur'] ** -0.576) * (m['open_jpy'] ** 0.136) * (m['open_gbp'] ** -0.119) * (m['open_cad'] ** 0.091) * (m['open_chf'] ** 0.036)
-            dxy['close'] = k * (m['close_eur'] ** -0.576) * (m['close_jpy'] ** 0.136) * (m['close_gbp'] ** -0.119) * (m['close_cad'] ** 0.091) * (m['close_chf'] ** 0.036)
-            dxy['high'] = k * (m['low_eur'] ** -0.576) * (m['high_jpy'] ** 0.136) * (m['low_gbp'] ** -0.119) * (m['high_cad'] ** 0.091) * (m['high_chf'] ** 0.036)
-            dxy['low'] = k * (m['high_eur'] ** -0.576) * (m['low_jpy'] ** 0.136) * (m['high_gbp'] ** -0.119) * (m['low_cad'] ** 0.091) * (m['low_chf'] ** 0.036)
-            dxy['volume'] = 100.0
-
-            return dxy.tail(limit).reset_index(drop=True)
+            return empty_df
         except Exception as e:
             logger.error("Error synthesizing DXY: %s", e)
-            return pd.DataFrame(columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            return empty_df
 
     async def fetch_dxy(self, timeframe: str = 'H1', limit: int = 150) -> pd.DataFrame:
         """Асинхронная обертка для fetch_dxy."""
         return self.get_dxy_bars_sync(timeframe=timeframe, limit=limit)
+
 

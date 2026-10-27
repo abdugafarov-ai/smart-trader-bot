@@ -110,8 +110,8 @@ async def main():
                     BotCommand(command="account", description="💼 Баланс и позиции MT5"),
                     BotCommand(command="broadcast", description="📢 Рассылка клиентам"),
                     BotCommand(command="autotrade", description="⚙️ Автопилот советника"),
-                    BotCommand(command="lot", description="🔹 Задать лот: /lot 0.10"),
-                    BotCommand(command="risk", description="⚖️ Задать риск: /risk 1.0"),
+                    BotCommand(command="lot", description="🔹 Задать лот: /lot 0.01"),
+                    BotCommand(command="risk", description="⚖️ Задать риск: /risk 0.25"),
                     BotCommand(command="stats", description="📊 Статистика сигналов"),
                     BotCommand(command="history", description="📜 Журнал сделок"),
                     BotCommand(command="sessions", description="⏰ Торговые сессии"),
@@ -124,15 +124,15 @@ async def main():
                 await bot.set_my_commands(admin_commands, scope=BotCommandScopeChat(chat_id=config.ADMIN_ID))
 
             await bot.set_my_short_description(
-                "Торговый комплекс FundingPips 5K: ICT/SMC 7 Мажоров (лот 0.10, макс 3 сделки, R:R от 1:1.5+)."
+                "Институциональный терминал XAUUSD Intraday (H1->M15->M5, риск 0.25%, мин. лот 0.01, R:R >= 1:2.0)."
             )
 
             await bot.set_my_description(
-                "Автономный торговый комплекс Smart Trader (FundingPips 5K):\n\n"
-                "• Только 7 Мажоров Forex (EURUSD, GBPUSD, USDJPY, USDCHF, AUDUSD, NZDUSD, USDCAD)\n"
-                "• Фиксированный лот 0.10 | Макс. 3 сделки (1 пара = 1 ордер)\n"
-                "• Защита стопов: SL от 20 п. | Динамический R:R от 1:1.5+\n"
-                "• Умный Авто-Б/У (+25 п. → +2 п.) | Анти-тильт: пауза 12ч\n"
+                "Автономный торговый комплекс Smart Trader (FundingPips $5K · XAUUSD Intraday):\n\n"
+                "• Строгий Intraday фокус на XAUUSD (H1 контекст -> M15 POI -> M5 триггер)\n"
+                "• Риск на сделку 0.25% ($12.50) | Мин. лот 0.01 | Строгий контроль стоп-лосса\n"
+                "• Закрытие позиций до банковского ролловера (EOD Flat 20:40 UTC)\n"
+                "• Авто-Б/У при 1.0R | Анти-тильт и контроль дневной просадки\n"
                 "• Пульт MT5: баланс, эквити, открытые сделки и кнопка «Паника»."
             )
 

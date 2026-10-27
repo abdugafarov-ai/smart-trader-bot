@@ -14,20 +14,20 @@ CTrade trade;
 //--- Входные параметры советника
 input group "=== НАСТРОЙКИ СЕРВЕРА ==="
 input string   InpServerUrl    = "http://127.0.0.1:8080"; // URL сервера Smart Trader Bot
-input string   InpApiKey       = "stb-fp-9f8e7d6c5b4a3f2e1d0c-2026"; // API Key for Bridge
+input string   InpApiKey       = "";                      // API Key for Bridge (set if remote)
 input int      InpPollInterval = 3;                       // Опрос сервера каждые N секунд
 input ulong    InpMagicNumber  = 888001;                   // Magic Number ордеров
 
 input group "=== УПРАВЛЕНИЕ РИСКОМ ==="
 input int      InpMaxOpenOrders = 1;                       // Макс. одновременно активных позиций/ордеров (строго 1 для Золота)
-input bool     InpUseAutoRisk  = false;                    // Использовать расчет лота от баланса (%)
-input double   InpRiskPercent  = 0.8;                      // Процент риска на сделку (%) (0.8% - 1.0%)
-input double   InpFixedLot     = 0.02;                     // Фиксированный лот (базовый 0.02 для XAUUSD)
+input bool     InpUseAutoRisk  = true;                     // Использовать расчет лота от баланса (%)
+input double   InpRiskPercent  = 0.25;                     // Процент риска на сделку (%) (0.25% базовый, 0.50% макс)
+input double   InpFixedLot     = 0.01;                     // Фиксированный лот (строго <= риск-бюджета)
 input int      InpSlippage     = 20;                       // Проскальзывание в пунктах
-input bool     InpUseAutoBE    = true;                    // Структурный Авто-Б/У (перенос SL за Protected Swing после 1.0R)
-input int      InpBETriggerPips = 2000;                   // Минимальный профит для Б/У (+2000 п. по 0.01 = +$20.00 / 1.0R)
-input int      InpBEBufferPips  = 200;                    // Защитное смещение стопа в плюс от входа (+200 п. по 0.01 = +$2.00)
-input bool     InpUsePartialClose = true;                 // Частичное закрытие 50% на TP1 (Opposing Liquidity Pool)
+input bool     InpUseAutoBE    = true;                    // Структурный Авто-Б/У (перенос SL после 1.0R)
+input int      InpBETriggerPips = 500;                    // Минимальный профит для Б/У (используется если initial_sl не задан)
+input int      InpBEBufferPips  = 35;                     // Защитное смещение стопа в плюс от входа (+35 п. по 0.01 = +$0.35 покрытие спреда/комиссии)
+input bool     InpUsePartialClose = false;                // Частичное закрытие 50% на TP1 (по умолчанию выкл для 0.01 лота)
 input double   InpPartialClosePct = 50.0;                 // Процент закрытия объема на TP1 (%)
 
 //--- Глобальные переменные
@@ -632,25 +632,31 @@ void ParseAndExecuteOrders(string json)
       int json_use_risk = (int)ExtractDouble(block, "\"use_auto_risk\":");
       bool is_auto_risk = (json_use_risk == 1 || (json_use_risk < 0 && InpUseAutoRisk));
 
-      // Рассчитываем итоговый объем ордера
-      double lot = (json_lot > 0.0) ? json_lot : InpFixedLot;
+      // Рассчитываем итоговый объем ордера с обязательным контролем риск-бюджета (0.25% базовый, 0.50% макс)
+      double entry_ref = is_limit ? entry : (is_long ? SymbolInfoDouble(broker_symbol, SYMBOL_ASK) : SymbolInfoDouble(broker_symbol, SYMBOL_BID));
+      double eff_risk  = (json_risk > 0.0) ? MathMin(json_risk, 0.50) : MathMin(InpRiskPercent, 0.50);
+      double max_safe_lot = CalculateRiskLot(broker_symbol, entry_ref, sl, eff_risk, InpFixedLot);
+      double lot = 0.0;
       if(is_auto_risk)
       {
-         double entry_ref = is_limit ? entry : (is_long ? SymbolInfoDouble(broker_symbol, SYMBOL_ASK) : SymbolInfoDouble(broker_symbol, SYMBOL_BID));
-         double eff_risk  = (json_risk > 0.0) ? json_risk : InpRiskPercent;
-         lot = CalculateRiskLot(broker_symbol, entry_ref, sl, eff_risk, lot);
-         PrintFormat("⚖️ [SmartTrader] %s: Авто-риск %.1f%% -> рассчитан лот %.2f (Баланс: %.2f)", broker_symbol, eff_risk, lot, AccountInfoDouble(ACCOUNT_BALANCE));
+         lot = max_safe_lot;
+         PrintFormat("⚖️ [SmartTrader] %s: Авто-риск %.2f%% -> рассчитан лот %.2f (Баланс: %.2f)", broker_symbol, eff_risk, lot, AccountInfoDouble(ACCOUNT_BALANCE));
       }
       else
       {
-         // Нормализуем фиксированный лот по требованиям брокера
+         double req_lot = (json_lot > 0.0) ? json_lot : InpFixedLot;
          double min_l  = SymbolInfoDouble(broker_symbol, SYMBOL_VOLUME_MIN);
          double max_l  = SymbolInfoDouble(broker_symbol, SYMBOL_VOLUME_MAX);
          double step_l = SymbolInfoDouble(broker_symbol, SYMBOL_VOLUME_STEP);
          if(step_l > 0)
-            lot = MathFloor(lot / step_l) * step_l;
-         lot = MathMax(min_l, MathMin(max_l, lot));
-         PrintFormat("📊 [SmartTrader] %s: Фиксированный лот из команды бота -> %.2f", broker_symbol, lot);
+            req_lot = MathFloor(req_lot / step_l) * step_l;
+         req_lot = MathMax(min_l, MathMin(max_l, req_lot));
+         // Жесткий запрет превышения риск-бюджета даже в режиме фиксированного лота
+         if(max_safe_lot <= 0.0 || req_lot > max_safe_lot + 1e-6)
+            lot = 0.0;
+         else
+            lot = req_lot;
+         PrintFormat("📊 [SmartTrader] %s: Фиксированный лот %.2f (макс по риску %.2f%% = %.2f) -> итог %.2f", broker_symbol, req_lot, eff_risk, max_safe_lot, lot);
       }
 
       // Single source of truth: validate minimum broker lot
@@ -719,11 +725,11 @@ void ParseAndExecuteOrders(string json)
                continue;
             }
 
-            // Проверка реального R:R от рыночной цены перед входом по рынку
+            // Проверка реального R:R от рыночной цены перед входом по рынку (1:2.0R для XAUUSD с допуском спреда -> >= 1.85)
             double real_risk = MathAbs(ask - sl);
             double real_reward = tp - ask; // Строго положительный
             double real_rr = (real_risk > 0) ? (real_reward / real_risk) : 0.0;
-            double min_req_rr = (StringFind(broker_symbol, "XAU") >= 0 || StringFind(broker_symbol, "GOLD") >= 0) ? 2.45 : 1.38;
+            double min_req_rr = (StringFind(broker_symbol, "XAU") >= 0 || StringFind(broker_symbol, "GOLD") >= 0) ? 1.85 : 1.38;
             if(real_rr < min_req_rr)
             {
                string rr_msg = StringFormat("Реальный R:R 1:%.2f < 1:%.2f (Защита капитала)", real_rr, min_req_rr);
@@ -810,11 +816,11 @@ void ParseAndExecuteOrders(string json)
                continue;
             }
 
-            // Проверка реального R:R от рыночной цены перед входом по рынку
+            // Проверка реального R:R от рыночной цены перед входом по рынку (1:2.0R для XAUUSD с допуском спреда -> >= 1.85)
             double real_risk = MathAbs(sl - bid);
             double real_reward = bid - tp; // Строго положительный
             double real_rr = (real_risk > 0) ? (real_reward / real_risk) : 0.0;
-            double min_req_rr = (StringFind(broker_symbol, "XAU") >= 0 || StringFind(broker_symbol, "GOLD") >= 0) ? 2.45 : 1.38;
+            double min_req_rr = (StringFind(broker_symbol, "XAU") >= 0 || StringFind(broker_symbol, "GOLD") >= 0) ? 1.85 : 1.38;
             if(real_rr < min_req_rr)
             {
                string rr_msg = StringFormat("Реальный R:R 1:%.2f < 1:%.2f (Защита капитала)", real_rr, min_req_rr);
@@ -1119,14 +1125,32 @@ void ManageOpenPositions()
       if(pos_states[state_idx].initial_sl <= 0.0 && curr_sl > 0.0)
          pos_states[state_idx].initial_sl = curr_sl;
 
-      bool is_gold = (StringFind(symbol, "XAU") >= 0);
-      double be_trigger_dist = is_gold ? 20.0 : ((double)InpBETriggerPips * pip_size);
-      double be_offset_dist  = is_gold ? 2.0  : ((double)InpBEBufferPips * pip_size);
-
+      bool is_gold = (StringFind(symbol, "XAU") >= 0 || StringFind(symbol, "GOLD") >= 0);
       double init_sl = pos_states[state_idx].initial_sl;
-      double risk_dist = (init_sl > 0.0) ? MathAbs(open_price - init_sl) : be_trigger_dist;
-      if(risk_dist < be_trigger_dist)
-         risk_dist = be_trigger_dist;
+      double default_be_trig = is_gold ? 5.0 : ((double)InpBETriggerPips * pip_size);
+      double risk_dist = (init_sl > 0.0) ? MathAbs(open_price - init_sl) : default_be_trig;
+      if(is_gold && risk_dist < 2.0)
+         risk_dist = 2.0;
+      double be_trigger_dist = risk_dist; // 1.0R Auto-BE trigger
+      double be_offset_dist  = is_gold ? MathMax(0.35, (double)InpBEBufferPips * 0.01) : ((double)InpBEBufferPips * pip_size);
+
+      // 0.0 АВТОНОМНЫЙ КОНТРОЛЬ INTRADAY EOD FLAT ПО UTC (20:40 UTC Пн-Чт, 19:30 UTC Пт)
+      datetime now_gmt = TimeGMT();
+      MqlDateTime dt_gmt;
+      TimeToStruct(now_gmt, dt_gmt);
+      int gmt_mins = dt_gmt.hour * 60 + dt_gmt.min;
+      bool is_eod_flat_utc = ((dt_gmt.day_of_week == 5 && gmt_mins >= (19 * 60 + 30)) || (gmt_mins >= (20 * 60 + 40) && gmt_mins <= (23 * 60 + 5)));
+      if(is_eod_flat_utc)
+      {
+         double close_ref = (pos_type == POSITION_TYPE_BUY) ? tick.bid : tick.ask;
+         if(trade.PositionClose(ticket))
+         {
+            PrintFormat("⏰ [SmartTrader EOD Flat] %s #%I64u закрыт принудительно до ролловера (UTC %02d:%02d)! Профит: $%.2f",
+                        symbol, ticket, dt_gmt.hour, dt_gmt.min, profit);
+            ReportExecution(symbol, "CLOSED_EOD_FLAT", close_ref, profit, "Intraday EOD Flat before rollover", 0, ticket, volume);
+            continue;
+         }
+      }
 
       // Определение цели TP1 (Opposing Liquidity Pool)
       double eff_tp1 = pos_states[state_idx].tp1;
@@ -1262,19 +1286,18 @@ void ManageOpenPositions()
 double CalculateRiskLot(string symbol, double entry_price, double sl_price, double custom_risk = 0.0, double fallback_lot = 0.01)
 {
    double diff = MathAbs(entry_price - sl_price);
-   if(diff <= 0) return InpFixedLot;
+   if(diff <= 0) return 0.0;
 
    // Exact monetary risk calculation across all symbols including Gold
    // Formula: lot = risk_amt / ((diff / tick_size) * tick_val)
 
    double balance   = AccountInfoDouble(ACCOUNT_BALANCE);
-   double risk_pct  = (custom_risk > 0.0) ? custom_risk : InpRiskPercent;
+   double risk_pct  = (custom_risk > 0.0) ? MathMin(custom_risk, 0.50) : MathMin(InpRiskPercent, 0.50);
    double risk_amt  = balance * (risk_pct / 100.0);
-   double def_lot   = (fallback_lot > 0.0) ? fallback_lot : InpFixedLot;
    
    double tick_size = SymbolInfoDouble(symbol, SYMBOL_TRADE_TICK_SIZE);
    double tick_val  = SymbolInfoDouble(symbol, SYMBOL_TRADE_TICK_VALUE);
-   if(tick_size <= 0 || tick_val <= 0) return def_lot;
+   if(tick_size <= 0 || tick_val <= 0) return 0.0;
    
    double pips = diff / tick_size;
    double lot = risk_amt / (pips * tick_val);
@@ -1284,9 +1307,9 @@ double CalculateRiskLot(string symbol, double entry_price, double sl_price, doub
    double step    = SymbolInfoDouble(symbol, SYMBOL_VOLUME_STEP);
    
    if(step > 0)
-      lot = MathFloor(lot / step) * step;
+      lot = MathFloor((lot + 1e-9) / step) * step;
    if(lot < min_lot)
-      return 0.0; // Risk budget exceeded by minimum lot
+      return 0.0; // Risk budget exceeded by minimum lot -> NO TRADE
    return MathMin(max_lot, lot);
 }
 

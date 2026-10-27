@@ -99,8 +99,8 @@ async def handle_status(request: web.Request) -> web.Response:
 
 def _check_public_api_auth(request: web.Request):
     """Защищает публичные эндпоинты от несанкционированного доступа извне (через туннель)."""
-    key = request.headers.get("X-API-Key") or request.query.get("api_key") or ""
-    if key == config.BRIDGE_API_KEY:
+    key = (request.headers.get("X-API-Key") or request.query.get("api_key") or "").strip()
+    if config.BRIDGE_API_KEY and key and key == config.BRIDGE_API_KEY:
         return
     # Разрешаем локальные запросы с самого сервера (без заголовков внешнего прокси Cloudflare)
     is_proxied = bool(request.headers.get("CF-Connecting-IP") or request.headers.get("X-Forwarded-For"))
@@ -178,10 +178,14 @@ async def api_events(request: web.Request) -> web.Response:
 # ═══════════════════════════════════════════════════════════
 
 def _check_api_key(request):
-    """Проверяет API-ключ в заголовках запроса."""
-    api_key = request.headers.get('X-API-Key', '')
-    if api_key != config.BRIDGE_API_KEY:
-        raise web.HTTPForbidden(text='Invalid API key')
+    """Проверяет API-ключ в заголовках запроса (или разрешает локальный сокет без прокси)."""
+    api_key = (request.headers.get('X-API-Key') or request.headers.get('X-Bridge-Key') or '').strip()
+    if config.BRIDGE_API_KEY and api_key and api_key == config.BRIDGE_API_KEY:
+        return
+    is_proxied = bool(request.headers.get("CF-Connecting-IP") or request.headers.get("X-Forwarded-For"))
+    if not is_proxied and request.remote in ("127.0.0.1", "::1", "localhost"):
+        return
+    raise web.HTTPForbidden(text='Invalid API key')
 
 async def bridge_get_orders(request: web.Request) -> web.Response:
     """
@@ -389,12 +393,15 @@ async def bridge_get_orders(request: web.Request) -> web.Response:
         except Exception as tele_err:
             logger.debug("Telemetry parsing error: %s", tele_err)
 
+        # Проверка времени принудительного закрытия внутридневных позиций до ролловера (EOD Flat 20:40 UTC / Пт 19:30 UTC)
+        bridge_manager.check_and_trigger_eod_flat()
+
         panic = bridge_manager.panic_close_requested
         if panic:
             bridge_manager.panic_close_requested = False
             logger.warning("Sending panic_close_all=True to MT5 terminal!")
 
-        use_risk_flag = 1 if (getattr(bridge_manager, 'lot_mode', 'fixed') in ('risk', 'dynamic')) else 0
+        use_risk_flag = 1 if (getattr(bridge_manager, 'lot_mode', 'risk') in ('risk', 'dynamic')) else 0
 
         # 0. Проверка аварийного хард-стопа по эквити ($4,450.00 с запасом $50 до пола $4,400.00)
         from utils.broker_time import get_broker_today_date_str
@@ -512,18 +519,24 @@ async def bridge_get_orders(request: web.Request) -> web.Response:
                 logger.debug("Signal #%s (%s) held by Risk Guard: %s", sig.get("id"), sym, hold_reason)
                 continue
 
-            # Институциональная проверка R:R (строго >= 1:2.0)
+            # Институциональная проверка R:R (строго >= 1:2.0 для XAUUSD, >= 1:1.5 для Forex)
             entry_p = float(sig.get("entry_price") or 0.0)
             sl_p = float(sig.get("stop_loss") or 0.0)
             tp_p = float(sig.get("take_profit_1") or sig.get("take_profit_2") or 0.0)
-            if entry_p > 0 and sl_p > 0 and tp_p > 0:
-                risk_d = abs(entry_p - sl_p)
-                reward_d = abs(tp_p - entry_p)
-                if risk_d > 0:
-                    sig_rr = reward_d / risk_d
-                    if sig_rr < 1.48:
-                        logger.warning("Signal #%s (%s) rejected: R:R %.2f < 1:1.5 (Dynamic R:R Rule)", sig.get("id"), sym, sig_rr)
-                        continue
+            if entry_p <= 0 or sl_p <= 0 or tp_p <= 0:
+                logger.warning("Signal #%s (%s) skipped: missing entry/SL/TP", sig.get("id"), sym)
+                continue
+
+            risk_d = abs(entry_p - sl_p)
+            reward_d = abs(tp_p - entry_p)
+            if risk_d <= 0:
+                continue
+            sig_rr = reward_d / risk_d
+            sym_clean = sym.upper().replace("/", "").replace("=X", "")
+            min_rr_req = 1.95 if ("XAU" in sym_clean or "GOLD" in sym_clean) else 1.48
+            if sig_rr < min_rr_req:
+                logger.warning("Signal #%s (%s) rejected: R:R %.2f < %.2f", sig.get("id"), sym, sig_rr, min_rr_req)
+                continue
 
             # Проверка лимита свободных слотов в текущем цикле отправки
             if (current_active_slots + len(orders)) >= max_allowed_slots:
@@ -531,32 +544,47 @@ async def bridge_get_orders(request: web.Request) -> web.Response:
                             current_active_slots + len(orders), max_allowed_slots)
                 break
 
-            # Институциональный динамический расчет лота (строго 0.5% на сделку)
-            sl_dist = abs(entry_p - sl_p) if (entry_p > 0 and sl_p > 0) else 0.0
-            sym_clean = sym.upper().replace("/", "").replace("=X", "")
+            # Единый институциональный расчет риска и объема (0.25% базовый, 0.50% макс):
+            # Если минимальный лот 0.01 превышает риск-бюджет для данного стопа -> REJECT (NO TRADE)!
+            sl_dist = risk_d
             if "JPY" in sym_clean:
-                sl_pips = sl_dist / 0.01 if sl_dist > 0 else 10.0
-            elif "XAU" in sym_clean:
-                sl_pips = sl_dist / 0.1 if sl_dist > 0 else 10.0
+                sl_pips = sl_dist / 0.01
+            elif "XAU" in sym_clean or "GOLD" in sym_clean:
+                sl_pips = sl_dist
             else:
-                sl_pips = sl_dist / 0.0001 if sl_dist > 0 else 10.0
+                sl_pips = sl_dist / 0.0001
 
-            if getattr(bridge_manager, 'lot_mode', 'fixed') in ('risk', 'dynamic'):
-                order_lot = bridge_manager.calculate_lot(sym, sl_pips)
+            max_safe_lot = bridge_manager.calculate_lot(
+                sym, sl_pips, sl_dist_usd=sl_dist, entry=entry_p, sl=sl_p
+            )
+            if max_safe_lot <= 0.0:
+                logger.warning(
+                    "Signal #%s (%s) REJECTED: min lot 0.01 risk ($%.2f) exceeds allowed risk budget (%.2f%%)",
+                    sig.get("id"), sym, sl_dist, bridge_manager.default_risk
+                )
+                await update_signal_status(
+                    sig.get("id"),
+                    "CANCELLED_BY_MT5",
+                    result=f"NO TRADE: риск на 0.01 лота (${sl_dist:.2f}) превышает бюджет ({bridge_manager.default_risk:.2f}%)"
+                )
+                continue
+
+            if getattr(bridge_manager, 'lot_mode', 'risk') in ('risk', 'dynamic'):
+                order_lot = max_safe_lot
             else:
-                order_lot = float(sig.get("lot") or bridge_manager.default_lot)
-            if order_lot <= 0:
-                order_lot = bridge_manager.default_lot
-
-            # ── Жесткий предохранитель FundingPips (0.02 - 0.05 лота, риск <= $65) ──
-            if "XAU" in sym_clean or "GOLD" in sym_clean:
-                order_lot = max(0.02, min(0.05, round(order_lot, 2)))
-                if sl_dist > 0:
-                    while order_lot > 0.02 and (order_lot * 100.0 * sl_dist) > 65.0:
-                        order_lot = round(order_lot - 0.01, 2)
-                    if (order_lot * 100.0 * sl_dist) > 65.0:
-                        logger.warning("Order %s skipped: risk $%.2f exceeds $65.00 hard cap", sym, order_lot * 100.0 * sl_dist)
-                        continue
+                req_lot = float(sig.get("lot") or bridge_manager.default_lot)
+                if req_lot <= 0.0 or req_lot > max_safe_lot + 1e-9:
+                    logger.warning(
+                        "Signal #%s (%s) REJECTED: fixed lot %.2f exceeds max safe lot %.2f for SL %.2f",
+                        sig.get("id"), sym, req_lot, max_safe_lot, sl_dist
+                    )
+                    await update_signal_status(
+                        sig.get("id"),
+                        "CANCELLED_BY_MT5",
+                        result=f"NO TRADE: фиксированный лот {req_lot:.2f} превышает риск-бюджет (макс {max_safe_lot:.2f})"
+                    )
+                    continue
+                order_lot = round(req_lot, 2)
 
             dispatched_symbols.add(sym)
             orders.append({

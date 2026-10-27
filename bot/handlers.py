@@ -96,23 +96,35 @@ from utils.emoji_markers import get_random_marker
 
 async def run_multi_tf_analysis(symbol: str) -> MultiTFResult:
     tf_analyses = []
-    
-    # 0. Загружаем D1 данные заранее для трендового фильтра старшего ТФ
-    df_d1 = await fetcher.fetch_ohlcv(symbol, "D1")
-    
+    rejection_reasons: list[str] = []
+
+    # 0. Предзагружаем все таймфреймы из MULTI_TF_LIST (M5, M15, H1, D1)
+    dfs_by_tf = {}
     for tf in config.MULTI_TF_LIST:
-        df = await fetcher.fetch_ohlcv(symbol, tf)
+        df_tf = await fetcher.fetch_ohlcv(symbol, tf)
+        if df_tf is not None and not df_tf.empty and len(df_tf) >= 20:
+            dfs_by_tf[tf] = TechnicalIndicators.calculate_all(df_tf)
+
+    df_d1 = dfs_by_tf.get("D1")
+    if df_d1 is None:
+        df_d1_raw = await fetcher.fetch_ohlcv(symbol, "D1")
+        if df_d1_raw is not None and not df_d1_raw.empty and len(df_d1_raw) >= 5:
+            df_d1 = TechnicalIndicators.calculate_all(df_d1_raw)
+
+    for tf in config.MULTI_TF_LIST:
+        df = dfs_by_tf.get(tf)
         if df is None or df.empty or len(df) < 20:
             continue
-        df = TechnicalIndicators.calculate_all(df)
         indicators = TechnicalIndicators.calculate(df)
-        
+
         strategy_results = []
-        df_ltf_for_tf = None
-        if tf == "H4":
-            df_ltf_for_tf = await fetcher.fetch_ohlcv(symbol, "H1")
-        elif tf == "D1":
-            df_ltf_for_tf = await fetcher.fetch_ohlcv(symbol, "H4")
+        tf_upper = str(tf).upper()
+        if tf_upper in ("M5", "M15", "H1"):
+            df_ltf_for_tf = dfs_by_tf.get("M5")
+        elif tf_upper == "H4":
+            df_ltf_for_tf = dfs_by_tf.get("M15") if "M15" in dfs_by_tf else dfs_by_tf.get("H1")
+        else:
+            df_ltf_for_tf = dfs_by_tf.get("H1") if "H1" in dfs_by_tf else dfs_by_tf.get("M15")
 
         for strategy in ALL_STRATEGIES:
             if hasattr(strategy, "short_name") and strategy.short_name == 'ict_smc':
@@ -120,45 +132,58 @@ async def run_multi_tf_analysis(symbol: str) -> MultiTFResult:
             else:
                 result = strategy.analyze(df, symbol, tf)
             strategy_results.append(result)
-        
+
         # Получаем сигнал ICT/SMC как главный якорный сигнал таймфрейма
         ict_res = next((r for r in strategy_results if r.name == 'ICT / Smart Money Concepts'), strategy_results[0])
         tf_dir = ict_res.signal.direction
         tf_conf = ict_res.signal.confidence
         order_type = ict_res.signal.order_type
-        
+
         tf_analyses.append(TimeframeAnalysis(
             timeframe=tf, direction=tf_dir, order_type=order_type, confidence=tf_conf,
             strategies=strategy_results, indicators=indicators
         ))
-    
-    if not tf_analyses:
-        return MultiTFResult(symbol=symbol, tag_emoji=get_random_marker())
-    
-    is_gold_sym = ("XAU" in symbol.upper() or "GOLD" in symbol.upper())
-    h4_analysis = next((t for t in tf_analyses if str(t.timeframe).upper() == "H4"), None)
-    h4_is_neutral = (h4_analysis is None or h4_analysis.direction == 'NEUTRAL')
 
-    # ═══ БЛОКИРОВКА ПРОВАЛА НА H1: если H4 == NEUTRAL, никаких сделок с H1 ═══
-    if h4_is_neutral:
-        valid_tfs = [t for t in tf_analyses if str(t.timeframe).upper() != "H1"]
-    else:
-        valid_tfs = tf_analyses
+    if not tf_analyses:
+        return MultiTFResult(
+            symbol=symbol,
+            tag_emoji=get_random_marker(),
+            rejection_reasons=["NO_TIMEFRAME_DATA"],
+        )
+
+    is_gold_sym = ("XAU" in symbol.upper() or "GOLD" in symbol.upper())
+    valid_tfs = tf_analyses
+
+    m5_analysis = next((t for t in tf_analyses if str(t.timeframe).upper() == "M5"), None)
+    m15_analysis = next((t for t in tf_analyses if str(t.timeframe).upper() == "M15"), None)
+    h1_analysis = next((t for t in tf_analyses if str(t.timeframe).upper() == "H1"), None)
+    d1_analysis = next((t for t in tf_analyses if str(t.timeframe).upper() == "D1"), None)
 
     if is_gold_sym:
-        if not h4_is_neutral:
-            # Для Золота рабочий ТФ поиска институциональных сетапов — СТРОГО H4 (Swing Model)
-            overall_dir = h4_analysis.direction
-            tf_agree = 1
-            d1_cand = next((t for t in valid_tfs if str(t.timeframe).upper() == "D1"), None)
-            if d1_cand and d1_cand.direction == overall_dir:
-                tf_agree += 1
-            h1_cand = next((t for t in valid_tfs if str(t.timeframe).upper() == "H1"), None)
-            if h1_cand and h1_cand.direction == overall_dir:
-                tf_agree += 1
+        # Intraday XAUUSD Top-Down Hierarchy: D1/H1 Context -> M15 Setup/POI -> M5 Confirmation
+        if "M5" not in dfs_by_tf:
+            overall_dir = 'NEUTRAL'
+            tf_agree = 0
+            rejection_reasons.append("MISSING_LTF_M5")
+        elif m15_analysis and m15_analysis.direction != 'NEUTRAL':
+            # Проверяем отсутствие жесткого конфликта со старшим H1 контекстом
+            if h1_analysis and h1_analysis.direction not in ('NEUTRAL', m15_analysis.direction) and h1_analysis.confidence >= 3:
+                overall_dir = 'NEUTRAL'
+                tf_agree = 0
+                rejection_reasons.append("H1_M15_DIRECTION_CONFLICT")
+            else:
+                overall_dir = m15_analysis.direction
+                tf_agree = sum(1 for t in valid_tfs if t.direction == overall_dir)
+        elif h1_analysis and h1_analysis.direction != 'NEUTRAL':
+            overall_dir = h1_analysis.direction
+            tf_agree = sum(1 for t in valid_tfs if t.direction == overall_dir)
         else:
             overall_dir = 'NEUTRAL'
             tf_agree = 0
+            if m15_analysis:
+                m15_ict = next((s for s in m15_analysis.strategies if s.name == 'ICT / Smart Money Concepts'), None)
+                if m15_ict and m15_ict.signal.rejection_reasons:
+                    rejection_reasons.extend(m15_ict.signal.rejection_reasons)
     else:
         non_neutral = [t for t in valid_tfs if t.direction != 'NEUTRAL']
         if non_neutral:
@@ -178,8 +203,6 @@ async def run_multi_tf_analysis(symbol: str) -> MultiTFResult:
             tf_agree = 0
 
     # ── Трендовый фильтр D1 (СТРОГО ПО ТРЕНДУ) ──
-    # Запретить покупки (LONG), если дневная свеча и EMA50 направлены вниз.
-    # Запретить продажи (SHORT), если D1 направлен вверх.
     if overall_dir != 'NEUTRAL' and df_d1 is not None and len(df_d1) >= 5:
         ict_strat = next((s for s in ALL_STRATEGIES if getattr(s, 'short_name', '') == 'ict_smc'), None)
         if ict_strat:
@@ -188,18 +211,17 @@ async def run_multi_tf_analysis(symbol: str) -> MultiTFResult:
                 logger.info("Signal %s LONG rejected by D1 Trend Filter: %s", symbol, d1_reason)
                 overall_dir = 'NEUTRAL'
                 tf_agree = 0
+                rejection_reasons.append("D1_TREND_FILTER_REJECTED")
             elif overall_dir == 'SHORT' and d1_trend == 'UP':
                 logger.info("Signal %s SHORT rejected by D1 Trend Filter: %s", symbol, d1_reason)
                 overall_dir = 'NEUTRAL'
                 tf_agree = 0
-    
+                rejection_reasons.append("D1_TREND_FILTER_REJECTED")
+
     # Институциональная Top-Down модель:
-    # Тренд определяется старшими TF, а вход (Entry/SL/TP) берется с рабочего таймфрейма (H1 -> M15 -> H4)
+    # Рабочий таймфрейм сетапа: M15 -> H1 -> M5
     best_tf = None
-    target_tfs = ["H4", "H1", "D1"] if is_gold_sym else ["M15", "H1", "M5", "H4", "D1"]
-    if h4_is_neutral:
-        # Жесткий блок: если H4 == NEUTRAL, никаких сделок с H1
-        target_tfs = [tf for tf in target_tfs if str(tf).upper() != "H1"]
+    target_tfs = ["M15", "H1", "M5"] if is_gold_sym else ["M15", "H1", "M5", "H4", "D1"]
     for target_tf in target_tfs:
         cand = next((t for t in valid_tfs if str(t.timeframe).upper() == str(target_tf).upper() and t.direction == overall_dir), None)
         if cand:
@@ -207,41 +229,76 @@ async def run_multi_tf_analysis(symbol: str) -> MultiTFResult:
             if ict_cand and ict_cand.signal.direction == overall_dir and ict_cand.signal.entry:
                 best_tf = cand
                 break
-                
+
     if not best_tf:
         matching_tfs = [t for t in valid_tfs if t.direction == overall_dir]
         best_tf = max(matching_tfs, key=lambda t: t.confidence) if matching_tfs else (valid_tfs[0] if valid_tfs else tf_analyses[0])
-    
+
     # Берем институциональные параметры ICT/SMC из рабочего таймфрейма
     best_ict = next((s for s in best_tf.strategies if s.name == 'ICT / Smart Money Concepts'), None)
-    
+
+    calc_lot = 0.0
+    risk_usd = 0.0
+    risk_pct = config.AUTOTRADE_DEFAULT_RISK
+    setup_id = ""
+    created_at = ""
+
     if best_ict and best_ict.signal.direction == overall_dir and overall_dir != 'NEUTRAL':
         entry = best_ict.signal.entry
         sl = best_ict.signal.stop_loss
         tp1 = best_ict.signal.take_profit_1
         tp2 = best_ict.signal.take_profit_2
-        rr1 = round(best_ict.signal.risk_reward, 1) if best_ict.signal.risk_reward else None
+        rr1 = round(best_ict.signal.risk_reward, 2) if best_ict.signal.risk_reward else None
         current_price = best_ict.signal.current_price
         order_type = best_ict.signal.order_type
+        calc_lot = float(getattr(best_ict.signal, "lot", 0.0) or 0.0)
+        risk_usd = float(getattr(best_ict.signal, "risk_usd", 0.0) or 0.0)
+        risk_pct = float(getattr(best_ict.signal, "risk_pct", config.AUTOTRADE_DEFAULT_RISK) or config.AUTOTRADE_DEFAULT_RISK)
+        setup_id = getattr(best_ict.signal, "setup_id", "")
+        created_at = getattr(best_ict.signal, "created_at", "")
     else:
         entry = sl = tp1 = tp2 = rr1 = current_price = None
         order_type = "BUY_LIMIT" if overall_dir == "LONG" else "SELL_LIMIT"
 
     # Рассчитываем rr2
     if entry and sl and tp2 and abs(entry - sl) > 0:
-        rr2 = round(abs(tp2 - entry) / abs(entry - sl), 1)
+        rr2 = round(abs(tp2 - entry) / abs(entry - sl), 2)
     else:
         rr2 = None
-    
+
     # Пипсы
     pip_mult = 100.0 if 'JPY' in symbol else (10.0 if 'XAU' in symbol else 10000.0)
 
     pips_sl = round(abs(entry - sl) * pip_mult, 1) if entry and sl else None
     pips_tp1 = round(abs(tp1 - entry) * pip_mult, 1) if entry and tp1 else None
     pips_tp2 = round(abs(tp2 - entry) * pip_mult, 1) if entry and tp2 else None
-    
+
+    # Единая проверка лота и риск-бюджета через bridge_manager
+    if overall_dir != 'NEUTRAL' and entry and sl and pips_sl:
+        from trading.execution_bridge import bridge_manager
+        risk_pct = float(getattr(bridge_manager, "default_risk", config.AUTOTRADE_DEFAULT_RISK))
+        acct_bal = float(getattr(bridge_manager, "account_equity", 0.0) or getattr(bridge_manager, "account_balance", 0.0) or 5000.0)
+        sl_dist_usd = abs(entry - sl)
+        calc_lot = bridge_manager.calculate_lot(
+            symbol,
+            pips_sl,
+            balance=acct_bal,
+            risk_pct=risk_pct,
+            sl_dist_usd=sl_dist_usd if is_gold_sym else None,
+            entry=entry,
+            sl=sl,
+        )
+        if calc_lot <= 0.0:
+            logger.info("Signal %s %s rejected: min lot 0.01 exceeds risk budget (SL dist=%.2f)", symbol, overall_dir, sl_dist_usd)
+            overall_dir = "NEUTRAL"
+            overall_stars = 0
+            entry = sl = tp1 = tp2 = rr1 = None
+            rejection_reasons.append("MIN_LOT_EXCEEDS_RISK_BUDGET")
+        else:
+            risk_usd = round(calc_lot * sl_dist_usd * 100.0, 2) if is_gold_sym else round(calc_lot * pips_sl * 10.0, 2)
+
     # Звезды уверенности: 4★ и 5★ для входа, 3★ для неподтвержденных SMT
-    min_rr_req = 2.5 if is_gold_sym else 1.5
+    min_rr_req = 2.0 if is_gold_sym else 1.5
     min_agree = 1 if is_gold_sym else 2
 
     if overall_dir != 'NEUTRAL' and rr1 and rr1 >= min_rr_req and tf_agree >= min_agree:
@@ -252,18 +309,20 @@ async def run_multi_tf_analysis(symbol: str) -> MultiTFResult:
             if best_ict and best_ict.signal.confidence <= 3:
                 overall_stars = 3
     else:
+        if overall_dir != 'NEUTRAL':
+            rejection_reasons.append("RR_OR_TF_AGREEMENT_INSUFFICIENT")
         overall_stars = 0
         overall_dir = "NEUTRAL"
         entry = sl = tp1 = tp2 = rr1 = None
 
     # Институциональный Daily Bias (D1) фильтр:
     # Запрещено открывать позицию против сильного дневного уклона (D1 confidence >= 3)
-    d1_cand = next((t for t in tf_analyses if t.timeframe == "D1"), None)
-    if d1_cand and d1_cand.direction != "NEUTRAL" and d1_cand.direction != overall_dir:
-        if d1_cand.confidence >= 3:
+    if d1_analysis and d1_analysis.direction != "NEUTRAL" and overall_dir != "NEUTRAL" and d1_analysis.direction != overall_dir:
+        if d1_analysis.confidence >= 3:
             overall_dir = "NEUTRAL"
             overall_stars = 0
             entry = sl = tp1 = tp2 = rr1 = None
+            rejection_reasons.append("D1_STRONG_BIAS_CONFLICT")
 
     verdicts = []
     for s in best_tf.strategies:
@@ -271,7 +330,7 @@ async def run_multi_tf_analysis(symbol: str) -> MultiTFResult:
             verdicts.append((s.emoji, s.name, f"✅ {s.signal.direction}"))
         else:
             verdicts.append((s.emoji, s.name, "❌ нейтрально"))
-    
+
     return MultiTFResult(
         symbol=symbol,
         tag_emoji=get_random_marker(),
@@ -288,6 +347,13 @@ async def run_multi_tf_analysis(symbol: str) -> MultiTFResult:
         take_profit_1=tp1, take_profit_2=tp2,
         risk_reward_1=rr1, risk_reward_2=rr2,
         pips_sl=pips_sl, pips_tp1=pips_tp1, pips_tp2=pips_tp2,
+        setup_id=setup_id,
+        created_at=created_at,
+        timeframes_used=[t.timeframe for t in tf_analyses],
+        lot=calc_lot if overall_dir != 'NEUTRAL' else 0.0,
+        risk_usd=risk_usd if overall_dir != 'NEUTRAL' else 0.0,
+        risk_pct=risk_pct,
+        rejection_reasons=rejection_reasons,
         strategy_verdicts=verdicts,
         session_text=sessions.format_sessions_text() + DataFetcher.get_weekend_note()
     )
@@ -1393,15 +1459,17 @@ async def cb_exec_mt5(callback: CallbackQuery):
         from db.database import save_signal, check_signal_exists
         res = await run_multi_tf_analysis(symbol)
         
-        if not res or res.overall_direction == "NEUTRAL" or not res.entry or res.overall_stars < 4 or getattr(res, "order_type", "") == "PENDING_CONFIRMATION":
+        if not res or res.overall_direction == "NEUTRAL" or not res.entry or res.overall_stars < 4 or getattr(res, "order_type", "") == "PENDING_CONFIRMATION" or getattr(res, "lot", 0.0) <= 0.0:
             stars_cnt = res.overall_stars if res else 0
+            rej_str = ", ".join(getattr(res, "rejection_reasons", []) or [])
             await callback.message.answer(
-                f"⚠️ По {symbol} сетап имеет рейтинг {stars_cnt}★ (или ожидает LTF MSS). "
-                f"Исполнение в MT5 заблокировано стандартом Tier-1 Prop Desk (требуется >= 4★ и подтвержденный вход).",
+                f"⚠️ По {symbol} сетап отклонен (рейтинг {stars_cnt}★, лот {getattr(res, 'lot', 0.0):.2f}"
+                f"{f', причины: {rej_str}' if rej_str else ''}). "
+                f"Исполнение в MT5 заблокировано стандартом риск-менеджмента (требуется >= 4★, подтвержденный вход на M5 и соблюдение риск-бюджета).",
                 parse_mode="HTML"
             )
             return
-            
+
         strategies_str = ", ".join([f"{e} {n}: {v}" for e, n, v in res.strategy_verdicts])
         timeframes_str = ", ".join([f"{t.timeframe}: {t.direction}" for t in res.tf_analyses])
 
@@ -1420,12 +1488,13 @@ async def cb_exec_mt5(callback: CallbackQuery):
             strategies_agreed=strategies_str,
             timeframes_agreed=timeframes_str,
         )
-        
+
         confirm_text = (
             f"🚀 <b>СИГНАЛ ПЕРЕДАН В METATRADER 5!</b>\n"
             f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
             f"<b>СИМВОЛ:</b> <code>{symbol}</code>\n"
             f"<b>ТИП:</b> <code>{res.order_type}</code> [{res.overall_direction}]\n"
+            f"⚖️ <b>ЛОТ / РИСК:</b> <code>{res.lot:.2f} лот</code> (~${res.risk_usd:.2f} / {res.risk_pct:.2f}%)\n"
             f"📍 <b>ENTRY:</b> <code>{res.entry}</code>\n"
             f"🛑 <b>STOP LOSS:</b> <code>{res.stop_loss}</code>\n"
             f"🎯 <b>TAKE PROFIT 1:</b> <code>{res.take_profit_1}</code>\n"

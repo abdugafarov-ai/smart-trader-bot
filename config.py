@@ -29,8 +29,8 @@ EXCHANGE: str = os.getenv("EXCHANGE", "binance")
 # ── Часовой пояс ──────────────────────────────────────────
 TIMEZONE: str = os.getenv("TIMEZONE", "Asia/Tashkent")
 
-# ── Таймфрейм по умолчанию ────────────────────────────────
-DEFAULT_TIMEFRAME: str = os.getenv("DEFAULT_TIMEFRAME", "H4")
+# ── Таймфрейм по умолчанию (Intraday M15 setup) ───────────
+DEFAULT_TIMEFRAME: str = os.getenv("DEFAULT_TIMEFRAME", "M15")
 
 # ── Торговые пары по категориям ───────────────────────────
 PAIRS_MAJORS: list[str] = []
@@ -53,7 +53,7 @@ _notify_raw = os.getenv("NOTIFY_USER_IDS", "")
 NOTIFY_USER_IDS: list[int] = [
     int(uid.strip()) for uid in _notify_raw.split(",") if uid.strip().isdigit()
 ]
-SCAN_INTERVAL_MINUTES: int = int(os.getenv("SCAN_INTERVAL_MINUTES", "30"))
+SCAN_INTERVAL_MINUTES: int = int(os.getenv("SCAN_INTERVAL_MINUTES", "5"))
 
 # ── Local Execution Bridge (MetaTrader 5 API) ─────────────
 WEBAPP_HOST: str = os.getenv("WEBAPP_HOST", "127.0.0.1")
@@ -64,6 +64,7 @@ WEBAPP_URL: str = ""
 # Safe Default: Never enable autotrade automatically without explicit manual env or toggle
 AUTOTRADE_ENABLED: bool = os.getenv("AUTOTRADE_ENABLED", "false").lower() in ("true", "1", "yes")
 AUTOTRADE_DEFAULT_RISK: float = float(os.getenv("AUTOTRADE_DEFAULT_RISK", "0.25"))
+AUTOTRADE_MAX_RISK: float = float(os.getenv("AUTOTRADE_MAX_RISK", "0.50"))
 AUTOTRADE_DEFAULT_LOT: float = float(os.getenv("AUTOTRADE_DEFAULT_LOT", "0.01"))
 
 # ── Стиль графиков (ict, dark, light) ────────────────────
@@ -121,37 +122,50 @@ def is_crypto(symbol: str) -> bool:
     return False
 
 
-# ── ICT Kill Zones (UTC hours) ────────────────────────────
-# London Kill Zone: 07:00-10:00 UTC (02:00-05:00 ET)
-# NY Kill Zone: 12:00-15:00 UTC (07:00-10:00 ET)
+# ── ICT Kill Zones (DST-aware London & New York + UTC reference) ────────
 KILL_ZONES_UTC = {
     "london": {"start": 7, "end": 10, "name": "London Open KZ"},
     "ny": {"start": 12, "end": 15, "name": "New York Open KZ"},
 }
 
-# ── IPDA ALGORITHMIC TIMINGS & ICT MACRO WINDOWS (UTC) ────
-# 1. ICT Macro Windows (Окна максимальной межбанковской алгоритмической ликвидности):
-#    - London Morning Macro: 08:50 - 09:10 UTC
-#    - New York Morning Macro: 13:50 - 14:10 UTC (09:50 - 10:10 ET)
+# ── IPDA ALGORITHMIC TIMINGS & ICT MACRO WINDOWS ────
 ICT_MACRO_WINDOWS = [
-    {"start_h": 8, "start_m": 50, "end_h": 9, "end_m": 10, "name": "London Morning Macro (08:50–09:10 UTC)"},
-    {"start_h": 13, "start_m": 50, "end_h": 14, "end_m": 10, "name": "New York AM Macro (13:50–14:10 UTC)"},
+    {"start_h": 8, "start_m": 50, "end_h": 9, "end_m": 10, "name": "London Morning Macro (08:50–09:10)"},
+    {"start_h": 13, "start_m": 50, "end_h": 14, "end_m": 10, "name": "New York AM Macro (09:50–10:10 NY)"},
 ]
 
-# 2. Временные запреты на новые входы (Algorithmic Trading Bans):
-#    - Пре-Лондон фикс/закрытие: 15:45 - 16:00 UTC (за 15 мин до закрытия Лондона 16:00 UTC)
-#    - Мертвая зона ликвидности: 17:00 - 00:00 UTC (расползание спредов, закрытие NY)
 PRE_LONDON_CLOSE_BAN_START_MIN = 15 * 60 + 45  # 15:45 UTC
 PRE_LONDON_CLOSE_BAN_END_MIN   = 16 * 60 + 0   # 16:00 UTC
 DEAD_ZONE_START_MIN            = 17 * 60 + 0   # 17:00 UTC
 DEAD_ZONE_END_MIN              = 24 * 60 + 0   # 00:00 UTC
 
 def is_in_macro_window(now_dt: Optional[datetime] = None) -> tuple[bool, str]:
-    """Проверяет, находится ли текущее время внутри ICT Macro Window (08:50-09:10 или 13:50-14:10 UTC)."""
+    """
+    Проверяет, находится ли текущее время внутри ICT Macro Window
+    с учетом переходов на летнее/зимнее время (DST) в Лондоне и Нью-Йорке.
+    """
     if now_dt is None:
         now = datetime.now(ZoneInfo('UTC'))
     else:
         now = now_dt.astimezone(ZoneInfo('UTC')) if now_dt.tzinfo else now_dt.replace(tzinfo=ZoneInfo('UTC'))
+
+    london_dt = now.astimezone(ZoneInfo("Europe/London"))
+    ny_dt = now.astimezone(ZoneInfo("America/New_York"))
+
+    l_h, l_m = london_dt.hour, london_dt.minute
+    ny_h, ny_m = ny_dt.hour, ny_dt.minute
+
+    if (l_h == 7 and l_m >= 50) or (l_h == 8 and l_m <= 10):
+        return True, "London Open Macro (07:50–08:10 London)"
+    if (l_h == 8 and l_m >= 50) or (l_h == 9 and l_m <= 10):
+        return True, "London Morning Macro (08:50–09:10 London)"
+    if (ny_h == 8 and ny_m >= 50) or (ny_h == 9 and ny_m <= 10):
+        return True, "New York Open Macro (08:50–09:10 NY)"
+    if (ny_h == 9 and ny_m >= 50) or (ny_h == 10 and ny_m <= 10):
+        return True, "New York AM Macro (09:50–10:10 NY)"
+    if (ny_h == 10 and ny_m >= 50) or (ny_h == 11 and ny_m <= 10):
+        return True, "London Close / NY Macro (10:50–11:10 NY)"
+
     current_mins = now.hour * 60 + now.minute
     for mw in ICT_MACRO_WINDOWS:
         s_mins = mw["start_h"] * 60 + mw["start_m"]
@@ -197,7 +211,7 @@ CORRELATION_GROUPS = {
 MAX_CORRELATED_SIGNALS: int = 3  # Max simultaneous signals in one correlation group
 
 # ── Order Limits (Лимит одновременно открытых ордеров) ────
-MAX_CONCURRENT_ORDERS: int = 1  # Синхронизировано с MAX_CONCURRENT_POSITIONS (макс. 4 позиции в рынке)
+MAX_CONCURRENT_ORDERS: int = 1  # Синхронизировано с MAX_CONCURRENT_POSITIONS (макс. 1 позиция в рынке)
 
 # ── Micro Account Protection Mode ($12 - $100) ────────────
 MICRO_MAX_CONCURRENT_ORDERS = 1      # Строго 1 сделка в рынке одновременно
@@ -222,22 +236,52 @@ def is_pair_in_active_session(symbol: str) -> bool:
     return False
 
 def is_in_kill_zone(now_dt: Optional[datetime] = None) -> bool:
-    """Проверяет, находимся ли мы в ICT Kill Zone (London/NY Open)."""
+    """
+    Проверяет, находимся ли мы в ICT Kill Zone (London/NY Open) с учетом DST:
+    - London Open KZ: 08:00–11:00 Europe/London (или 07:00–10:30 UTC)
+    - New York Open KZ: 08:00–11:30 America/New_York (или 12:00–15:30 UTC)
+    """
     if now_dt is None:
-        current_hour = datetime.now(ZoneInfo('UTC')).hour
+        now = datetime.now(ZoneInfo('UTC'))
     else:
-        current_hour = (now_dt.astimezone(ZoneInfo('UTC')) if now_dt.tzinfo else now_dt.replace(tzinfo=ZoneInfo('UTC'))).hour
+        now = now_dt.astimezone(ZoneInfo('UTC')) if now_dt.tzinfo else now_dt.replace(tzinfo=ZoneInfo('UTC'))
+
+    london_dt = now.astimezone(ZoneInfo("Europe/London"))
+    ny_dt = now.astimezone(ZoneInfo("America/New_York"))
+
+    london_mins = london_dt.hour * 60 + london_dt.minute
+    ny_mins = ny_dt.hour * 60 + ny_dt.minute
+
+    if (8 * 60) <= london_mins < (11 * 60):
+        return True
+    if (8 * 60) <= ny_mins < (11 * 60 + 30):
+        return True
+
+    current_hour = now.hour
     for kz in KILL_ZONES_UTC.values():
         if kz['start'] <= current_hour < kz['end']:
             return True
     return False
 
 def get_current_kill_zone(now_dt: Optional[datetime] = None) -> str | None:
-    """Возвращает название текущей Kill Zone или None."""
+    """Возвращает название текущей Kill Zone (DST-aware) или None."""
     if now_dt is None:
-        current_hour = datetime.now(ZoneInfo('UTC')).hour
+        now = datetime.now(ZoneInfo('UTC'))
     else:
-        current_hour = (now_dt.astimezone(ZoneInfo('UTC')) if now_dt.tzinfo else now_dt.replace(tzinfo=ZoneInfo('UTC'))).hour
+        now = now_dt.astimezone(ZoneInfo('UTC')) if now_dt.tzinfo else now_dt.replace(tzinfo=ZoneInfo('UTC'))
+
+    london_dt = now.astimezone(ZoneInfo("Europe/London"))
+    ny_dt = now.astimezone(ZoneInfo("America/New_York"))
+
+    london_mins = london_dt.hour * 60 + london_dt.minute
+    ny_mins = ny_dt.hour * 60 + ny_dt.minute
+
+    if (8 * 60) <= london_mins < (11 * 60):
+        return KILL_ZONES_UTC["london"]["name"]
+    if (8 * 60) <= ny_mins < (11 * 60 + 30):
+        return KILL_ZONES_UTC["ny"]["name"]
+
+    current_hour = now.hour
     for key, kz in KILL_ZONES_UTC.items():
         if kz['start'] <= current_hour < kz['end']:
             return kz['name']
@@ -297,7 +341,8 @@ def is_weekly_trading_window_open() -> tuple[bool, str]:
 WINE_MT5_PATH = os.getenv('WINE_MT5_PATH', '/home/trader/.wine/drive_c/Program Files/MetaTrader 5')
 
 
-BRIDGE_API_KEY = os.getenv('BRIDGE_API_KEY', 'stb-fp-9f8e7d6c5b4a3f2e1d0c-2026')
+# Без захардкоженных секретов в коде: ключ загружается из переменных окружения (.env)
+BRIDGE_API_KEY: str = os.getenv('BRIDGE_API_KEY', '').strip()
 
 
 # ── РИСК-МЕНЕДЖМЕНТ ДЛЯ РЕАЛЬНЫХ ДЕНЕГ (REAL MONEY PROTECTION) ──
@@ -305,17 +350,19 @@ BRIDGE_API_KEY = os.getenv('BRIDGE_API_KEY', 'stb-fp-9f8e7d6c5b4a3f2e1d0c-2026')
 MAX_DAILY_DRAWDOWN_PCT: float = 2.5  # При дневном убытке 2.5% ($125) автопилот блокируется (запас $75 до лимита брокера 4%/$200)
 
 # 2. Ограничение совокупного риска и количества позиций
-MAX_CONCURRENT_POSITIONS: int = 1    # Не более 4 одновременно открытых позиций во всем терминале
+MAX_CONCURRENT_POSITIONS: int = 1    # Строго 1 одновременно открытая позиция
 MAX_POSITIONS_PER_PAIR: int = 1      # Не более 1 позиции на одну валютную пару
-MAX_CURRENCY_EXPOSURE: int = 1       # Не более 2 пар с одинаковой валютой (защита от скачков USD/EUR)
+MAX_CURRENCY_EXPOSURE: int = 1       # Не более 1 пары с одинаковой валютой
 
 # 3. Маржинальная защита (Margin Guard)
 MIN_MARGIN_FREE_USD: float = 50.0    # Минимальная свободная маржа в USD
 MIN_MARGIN_FREE_PCT: float = 25.0    # Минимальный запас свободной маржи (% от баланса)
 
 
-# ── ROLLOVER & VOLATILITY PROTECTION (Защита от ночного ролловера и узких стопов) ──
+# ── ROLLOVER & INTRADAY EOD FLAT PROTECTION ──
 ROLLOVER_GUARD_ENABLED: bool = True
+EOD_NEW_TRADES_CUTOFF_UTC: tuple[int, int] = (20, 30)  # Запрет новых сделок с 20:30 UTC
+EOD_FLAT_CLOSE_UTC: tuple[int, int] = (20, 40)         # Принудительное закрытие позиций в 20:40 UTC
 ROLLOVER_START_UTC_HOUR: int = 20
 ROLLOVER_START_UTC_MIN: int = 30
 ROLLOVER_END_UTC_HOUR: int = 21
@@ -328,27 +375,87 @@ MIN_SL_PIPS_MAJOR: float = 8.0
 
 
 def get_min_sl_pips(symbol: str) -> float:
+    """
+    Возвращает минимально допустимый структурный стоп-лосс:
+    - Для XAUUSD (Intraday M15/M5): $2.00 минимум (>5x среднего спреда $0.35),
+      позволяет валидные M15/M5 стопы $2.00–$12.50 в рамках риска 0.25% ($12.50).
+    - Для Forex: 8.0–20.0 стандартных пипсов.
+    """
     sym_u = symbol.upper().replace("/", "").replace("=X", "")
     if "XAU" in sym_u or "GOLD" in sym_u:
-        return 10.0  # $10.00 minimum for Gold swing (10.0 pips @ $1.00/pip)
+        return 2.0
     if sym_u in CROSS_PAIRS_5D or sym_u in CROSS_PAIRS_JPY:
         return MIN_SL_PIPS_CROSS
     return MIN_SL_PIPS_MAJOR
 
 
-def is_rollover_window() -> tuple[bool, str]:
+def get_max_sl_usd_for_risk(
+    balance: float = 5000.0,
+    risk_pct: Optional[float] = None,
+    min_lot: float = 0.01,
+    contract_size: float = 100.0,
+) -> float:
+    """
+    Возвращает максимальную дистанцию стоп-лосса в USD для XAUUSD,
+    при которой минимальный лот (0.01) не превышает риск-бюджет сделки.
+    """
+    pct = risk_pct if (risk_pct is not None and risk_pct > 0) else AUTOTRADE_DEFAULT_RISK
+    risk_budget_usd = balance * (pct / 100.0)
+    denom = min_lot * contract_size
+    if denom <= 0:
+        return 0.0
+    return round(risk_budget_usd / denom, 2)
+
+
+def is_rollover_window(now_dt: Optional[datetime] = None) -> tuple[bool, str]:
     """
     Проверяет, находимся ли мы в окне банковского ролловера (20:30 - 21:45 UTC / 23:30 - 00:45 MT5 Server Time).
-    В это время ликвидность падает, а спреды на кросс-парах (EURAUD, GBPAUD и др.) расширяются в 5-10 раз.
+    В это время ликвидность падает, а спреды расширяются в 5-10 раз.
     """
     if not ROLLOVER_GUARD_ENABLED:
         return False, ""
-    now = datetime.now(ZoneInfo('UTC'))
+    now = now_dt if now_dt is not None else datetime.now(ZoneInfo('UTC'))
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=ZoneInfo('UTC'))
     mins = now.hour * 60 + now.minute
     start_mins = ROLLOVER_START_UTC_HOUR * 60 + ROLLOVER_START_UTC_MIN
     end_mins = ROLLOVER_END_UTC_HOUR * 60 + ROLLOVER_END_UTC_MIN
     if start_mins <= mins <= end_mins:
         return True, "Банковский ролловер (20:30–21:45 UTC) — защита от 10-кратного расширения спредов"
+    return False, ""
+
+
+def is_eod_flat_cutoff(now_dt: Optional[datetime] = None) -> tuple[bool, str]:
+    """
+    Проверяет, наступило ли время запрета новых входов перед концом дня (20:30 UTC)
+    или перед закрытием пятницы (19:00 UTC).
+    """
+    now = now_dt if now_dt is not None else datetime.now(ZoneInfo('UTC'))
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=ZoneInfo('UTC'))
+    wd = now.weekday()
+    mins = now.hour * 60 + now.minute
+    if wd == 4 and mins >= (19 * 60):
+        return True, "Пятничный EOD-фильтр: запрет новых сделок после 19:00 UTC"
+    if (20 * 60 + 30) <= mins <= (23 * 60 + 5):
+        return True, "Intraday EOD Flat: запрет новых сделок после 20:30 UTC перед ролловером"
+    return False, ""
+
+
+def should_force_eod_flat(now_dt: Optional[datetime] = None) -> tuple[bool, str]:
+    """
+    Проверяет, наступило ли время принудительного закрытия всех открытых Intraday-позиций
+    и снятия лимитных ордеров перед банковским ролловером (20:40 UTC Пн-Чт) или выходными (19:30 UTC Пт).
+    """
+    now = now_dt if now_dt is not None else datetime.now(ZoneInfo('UTC'))
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=ZoneInfo('UTC'))
+    wd = now.weekday()
+    mins = now.hour * 60 + now.minute
+    if wd == 4 and mins >= (19 * 60 + 30):
+        return True, "EOD_FRIDAY_FLAT (19:30 UTC)"
+    if (20 * 60 + 40) <= mins <= (23 * 60 + 5):
+        return True, "EOD_ROLLOVER_FLAT (20:40 UTC)"
     return False, ""
 
 # ── FundingPips Challenge Profile ( 2 Step Flex) ───────

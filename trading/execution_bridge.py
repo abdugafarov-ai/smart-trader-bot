@@ -15,26 +15,39 @@ from utils.broker_time import get_broker_today_date_str, get_broker_now
 logger = logging.getLogger(__name__)
 
 
-def calculate_gold_swing_lot(balance: float = 5000.0, sl_dist_usd: float = 15.0, risk_pct: float = 0.25) -> float:
+def calculate_gold_swing_lot(
+    balance: float = 5000.0,
+    sl_dist_usd: float = 15.0,
+    risk_pct: float = 0.25,
+    commission_per_lot: float = 0.0,
+    spread_buffer_usd: float = 0.0,
+) -> float:
     """
     Единый институциональный расчет риска для XAUUSD (FundingPips $5,000):
-    - Формула: lot = (balance * risk_pct / 100.0) / (sl_dist_usd * 100.0)
-    - Бюджет: 0.25% ($12.50) базовый, 0.50% ($25.00) расширенный
+    - Формула: lot = (balance * risk_pct / 100.0) / ((sl_dist_usd + spread_buffer_usd) * 100.0 + commission_per_lot)
+    - Бюджет: 0.25% ($12.50) базовый, 0.50% ($25.00) максимальный
     - Жесткое правило: если риск по минимальному лоту 0.01 превышает бюджет -> return 0.0 (NO TRADE)
     """
-    if sl_dist_usd <= 0.01:
+    if sl_dist_usd <= 0.01 or balance <= 0:
         return 0.0
-    risk_factor = (risk_pct / 100.0) if risk_pct > 0 else 0.0025
+    max_allowed_risk_pct = getattr(config, "AUTOTRADE_MAX_RISK", 0.50)
+    capped_pct = min(float(risk_pct), max_allowed_risk_pct) if risk_pct > 0 else 0.25
+    risk_factor = capped_pct / 100.0
     risk_budget_usd = balance * risk_factor
 
+    effective_sl_usd = float(sl_dist_usd) + max(0.0, float(spread_buffer_usd))
+    loss_per_std_lot = (effective_sl_usd * 100.0) + max(0.0, float(commission_per_lot))
+    if loss_per_std_lot <= 0:
+        return 0.0
+
     # Min lot risk check (1 lot XAUUSD = 100 oz -> 0.01 lot = 1 oz -> $1.00 move = $1.00 loss)
-    min_lot_risk_usd = 0.01 * sl_dist_usd * 100.0
-    if min_lot_risk_usd > risk_budget_usd:
+    min_lot_risk_usd = 0.01 * loss_per_std_lot
+    if min_lot_risk_usd > risk_budget_usd + 1e-9:
         # Minimum volume exceeds risk budget -> strictly reject order
         return 0.0
 
-    raw_lot = risk_budget_usd / (sl_dist_usd * 100.0)
-    lot = math.floor(raw_lot * 100.0) / 100.0
+    raw_lot = risk_budget_usd / loss_per_std_lot
+    lot = math.floor((raw_lot + 1e-9) * 100.0) / 100.0
     return max(0.01, min(0.50, round(lot, 2)))
 
 
@@ -45,7 +58,7 @@ class ExecutionBridge:
         self.enabled = config.AUTOTRADE_ENABLED
         self.default_risk = config.AUTOTRADE_DEFAULT_RISK
         self.default_lot = config.AUTOTRADE_DEFAULT_LOT
-        self.lot_mode = "fixed"  # "fixed" or "risk"
+        self.lot_mode = "risk"  # "risk" (default) or "fixed" (still capped by risk budget)
         self._connected_terminals: Dict[str, Any] = {}
         
         # Реальная телеметрия из MetaTrader 5 (без фейковых данных по умолчанию)
@@ -60,13 +73,14 @@ class ExecutionBridge:
             "last_ping": None,
         }
         self.panic_close_requested = False
+        self._last_eod_flat_date: str = ""
 
         # Кэш живых котировок от советника MT5: символ -> {"bid": float, "ask": float, "time": datetime}
         self.live_quotes: Dict[str, Dict[str, Any]] = {}
 
         # Институциональный риск-менеджмент для реального счёта
         self.max_daily_loss_pct: float = getattr(config, 'MAX_DAILY_DRAWDOWN_PCT', 2.5)
-        self.max_concurrent_positions: int = getattr(config, 'MAX_CONCURRENT_POSITIONS', 3)
+        self.max_concurrent_positions: int = getattr(config, 'MAX_CONCURRENT_POSITIONS', 1)
         # Динамический расчет аварийного хард-стопа по эквити (масштабируется под любой депозит)
         init_bal = getattr(config, 'CHALLENGE_INITIAL_BALANCE', 5000.0)
         max_loss_pct = getattr(config, 'CHALLENGE_MAX_LOSS_PCT', 12.0)
@@ -92,14 +106,15 @@ class ExecutionBridge:
         logger.info("Auto-Trading Bridge enabled set to: %s", enabled)
 
     def set_risk(self, risk_percent: float):
-        self.default_risk = max(0.1, min(5.0, risk_percent))
+        max_r = getattr(config, "AUTOTRADE_MAX_RISK", 0.50)
+        self.default_risk = max(0.1, min(max_r, risk_percent))
         self.lot_mode = "risk"
         logger.info("Auto-Trading Bridge risk set to: %.2f%% (mode: risk)", self.default_risk)
 
     def set_lot(self, lot: float):
-        self.default_lot = max(0.01, min(10.0, lot))
+        self.default_lot = max(0.01, min(0.50, lot))
         self.lot_mode = "fixed"
-        logger.info("Auto-Trading Bridge lot set to: %.2f (mode: fixed)", self.default_lot)
+        logger.info("Auto-Trading Bridge lot set to: %.2f (mode: fixed, capped by risk budget)", self.default_lot)
 
     def calculate_lot(
         self,
@@ -109,30 +124,61 @@ class ExecutionBridge:
         risk_pct: Optional[float] = None,
         min_lot: float = 0.01,
         max_lot: float = 0.50,
+        sl_dist_usd: Optional[float] = None,
+        entry: Optional[float] = None,
+        sl: Optional[float] = None,
     ) -> float:
         """
         Единый источник истины для расчета лота:
         - Для XAUUSD: 1 лот = 100 oz ($100 per $1.00 move).
-        - Бюджет риска: default 0.25% ($12.50) или 0.50% ($25.00).
+          Дистанция стопа передается в USD (или через entry/sl, или sl_dist_usd).
+        - Бюджет риска: default 0.25% ($12.50), max 0.50% ($25.00).
         - Если минимальный лот (0.01) превышает бюджет -> return 0.0 (NO TRADE).
+        - Даже в режиме 'fixed' лот НИКОГДА не может превысить риск-бюджет (при превышении -> 0.0).
         """
         sym_clean = symbol.upper().replace("/", "").replace("=X", "")
-        effective_risk = risk_pct if (risk_pct is not None and risk_pct > 0) else self.default_risk
-        bal_val = balance or float(self.mt5_telemetry.get("balance", 0.0)) or 5000.0
+        max_r = getattr(config, "AUTOTRADE_MAX_RISK", 0.50)
+        raw_risk = risk_pct if (risk_pct is not None and risk_pct > 0) else self.default_risk
+        effective_risk = min(float(raw_risk), max_r)
+        bal_val = float(balance) if (balance is not None and balance > 0) else (float(self.mt5_telemetry.get("balance", 0.0)) or 5000.0)
 
         if "XAU" in sym_clean or "GOLD" in sym_clean:
-            sl_dist_usd = sl_pips * 0.10 if sl_pips > 35.0 else sl_pips
-            return calculate_gold_swing_lot(bal_val, sl_dist_usd, effective_risk)
+            if sl_dist_usd is not None and sl_dist_usd > 0:
+                actual_sl_usd = float(sl_dist_usd)
+            elif entry is not None and sl is not None and entry > 0 and sl > 0:
+                actual_sl_usd = abs(float(entry) - float(sl))
+            else:
+                actual_sl_usd = float(sl_pips)
+
+            max_safe_lot = calculate_gold_swing_lot(bal_val, actual_sl_usd, effective_risk)
+            if max_safe_lot <= 0.0:
+                return 0.0
+            if self.lot_mode == "fixed":
+                if self.default_lot > max_safe_lot + 1e-9:
+                    logger.warning(
+                        "Fixed lot %.2f exceeds risk budget (max safe lot %.2f for SL $%.2f) -> REJECT (0.0)",
+                        self.default_lot, max_safe_lot, actual_sl_usd
+                    )
+                    return 0.0
+                return max(min_lot, min(max_lot, round(self.default_lot, 2)))
+            return max_safe_lot
 
         # Forex pairs: pip value = $10 / standard lot
+        if sl_pips <= 0:
+            return 0.0
         risk_factor = effective_risk / 100.0
         risk_usd = bal_val * risk_factor
         pip_val = 10.0
-        if max(sl_pips, 0.1) * pip_val * min_lot > risk_usd:
+        if sl_pips * pip_val * min_lot > risk_usd + 1e-9:
             return 0.0  # Min lot risk exceeds budget -> REJECT
-        raw_lot = risk_usd / (max(sl_pips, 1.0) * pip_val)
-        lot = math.floor(raw_lot * 100.0) / 100.0
-        return max(min_lot, min(max_lot, round(lot, 2)))
+        raw_lot = risk_usd / (sl_pips * pip_val)
+        max_safe_forex_lot = math.floor((raw_lot + 1e-9) * 100.0) / 100.0
+        max_safe_forex_lot = max(min_lot, min(max_lot, round(max_safe_forex_lot, 2)))
+        if self.lot_mode == "fixed":
+            if self.default_lot > max_safe_forex_lot + 1e-9:
+                return 0.0
+            return max(min_lot, min(max_lot, round(self.default_lot, 2)))
+        return max_safe_forex_lot
 
     async def load_settings_from_db(self):
         """Загружает персистентные настройки моста (лот, риск, режим) из базы данных SQLite."""
@@ -140,10 +186,11 @@ class ExecutionBridge:
         try:
             lot_str = await get_bot_setting("trading_lot", "")
             if lot_str:
-                self.default_lot = max(0.01, min(10.0, float(lot_str)))
+                self.default_lot = max(0.01, min(0.50, float(lot_str)))
             risk_str = await get_bot_setting("trading_risk", "")
             if risk_str:
-                self.default_risk = max(0.1, min(5.0, float(risk_str)))
+                max_r = getattr(config, "AUTOTRADE_MAX_RISK", 0.50)
+                self.default_risk = max(0.1, min(max_r, float(risk_str)))
             lot_mode_str = await get_bot_setting("lot_mode", "")
             if lot_mode_str in ("fixed", "risk"):
                 self.lot_mode = lot_mode_str
@@ -159,7 +206,7 @@ class ExecutionBridge:
             max_pos_str = await get_bot_setting("max_concurrent_positions", "")
             if max_pos_str:
                 self.max_concurrent_positions = max(1, min(10, int(max_pos_str)))
-            logger.info("Loaded Bridge settings from DB: lot=%.2f, risk=%.1f%%, lot_mode=%s, enabled=%s, daily_loss_limit=%.1f%%, max_positions=%d",
+            logger.info("Loaded Bridge settings from DB: lot=%.2f, risk=%.2f%%, lot_mode=%s, enabled=%s, daily_loss_limit=%.1f%%, max_positions=%d",
                         self.default_lot, self.default_risk, self.lot_mode, self.enabled, self.max_daily_loss_pct, self.max_concurrent_positions)
         except Exception as e:
             logger.error("Failed to load Bridge settings from DB: %s", e)
@@ -378,7 +425,67 @@ class ExecutionBridge:
 
         return self.daily_loss_locked, today_net_pnl, 0.0, daily_start_balance
 
-    def can_open_new_position(self, symbol: str, trading_mode: str = "prop") -> tuple[bool, str]:
+    def get_cumulative_open_risk_usd(self) -> float:
+        """
+        Вычисляет совокупный риск в USD по всем открытым позициям и отложенным ордерам в MT5.
+        Если у позиции стоп уже переведен в безубыток или профит, риск по ней = 0.0.
+        """
+        total_risk_usd = 0.0
+        positions = self.mt5_telemetry.get("positions") or []
+        orders = self.mt5_telemetry.get("orders") or []
+        for item in list(positions) + list(orders):
+            try:
+                sym = str(item.get("symbol", "XAUUSD")).upper()
+                lot = float(item.get("lot") or item.get("volume") or 0.01)
+                entry = float(item.get("price") or item.get("entry") or 0.0)
+                sl = float(item.get("sl") or item.get("stop_loss") or 0.0)
+                p_type = str(item.get("type", "BUY")).upper()
+                if entry > 0 and sl > 0:
+                    if "BUY" in p_type:
+                        sl_dist = max(0.0, entry - sl)
+                    else:
+                        sl_dist = max(0.0, sl - entry)
+                    contract_mult = 100.0 if ("XAU" in sym or "GOLD" in sym) else (1000.0 if "JPY" in sym else 100000.0)
+                    total_risk_usd += lot * sl_dist * contract_mult
+                else:
+                    # Консервативная оценка риска при отсутствии явного SL в телеметрии
+                    bal = float(self.mt5_telemetry.get("balance", 0.0)) or 5000.0
+                    total_risk_usd += bal * (self.default_risk / 100.0)
+            except Exception:
+                continue
+        return round(total_risk_usd, 2)
+
+    def check_and_trigger_eod_flat(self, now_dt: Optional[datetime] = None) -> tuple[bool, str]:
+        """
+        Проверяет наступление времени принудительного внутридневного закрытия (EOD Flat: 20:40 UTC Пн-Чт, 19:30 UTC Пт).
+        Если в терминале открыты позиции или висят отложенные ордера, запрашивает принудительное закрытие до ролловера.
+        """
+        now_utc = now_dt if now_dt is not None else datetime.now(timezone.utc)
+        if now_utc.tzinfo is None:
+            now_utc = now_utc.replace(tzinfo=timezone.utc)
+
+        if hasattr(config, "should_force_eod_flat"):
+            should_flat, reason = config.should_force_eod_flat(now_utc)
+        else:
+            mins = now_utc.hour * 60 + now_utc.minute
+            should_flat = (now_utc.weekday() == 4 and mins >= 19 * 60 + 30) or (20 * 60 + 40 <= mins <= 23 * 60 + 5)
+            reason = "EOD_FLAT" if should_flat else ""
+
+        if not should_flat:
+            return False, ""
+
+        positions = self.mt5_telemetry.get("positions") or []
+        orders = self.mt5_telemetry.get("orders") or []
+        date_key = now_utc.strftime("%Y-%m-%d")
+        if (positions or orders) or self._last_eod_flat_date != date_key:
+            self._last_eod_flat_date = date_key
+            if positions or orders:
+                self.panic_close_requested = True
+                logger.warning("⏰ EOD FLAT TRIGGERED (%s): Closing %d positions and %d pending orders before rollover.", reason, len(positions), len(orders))
+            return True, reason
+        return True, reason
+
+    def can_open_new_position(self, symbol: str, trading_mode: str = "prop", new_trade_risk_usd: float = 0.0) -> tuple[bool, str]:
         """
         Институциональная 10-факторная валидация перед открытием ордера на реальные деньги.
         Возвращает (allowed: bool, reason: str).
@@ -406,17 +513,18 @@ class ExecutionBridge:
         if not w_open:
             return False, f"Торговое окно закрыто: {w_reason}"
 
-        if hasattr(config, "is_rollover_window"):
-            in_rollover, roll_reason = config.is_rollover_window()
-            if in_rollover:
-                return False, f"Защита от ролловера: {roll_reason}"
-
-        # 3.1 Strictly Intraday Trading Window & EOD Cutoff (20:30 UTC)
         now_utc = datetime.now(timezone.utc)
-        if now_utc.weekday() == 4 and (now_utc.hour >= 20 or (now_utc.hour == 19 and now_utc.minute >= 30)):
-            return False, "EOD Flat: Пятничное закрытие перед выходными (19:30 UTC)"
+
+        # 3.1 Strictly Intraday Trading Window & EOD Cutoff (20:30 UTC Mon-Thu, 19:00/19:30 UTC Fri)
+        if now_utc.weekday() == 4 and (now_utc.hour >= 20 or (now_utc.hour == 19 and now_utc.minute >= 0)):
+            return False, "EOD Flat: Пятничное закрытие перед выходными (19:00 UTC)"
         if (now_utc.hour == 20 and now_utc.minute >= 30) or now_utc.hour > 20:
             return False, "EOD Flat: Достигнуто время закрытия внутридневной сессии (20:30 UTC)"
+
+        if hasattr(config, "is_rollover_window"):
+            in_rollover, roll_reason = config.is_rollover_window(now_utc)
+            if in_rollover:
+                return False, f"Защита от ролловера: {roll_reason}"
 
         # 4. Проверка связи с терминалом MT5
         is_online, ping = self.is_mt5_online()
@@ -432,6 +540,22 @@ class ExecutionBridge:
         if active_slots >= max_slots:
             return False, f"Лимит слотов исчерпан ({active_slots}/{max_slots} занято)"
 
+        # 6.1 Совокупный риск (открытые позиции + отложенные ордера + дневной убыток + новая сделка)
+        bal = float(self.mt5_telemetry.get("balance", 0.0))
+        if bal > 0:
+            start_bal = float(self.today_stats_cache.get("start_balance", bal) or bal)
+            today_net_pnl = float(self.today_stats_cache.get("net_pnl", 0.0) or 0.0)
+            realized_or_floating_loss = abs(min(0.0, today_net_pnl))
+            open_risk = self.get_cumulative_open_risk_usd()
+            est_new_risk = new_trade_risk_usd if new_trade_risk_usd > 0 else (bal * (self.default_risk / 100.0))
+            max_daily_loss_usd = start_bal * (self.max_daily_loss_pct / 100.0)
+            if (realized_or_floating_loss + open_risk + est_new_risk) > max_daily_loss_usd + 1e-6:
+                return (
+                    False,
+                    f"Превышен совокупный дневной риск-лимит: убыток ${realized_or_floating_loss:.2f} + "
+                    f"открытый риск ${open_risk:.2f} + новая сделка ${est_new_risk:.2f} > лимита ${max_daily_loss_usd:.2f}"
+                )
+
         # 7. Защита от дублирования инструмента: не более 1 позиции на пару
         for p in positions:
             if str(p.get("symbol", "")).upper() == sym_u:
@@ -441,21 +565,19 @@ class ExecutionBridge:
                 return False, f"Отложенный ордер по {sym_u} уже выставлен"
 
         # 8. Защита от корреляции валют (Currency Correlation Exposure Cap)
-        # Максимум 2 позиции, содержащие одну и ту же базовую или котируемую валюту
         if len(sym_u) == 6:
             base_curr = sym_u[:3]
             quote_curr = sym_u[3:]
             active_symbols = [str(p.get("symbol", "")).upper() for p in positions] + [str(o.get("symbol", "")).upper() for o in orders]
             base_count = sum(1 for s in active_symbols if base_curr in s)
             quote_count = sum(1 for s in active_symbols if quote_curr in s)
-            max_curr = getattr(config, 'MAX_CURRENCY_EXPOSURE', 2)
+            max_curr = getattr(config, 'MAX_CURRENCY_EXPOSURE', 1)
             if base_count >= max_curr:
                 return False, f"Превышен лимит корреляции по валюте {base_curr} ({base_count}/{max_curr})"
             if quote_count >= max_curr:
                 return False, f"Превышен лимит корреляции по валюте {quote_curr} ({quote_count}/{max_curr})"
 
         # 9. Проверка свободной маржи
-        bal = float(self.mt5_telemetry.get("balance", 0.0))
         mf = float(self.mt5_telemetry.get("margin_free", 0.0))
         min_usd = getattr(config, 'MIN_MARGIN_FREE_USD', 50.0)
         min_pct = getattr(config, 'MIN_MARGIN_FREE_PCT', 25.0)

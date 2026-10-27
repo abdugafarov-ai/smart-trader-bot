@@ -237,7 +237,16 @@ class AutoSignalScanner:
                 logger.info("IPDA timing ban active: %s. Scanner paused.", ipda_reason)
                 return
 
-        # ── Защита от банковского ролловера (20:30–21:45 UTC) ──
+        # ── Защита от банковского ролловера (20:30–21:45 UTC) и EOD Flat Cutoff ──
+        from trading.execution_bridge import bridge_manager
+        bridge_manager.check_and_trigger_eod_flat()
+
+        if hasattr(config, "is_eod_flat_cutoff"):
+            is_eod, eod_reason = config.is_eod_flat_cutoff()
+            if is_eod:
+                logger.info("EOD Flat Cutoff active: %s. Scanner paused.", eod_reason)
+                return
+
         if hasattr(config, "is_rollover_window"):
             in_rollover, roll_reason = config.is_rollover_window()
             if in_rollover:
@@ -245,7 +254,6 @@ class AutoSignalScanner:
                 return
 
         # ── Аварийная проверка хард-стопа по эквити ($4,450.00) ──
-        from trading.execution_bridge import bridge_manager
         is_hard_stop, hard_reason = bridge_manager.check_equity_hard_stop()
         if is_hard_stop:
             logger.warning("🚨 Emergency Equity Hard Stop active: %s. Scanner paused.", hard_reason)
@@ -291,7 +299,7 @@ class AutoSignalScanner:
 
         for symbol in scan_list:
             try:
-                # ── ФИЛЬТР: Полный запрет золота и запрещенных пар ──
+                # ── ФИЛЬТР: Полный запрет запрещенных пар ──
                 if symbol in getattr(config, "BANNED_PAIRS", []):
                     continue
 
@@ -304,7 +312,7 @@ class AutoSignalScanner:
                 if is_mt5_online and bridge_manager.enabled:
                     allowed, block_reason = bridge_manager.can_open_new_position(symbol, trading_mode)
                     if not allowed:
-                        if "Лимит слотов" in block_reason or "Защита от дневного убытка" in block_reason:
+                        if any(k in block_reason for k in ["Лимит слотов", "Защита от дневного убытка", "EOD Flat", "Кум. риск"]):
                             logger.info("Scanner paused by Risk Guard: %s", block_reason)
                             break
                         if any(k in block_reason for k in ["уже открыта", "уже выставлен", "лимит корреляции"]):
@@ -346,34 +354,36 @@ class AutoSignalScanner:
                     min_stars = 5
                 # Kill Zone НЕ снижает планку ниже 4★ (строгий режим)
 
-                if result.overall_stars >= min_stars and round(result.risk_reward_1 or 0.0, 2) >= 1.5:
+                sym_clean = symbol.upper().replace("/", "").replace("=X", "")
+                is_gold = ("XAU" in sym_clean or "GOLD" in sym_clean)
+                min_rr_for_sym = 2.0 if is_gold else 1.5
 
-                    sym_clean = symbol.upper().replace("/", "").replace("=X", "")
-                    is_gold = ("XAU" in sym_clean or "GOLD" in sym_clean)
+                if result.overall_stars >= min_stars and round(result.risk_reward_1 or 0.0, 2) >= min_rr_for_sym:
 
-                    # ── ФИЛЬТР МИНИМАЛЬНОГО СТОП-ЛОССА ДЛЯ ЗОЛОТА ($10.00) ──
+                    # ── ФИЛЬТР МИНИМАЛЬНОГО СТРУКТУРНОГО СТОП-ЛОССА ДЛЯ ЗОЛОТА ($2.00) ──
+                    min_gold_sl_usd = config.get_min_sl_pips("XAUUSD") if hasattr(config, "get_min_sl_pips") else 2.0
                     if is_gold:
-                        if result.entry is None or result.stop_loss is None or abs(result.entry - result.stop_loss) < 10.0:
+                        if result.entry is None or result.stop_loss is None or abs(result.entry - result.stop_loss) < min_gold_sl_usd:
                             logger.info(
-                                "Prop Guard: %s Gold SL is missing or too tight (< min $10.00). Setup skipped to avoid noise stop-out.",
-                                symbol
+                                "Prop Guard: %s Gold SL is missing or too tight (< min $%.2f). Setup skipped to avoid spread/noise stop-out.",
+                                symbol, min_gold_sl_usd
                             )
                             continue
 
-                    # ── ФИЛЬТР МИКРО-СЧЁТА: Ограничение размера стоп-лосса (Max SL <= 18 pips) ──
+                    # ── ФИЛЬТР МИКРО-СЧЁТА И МИНИМАЛЬНОГО СТОПА ──
                     if result.entry is not None and result.stop_loss is not None:
                         sl_dist = abs(result.entry - result.stop_loss)
                         if "JPY" in sym_clean:
                             sl_pips = sl_dist / 0.01
                         elif is_gold:
-                            sl_pips = sl_dist / 1.0  # 1 pip = $1.00 for Gold swing so 10 pips = $10.00
+                            sl_pips = sl_dist  # Для XAUUSD get_min_sl_pips возвращает минимальную дистанцию в USD ($2.00)
                         else:
                             sl_pips = sl_dist / 0.0001
 
                         min_sl_req = config.get_min_sl_pips(symbol) if hasattr(config, "get_min_sl_pips") else 15.0
-                        if trading_mode != "micro" and round(sl_pips, 1) < min_sl_req:
+                        if trading_mode != "micro" and round(sl_pips, 2) < min_sl_req:
                             logger.info(
-                                "Prop Guard: %s SL is too tight (%.1f pips < min %.1f pips). Setup skipped to avoid spread/noise stop-out.",
+                                "Prop Guard: %s SL is too tight (%.2f < min %.2f). Setup skipped to avoid spread/noise stop-out.",
                                 symbol, sl_pips, min_sl_req
                             )
                             continue
@@ -391,7 +401,6 @@ class AutoSignalScanner:
                         continue
 
                     # ── ФИЛЬТР 8: Защита от расширения спреда (Spread Spike Guard) ──
-                    from trading.execution_bridge import bridge_manager
                     spread_ok, cur_spread, max_allowed = bridge_manager.is_spread_acceptable(symbol)
                     if not spread_ok:
                         logger.warning("Signal for %s BLOCKED: Spread spike detected (%.1f > %.1f pips). Waiting for market to calm.",
@@ -399,19 +408,32 @@ class AutoSignalScanner:
                         self.signals_skipped_by_spread = getattr(self, "signals_skipped_by_spread", 0) + 1
                         continue
 
-                    # ── Институциональный динамический лот (0.5% риск) ──
-                    from trading.execution_bridge import bridge_manager
-                    sl_pips_for_lot = 10.0
+                    # ── Институциональный динамический лот (Единый риск-менеджер) ──
+                    sl_pips_for_lot = 20.0
+                    dist_val = 0.0
                     if result.entry is not None and result.stop_loss is not None:
                         dist_val = abs(result.entry - result.stop_loss)
-                        s_clean = symbol.upper().replace("/", "").replace("=X", "")
-                        if "JPY" in s_clean:
+                        if "JPY" in sym_clean:
                             sl_pips_for_lot = dist_val / 0.01
-                        elif "XAU" in s_clean or "GOLD" in s_clean:
-                            sl_pips_for_lot = dist_val
+                        elif is_gold:
+                            sl_pips_for_lot = dist_val / 0.10  # 1 pip = $0.10
                         else:
                             sl_pips_for_lot = dist_val / 0.0001
-                    calculated_lot = bridge_manager.calculate_lot(symbol, sl_pips_for_lot)
+
+                    calculated_lot = bridge_manager.calculate_lot(
+                        symbol,
+                        sl_pips_for_lot,
+                        sl_dist_usd=dist_val if is_gold else None,
+                        entry=result.entry,
+                        sl=result.stop_loss,
+                    )
+                    if calculated_lot <= 0.0:
+                        logger.warning(
+                            "Prop Risk Guard: %s %s setup REJECTED (NO TRADE) — minimum lot 0.01 exceeds risk budget for SL dist=%.2f",
+                            symbol, result.overall_direction, dist_val
+                        )
+                        self.signals_skipped_by_risk = getattr(self, "signals_skipped_by_risk", 0) + 1
+                        continue
 
                     strategies_str = ", ".join(
                         [f"{e} {n}: {v}" for e, n, v in result.strategy_verdicts]
@@ -454,8 +476,14 @@ class AutoSignalScanner:
                     msg_admin = format_notification(result, is_admin=True)
                     msg_client = format_notification(result, is_admin=False)
 
-                    # Добавляем институциональную плашку точного объема (0.5% риск)
-                    lot_badge = f"\n💼 <b>Динамический объем (0.5% риск):</b> <code>{calculated_lot:.2f} lot</code> (SL: {sl_pips_for_lot:.1f} п.)"
+                    # Добавляем институциональную плашку точного объема и риска
+                    active_risk_pct = float(getattr(bridge_manager, "default_risk", config.AUTOTRADE_DEFAULT_RISK))
+                    est_risk_usd = (calculated_lot * dist_val * 100.0) if is_gold else (calculated_lot * sl_pips_for_lot * 10.0)
+                    sl_label = f"${dist_val:.2f}" if is_gold else f"{sl_pips_for_lot:.1f} п."
+                    lot_badge = (
+                        f"\n💼 <b>Динамический объем ({active_risk_pct:.2f}% риск):</b> "
+                        f"<code>{calculated_lot:.2f} lot</code> (~${est_risk_usd:.2f}, SL: {sl_label})"
+                    )
                     msg_admin += lot_badge
                     msg_client += lot_badge
 

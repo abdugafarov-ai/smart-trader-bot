@@ -916,9 +916,10 @@ class ICTSMCStrategy(BaseStrategy):
                 df_ltf = df_ltf.iloc[-60:].copy()
 
             if df_ltf is None:
-                # Читаем подтверждающий ТФ (для Золота H1 вместо M15/M5 шума)
+                # Читаем подтверждающий младший ТФ (для Intraday XAUUSD: H1/M15 -> M5)
                 if 'XAU' in clean_sym or 'GOLD' in clean_sym:
-                    check_tf = "H1" if timeframe in ("H4", "D1") else timeframe
+                    tf_up = str(timeframe).upper()
+                    check_tf = "M5" if tf_up in ("M5", "M15", "H1") else "M15"
                     df_ltf = fetcher._read_mt5_bars(clean_sym, check_tf, limit=60)
                 else:
                     df_ltf = fetcher._read_mt5_bars(clean_sym, "M15", limit=60)
@@ -943,7 +944,7 @@ class ICTSMCStrategy(BaseStrategy):
             if pd.isna(ltf_atr) or ltf_atr <= 0:
                 ltf_atr = 0.00050
 
-            # 1. Проверяем касание H1 POI в последних 20 свечах LTF с буфером 0.5 ATR
+            # 1. Проверяем касание POI в последних 20 свечах LTF с буфером 0.5 ATR
             poi_low_buf = poi_low - 0.50 * ltf_atr
             poi_high_buf = poi_high + 0.50 * ltf_atr
             recent_candles = df_ltf.iloc[-20:]
@@ -973,7 +974,7 @@ class ICTSMCStrategy(BaseStrategy):
                         res["displacement"] = True
                         res["mss_price"] = c_close
                         res["details"].append(
-                            f"⚡ Подтвержден бычий разворотный импульс на H1: "
+                            f"⚡ Подтвержден бычий разворотный импульс на LTF (M5/M15): "
                             f"закрытие {self._format_price(c_close, symbol)} ({body/ltf_atr:.1f}x ATR) со дна диапазона!"
                         )
                         break
@@ -993,7 +994,7 @@ class ICTSMCStrategy(BaseStrategy):
                         res["displacement"] = True
                         res["mss_price"] = c_close
                         res["details"].append(
-                            f"⚡ Подтвержден медвежий разворотный импульс на H1: "
+                            f"⚡ Подтвержден медвежий разворотный импульс на LTF (M5/M15): "
                             f"закрытие {self._format_price(c_close, symbol)} ({body/ltf_atr:.1f}x ATR) с вершины диапазона!"
                         )
                         break
@@ -1003,7 +1004,7 @@ class ICTSMCStrategy(BaseStrategy):
         return res
 
     def _is_in_kill_zone(self, current_time: Optional[datetime] = None) -> bool:
-        """Проверяет, сейчас ли Kill Zone (London Open 07-10 или NY Open 12-15 UTC)."""
+        """Проверяет, сейчас ли Kill Zone (London Open 07-10 или NY Open 12-15 local time, DST-aware)."""
         try:
             return config.is_in_kill_zone(current_time)
         except Exception:
@@ -1015,18 +1016,40 @@ class ICTSMCStrategy(BaseStrategy):
                 return False
 
     def analyze(self, df: pd.DataFrame, symbol: str, timeframe: str, df_d1: Optional[pd.DataFrame] = None, df_ltf: Optional[pd.DataFrame] = None, current_time: Optional[datetime] = None) -> StrategyResult:
+        # Support multi-timeframe dict input (e.g., {"D1": df_d1, "H1": df_h1, "M15": df_m15, "M5": df_m5})
+        if isinstance(df, dict):
+            mtf_dict = df
+            if "M5" not in mtf_dict or mtf_dict["M5"] is None or mtf_dict["M5"].empty:
+                return self._make_result(
+                    StrategySignal(
+                        direction="NEUTRAL",
+                        confidence=0,
+                        details=["⛔ Отсутствуют данные младшего ТФ M5 — подтверждение невозможно"],
+                        rejection_reasons=["MISSING_LTF_M5"],
+                    ),
+                    ["Отсутствует подтверждающий ТФ M5 — NO TRADE"],
+                )
+            df_d1 = df_d1 if df_d1 is not None else mtf_dict.get("D1")
+            df_ltf = df_ltf if df_ltf is not None else mtf_dict.get("M5")
+            df = mtf_dict.get(timeframe) if timeframe in mtf_dict else mtf_dict.get("M15")
+            if df is None:
+                return self._make_result(
+                    StrategySignal(direction="NEUTRAL", confidence=0, details=["Недостаточно данных"], rejection_reasons=["MISSING_PRIMARY_TF"]),
+                    ["Недостаточно данных для анализа"],
+                )
+
         # ═══ ВРЕМЕННЫЕ ЦИКЛЫ IPDA И АЛГОРИТМИЧЕСКИЕ ТАЙМИНГИ ═══
         # Запрет любых новых входов за 15 мин до закрытия Лондона (15:45-16:00 UTC) и в мертвую зону (17:00-00:00 UTC)
         is_banned, ban_reason = config.is_ipda_time_banned(current_time)
         if is_banned:
             return self._make_result(
-                StrategySignal(direction="NEUTRAL", confidence=0, details=[f"❌ IPDA Timing Ban: {ban_reason}"]),
+                StrategySignal(direction="NEUTRAL", confidence=0, details=[f"❌ IPDA Timing Ban: {ban_reason}"], rejection_reasons=["IPDA_TIME_BAN"]),
                 [f"IPDA Timing Ban: {ban_reason} — новые входы заблокированы"]
             )
 
-        if len(df) < 30:
+        if df is None or len(df) < 30:
             return self._make_result(
-                StrategySignal(direction="NEUTRAL", confidence=0, details=["Недостаточно данных"]),
+                StrategySignal(direction="NEUTRAL", confidence=0, details=["Недостаточно данных"], rejection_reasons=["INSUFFICIENT_BARS"]),
                 ["Недостаточно данных для анализа"]
             )
 
@@ -1234,34 +1257,34 @@ class ICTSMCStrategy(BaseStrategy):
         ltf_reversal_confirmed = False
 
         if bull_impulse and in_bull_poi and dr_pct < 0.45:
-            # (3) На H1 проверяем появление разворотной свечи / слома вверх
+            # (3) На LTF (M5) проверяем появление разворотной свечи / MSS вверх
             ltf_res = self.check_ltf_confirmation(
                 symbol, "LONG", h1_poi_zone=poi_bull,
-                timeframe="H1" if is_gold else "M15", df_ltf=df_ltf
+                timeframe=timeframe, df_ltf=df_ltf
             )
             if ltf_res.get("details"):
                 details.extend(ltf_res["details"])
             if ltf_res.get("mss_confirmed"):
                 pullback_direction = "LONG"
                 ltf_reversal_confirmed = True
-                details.append("⚡ Институциональный сетап: бычий импульс D1/H4 + откат в Discount (<45% DR) к POI + разворот на H1 — вход BUY по рынку со дна!")
+                details.append("⚡ Институциональный сетап: бычий импульс HTF + откат в Discount (<45% DR) к POI + разворот MSS на LTF — вход BUY по рынку со дна!")
             else:
-                details.append("⏳ Ожидание разворотной свечи / слома вверх на H1 со дна отката — отложенный ордер не выставляется")
+                details.append("⏳ Ожидание разворотной свечи / слома вверх на LTF (M5) со дна отката — отложенный ордер не выставляется")
 
         elif bear_impulse and in_bear_poi and dr_pct > 0.55:
-            # (3) На H1 проверяем появление разворотной свечи / слома вниз
+            # (3) На LTF (M5) проверяем появление разворотной свечи / MSS вниз
             ltf_res = self.check_ltf_confirmation(
                 symbol, "SHORT", h1_poi_zone=poi_bear,
-                timeframe="H1" if is_gold else "M15", df_ltf=df_ltf
+                timeframe=timeframe, df_ltf=df_ltf
             )
             if ltf_res.get("details"):
                 details.extend(ltf_res["details"])
             if ltf_res.get("mss_confirmed"):
                 pullback_direction = "SHORT"
                 ltf_reversal_confirmed = True
-                details.append("⚡ Институциональный сетап: медвежий импульс D1/H4 + откат в Premium (>55% DR) к POI + разворот на H1 — вход SELL по рынку с вершины!")
+                details.append("⚡ Институциональный сетап: медвежий импульс HTF + откат в Premium (>55% DR) к POI + разворот MSS на LTF — вход SELL по рынку с вершины!")
             else:
-                details.append("⏳ Ожидание разворотной свечи / слома вниз на H1 с пика отката — отложенный ордер не выставляется")
+                details.append("⏳ Ожидание разворотной свечи / слома вниз на LTF (M5) с пика отката — отложенный ордер не выставляется")
 
         if pullback_direction:
             direction = pullback_direction
@@ -1269,7 +1292,7 @@ class ICTSMCStrategy(BaseStrategy):
         elif is_gold:
             # Для золота строго требуются только честные входы на откате со дна/вершины
             return self._make_result(
-                StrategySignal(direction="NEUTRAL", confidence=0, details=details),
+                StrategySignal(direction="NEUTRAL", confidence=0, details=details, rejection_reasons=["NO_PULLBACK_CONFIRMATION"]),
                 details + ["Золото: вход вне подтвержденной зоны отката запрещен"]
             )
         else:
@@ -1284,7 +1307,7 @@ class ICTSMCStrategy(BaseStrategy):
                 details.append(f"⚡ Разворотный триггер: Снятие ликвидности с максимума (Wick Sweep) в Premium — приоритет SELL")
             else:
                 return self._make_result(
-                    StrategySignal(direction="NEUTRAL", confidence=0, details=details),
+                    StrategySignal(direction="NEUTRAL", confidence=0, details=details, rejection_reasons=["NO_VALID_STRUCTURE_TRIGGER"]),
                     details + ["Неопределённая структура рынка / вход вне Discount/Premium — пропуск"]
                 )
 
@@ -1296,13 +1319,13 @@ class ICTSMCStrategy(BaseStrategy):
             if direction == "LONG" and d1_trend == "DOWN":
                 details.append(f"❌ D1 Trend Filter: Покупки запрещены — {d1_reason}")
                 return self._make_result(
-                    StrategySignal(direction="NEUTRAL", confidence=0, details=details),
+                    StrategySignal(direction="NEUTRAL", confidence=0, details=details, rejection_reasons=["HTF_TREND_MISMATCH"]),
                     details + ["Старший таймфрейм D1 нисходящий — покупки против глобального тренда заблокированы"]
                 )
             elif direction == "SHORT" and d1_trend == "UP":
                 details.append(f"❌ D1 Trend Filter: Продажи запрещены — {d1_reason}")
                 return self._make_result(
-                    StrategySignal(direction="NEUTRAL", confidence=0, details=details),
+                    StrategySignal(direction="NEUTRAL", confidence=0, details=details, rejection_reasons=["HTF_TREND_MISMATCH"]),
                     details + ["Старший таймфрейм D1 восходящий — продажи против глобального тренда заблокированы"]
                 )
             elif d1_trend:
@@ -1333,7 +1356,7 @@ class ICTSMCStrategy(BaseStrategy):
                     f"Текущая позиция: {dr_pct*100:.1f}% DR >= 45% — покупка на пике / в середине жестко заблокирована!"
                 )
                 return self._make_result(
-                    StrategySignal(direction="NEUTRAL", confidence=0, details=details),
+                    StrategySignal(direction="NEUTRAL", confidence=0, details=details, rejection_reasons=["NOT_IN_DISCOUNT"]),
                     details + ["Покупка отклонена: цена >= 45% DR (вне зоны Discount < 45%)"]
                 )
             sub_signals += 1
@@ -1349,7 +1372,7 @@ class ICTSMCStrategy(BaseStrategy):
                     f"Текущая позиция: {dr_pct*100:.1f}% DR <= 55% — продажа на дне / в середине жестко заблокирована!"
                 )
                 return self._make_result(
-                    StrategySignal(direction="NEUTRAL", confidence=0, details=details),
+                    StrategySignal(direction="NEUTRAL", confidence=0, details=details, rejection_reasons=["NOT_IN_PREMIUM"]),
                     details + ["Продажа отклонена: цена <= 55% DR (вне зоны Premium > 55%)"]
                 )
             sub_signals += 1
@@ -1364,7 +1387,7 @@ class ICTSMCStrategy(BaseStrategy):
         if avg_range_5 < 0.30 * atr:
             details.append("⚠️ Рынок замер на месте (свечи микроскопические < 0.5 ATR) — сигнал пропущен")
             return self._make_result(
-                StrategySignal(direction="NEUTRAL", confidence=0, details=details),
+                StrategySignal(direction="NEUTRAL", confidence=0, details=details, rejection_reasons=["LOW_VOLATILITY_CHOP"]),
                 details + ["Мертвая консолидация: нет волатильности для быстрого движения к цели"]
             )
 
@@ -1499,15 +1522,14 @@ class ICTSMCStrategy(BaseStrategy):
             details.append("⚡ Активна Kill Zone — сигнал усилен")
 
         # ═══ УЛУЧШЕНИЕ 7: Минимум подтверждений для входа ═══
-        # Без Kill Zone: минимум 3 подтверждения
-        # В Kill Zone: минимум 2 подтверждения (снайперские входы в пик ликвидности)
         final_confidence = max(1, sub_signals - vol_penalty)
         min_required = 2 if in_kill_zone else 3
 
         if final_confidence < min_required:
             return self._make_result(
                 StrategySignal(direction="NEUTRAL", confidence=final_confidence,
-                              details=details + [f"Недостаточно подтверждений ({final_confidence}<{min_required})"]),
+                              details=details + [f"Недостаточно подтверждений ({final_confidence}<{min_required})"],
+                              rejection_reasons=["INSUFFICIENT_CONFLUENCE"]),
                 details + ["Слабый сетап, остаемся в стороне"]
             )
 
@@ -1522,9 +1544,6 @@ class ICTSMCStrategy(BaseStrategy):
             details.append(f"⚡ ICT Macro Window: Вход в окне максимальной межбанковской алгоритмической ликвидности ({macro_name}) — повышенная точность")
             if confidence_stars < 5:
                 confidence_stars += 1
-
-        # ═══ ФРАКТАЛЬНАЯ МОДЕЛЬ (HTF Narrative: Draw on Liquidity) ═══
-        # (DOL уже рассчитан выше перед Regime Filter)
 
         # ═══ ИНТЕРМАРКЕТ-АНАЛИЗ И SMT DIVERGENCE (Smart Money Tool) ═══
         smt = self.check_smt_divergence(symbol, direction, timeframe=timeframe, df_primary=df)
@@ -1558,46 +1577,43 @@ class ICTSMCStrategy(BaseStrategy):
         poi_zone = ob_zone or fvg_zone
         if pullback_direction:
             ltf_confirmed = True
-            details.append("✅ Фрактальная модель (Layer 3): Вход на откате подтвержден на H1 со дна/вершины!")
+            details.append("✅ Фрактальная модель (Layer 3): Вход на откате подтвержден на младшем ТФ (M5) со дна/вершины!")
         else:
             ltf_confirmed = True
-            if poi_zone is not None and str(timeframe).upper() in ("H1", "H4", "D1"):
-                ltf_res = self.check_ltf_confirmation(symbol, direction, h1_poi_zone=poi_zone, timeframe="H1" if is_gold else "M15", df_ltf=df_ltf)
+            if poi_zone is not None and str(timeframe).upper() in ("M15", "H1", "H4", "D1"):
+                ltf_res = self.check_ltf_confirmation(symbol, direction, h1_poi_zone=poi_zone, timeframe=timeframe, df_ltf=df_ltf)
                 if ltf_res.get("details"):
                     details.extend(ltf_res["details"])
                 if not ltf_res.get("mss_confirmed", True):
                     ltf_confirmed = False
                     confidence_stars = min(confidence_stars, 3)
-                    details.append("⏳ LTF Confirmation: Ожидание слома структуры (MSS с Displacement) на M15/M5 — слепой отложенный ордер запрещен, вес сетапа понижен до 3★")
+                    details.append("⏳ LTF Confirmation: Ожидание слома структуры (MSS с Displacement) на M5 — слепой отложенный ордер запрещен, вес сетапа понижен до 3★")
                 else:
-                    details.append("✅ Фрактальная модель (Layer 3): Паттерн подтверждения MSS с Displacement на M15/M5 подтвержден!")
+                    details.append("✅ Фрактальная модель (Layer 3): Паттерн подтверждения MSS с Displacement на M5 подтвержден!")
 
-        # ── Институциональный минимальный размер стоп-лосса (Анатомический SL) ──
+        # ── Институциональный анатомический размер стоп-лосса ──
         sym_clean = symbol.upper().replace("/", "").replace("=X", "")
         if is_gold:
             pip_unit = 0.10
-            # Адаптивный диапазон стоп-лосса для золота: $10.00 - $35.00
-            min_sl_dist = max(10.0, 0.8 * atr)
-            min_sl_dist = min(min_sl_dist, 35.0)
-            max_sl_dist = min(35.0, max(25.0, 2.5 * atr))
-            sl_buffer = max(0.80, min(1.20, 0.15 * atr))
+            # Для интрадей XAUUSD (M15/M5) минимальный структурный стоп = $2.00 (>5x спреда),
+            # без искусственного раздувания до $10+ и БЕЗ искусственного урезания широких стопов!
+            abs_min_gold_sl = config.get_min_sl_pips("XAUUSD")  # 2.0 USD
+            min_sl_dist = max(abs_min_gold_sl, min(6.0, 0.35 * atr))
+            sl_buffer = max(0.30, min(0.80, 0.10 * atr))
         elif 'JPY' in sym_clean:
             pip_unit = 0.01
             abs_min_sl = 0.075  # ~7.5 пипсов для JPY пар
             min_sl_dist = max(abs_min_sl, 0.65 * atr)
-            max_sl_dist = 0.85
             sl_buffer = max(2.5 * pip_unit, 0.25 * atr)
         elif 'BTC' in sym_clean or 'ETH' in sym_clean:
             pip_unit = 1.0
             abs_min_sl = 50.0
             min_sl_dist = max(abs_min_sl, 0.65 * atr)
-            max_sl_dist = 1500.0
             sl_buffer = max(2.5 * pip_unit, 0.25 * atr)
         else:
             pip_unit = 0.0001
             abs_min_sl = 0.00075  # ~7.5 пипсов для долларовых мажоров
             min_sl_dist = max(abs_min_sl, 0.65 * atr)
-            max_sl_dist = 0.0065
             sl_buffer = max(2.5 * pip_unit, 0.25 * atr)
 
         max_entry_dist = 2.5 * atr
@@ -1610,13 +1626,11 @@ class ICTSMCStrategy(BaseStrategy):
                 elif ote_entry < current_price and (current_price - ote_entry) <= max_entry_dist:
                     candidates.append(ote_entry)
             if ob_zone:
-                # Вход на вершине бычьего OB (первое касание) или 50%
                 ob_entry = ob_zone[0] if ob_zone[0] < current_price else (ob_zone[0] + ob_zone[1]) / 2
                 if ob_entry < current_price and (current_price - ob_entry) <= max_entry_dist:
                     candidates.append(ob_entry)
                 elif ob_zone[1] < current_price and (current_price - ob_zone[1]) <= max_entry_dist:
                     candidates.append(ob_zone[1])
-            # 50% Consequent Encroachment для FVG в LONG
             if fvg_zone:
                 fvg_ce = fvg_zone[1] - 0.5 * (fvg_zone[1] - fvg_zone[0])
                 if fvg_ce < current_price and (current_price - fvg_ce) <= max_entry_dist:
@@ -1627,7 +1641,6 @@ class ICTSMCStrategy(BaseStrategy):
                 order_type = "BUY_MARKET"
                 candidates = [current_price]
             else:
-                # Если цена находится ПРЯМО В ЗОНЕ Order Block или FVG — вход моментальный
                 if not candidates and ob_zone and ob_zone[1] <= current_price <= ob_zone[0] + 0.35 * atr:
                     candidates.append(current_price)
                 if not candidates and fvg_zone and fvg_zone[0] <= current_price <= fvg_zone[1] + 0.35 * atr:
@@ -1636,7 +1649,8 @@ class ICTSMCStrategy(BaseStrategy):
                 if not candidates:
                     return self._make_result(
                         StrategySignal(direction="NEUTRAL", confidence=0,
-                                      details=details + ["Зона входа слишком далеко от текущей цены (>2.5 ATR)"]),
+                                      details=details + ["Зона входа слишком далеко от текущей цены (>2.5 ATR)"],
+                                      rejection_reasons=["ENTRY_TOO_FAR"]),
                         details + ["Цена ушла слишком далеко от институциональной зоны — сетап пропущен"]
                     )
                 entry = max(candidates)
@@ -1649,10 +1663,6 @@ class ICTSMCStrategy(BaseStrategy):
 
             # Анатомический структурный SL за OB low / FVG low / swing low + буфер
             base_sl = ob_zone[1] if ob_zone else (fvg_zone[0] if fvg_zone else hl1)
-            if is_gold:
-                sl_buffer = max(0.80, min(1.20, 0.15 * atr))
-            else:
-                sl_buffer = max(2.5 * pip_unit, 0.25 * atr)
             sl = base_sl - sl_buffer
             if (entry - sl) < min_sl_dist:
                 sl = entry - min_sl_dist
@@ -1661,38 +1671,34 @@ class ICTSMCStrategy(BaseStrategy):
             if 0.40 <= entry_dr_pct <= 0.60:
                 details.append(f"❌ Вход в центральной зоне флэта ({entry_dr_pct*100:.1f}% DR в 40%–60%) — заблокировано")
                 return self._make_result(
-                    StrategySignal(direction="NEUTRAL", confidence=0, details=details),
+                    StrategySignal(direction="NEUTRAL", confidence=0, details=details, rejection_reasons=["EQUILIBRIUM_ZONE"]),
                     details + ["Вход в 40%–60% Equilibrium жестко заблокирован"]
                 )
             if entry_dr_pct >= 0.45:
                 details.append(f"❌ Покупка >= 45% DR ({entry_dr_pct*100:.1f}%) — заблокировано")
                 return self._make_result(
-                    StrategySignal(direction="NEUTRAL", confidence=0, details=details),
+                    StrategySignal(direction="NEUTRAL", confidence=0, details=details, rejection_reasons=["NOT_IN_DISCOUNT"]),
                     details + ["Покупка >= 45% DR жестко заблокирована"]
                 )
 
-            # Гарантия адаптивного диапазона SL для золота ($10.00 - $32.50)
-            if is_gold:
-                sl_dist = entry - sl
-                if sl_dist < 10.0:
-                    sl = entry - 10.0
-                elif sl_dist > 32.50:
-                    sl = entry - 32.50
+            # Строгое правило: НИКОГДА искусственно не урезаем широкий структурный SL ради подгонки под риск!
+            if is_gold and (entry - sl) < abs_min_gold_sl:
+                sl = entry - abs_min_gold_sl
 
             risk = entry - sl
 
-            # ═══ TP на ликвидности: Swing R:R >= 1:2.5 (цели +$40 до +$120) ═══
+            # ═══ TP на ликвидности: Intraday XAUUSD R:R >= 1:2.0 ═══
             if is_gold:
-                tp_buffer = max(0.50, min(1.00, 0.05 * atr))
+                tp_buffer = max(0.30, min(0.80, 0.05 * atr))
                 liq_target = self._find_liquidity_target(swing_highs, swing_lows, direction, entry, sl, df_d1=df_d1)
-                if liq_target and (liq_target - tp_buffer - entry) >= 2.5 * risk:
+                if liq_target and (liq_target - tp_buffer - entry) >= 2.0 * risk:
                     tp1 = liq_target - tp_buffer
-                    tp2 = entry + max(3.5 * risk, (tp1 - entry) * 1.35)
+                    tp2 = entry + max(3.0 * risk, (tp1 - entry) * 1.35)
                     details.append(f"🎯 TP1 на институциональном пуле ликвидности (Swing High/PDH): {self._format_price(tp1, symbol)} (R:R {((tp1-entry)/risk):.1f})")
                 else:
-                    tp1 = entry + 3.0 * risk
-                    tp2 = entry + 4.0 * risk
-                    details.append(f"🎯 TP1 на расчетном институциональном свинг-таргете (3.0R): {self._format_price(tp1, symbol)}")
+                    tp1 = entry + 2.0 * risk
+                    tp2 = entry + 3.0 * risk
+                    details.append(f"🎯 TP1 на расчетном интрадей-таргете (2.0R): {self._format_price(tp1, symbol)}")
             else:
                 tp_buffer = max(3.5 * pip_unit, 0.12 * atr)
                 adx_low = bool('adx' in df.columns and pd.notna(df['adx'].iloc[-1]) and df['adx'].iloc[-1] < 25.0)
@@ -1721,13 +1727,11 @@ class ICTSMCStrategy(BaseStrategy):
                 elif ote_entry > current_price and (ote_entry - current_price) <= max_entry_dist:
                     candidates.append(ote_entry)
             if ob_zone:
-                # Вход на нижней границе медвежьего OB (первое касание) или 50%
                 ob_entry = ob_zone[1] if ob_zone[1] > current_price else (ob_zone[0] + ob_zone[1]) / 2
                 if ob_entry > current_price and (ob_entry - current_price) <= max_entry_dist:
                     candidates.append(ob_entry)
                 elif ob_zone[0] > current_price and (ob_zone[0] - current_price) <= max_entry_dist:
                     candidates.append(ob_zone[0])
-            # 50% Consequent Encroachment для FVG в SHORT (вместо продажи на самом дне fvg_zone[0])
             if fvg_zone:
                 fvg_ce = fvg_zone[0] + 0.5 * (fvg_zone[1] - fvg_zone[0])
                 if fvg_ce > current_price and (fvg_ce - current_price) <= max_entry_dist:
@@ -1738,7 +1742,6 @@ class ICTSMCStrategy(BaseStrategy):
                 order_type = "SELL_MARKET"
                 candidates = [current_price]
             else:
-                # Если цена находится ПРЯМО В ЗОНЕ Order Block или FVG — вход моментальный
                 if not candidates and ob_zone and ob_zone[1] - 0.35 * atr <= current_price <= ob_zone[0]:
                     candidates.append(current_price)
                 if not candidates and fvg_zone and fvg_zone[0] - 0.35 * atr <= current_price <= fvg_zone[1]:
@@ -1747,7 +1750,8 @@ class ICTSMCStrategy(BaseStrategy):
                 if not candidates:
                     return self._make_result(
                         StrategySignal(direction="NEUTRAL", confidence=0,
-                                      details=details + ["Зона входа слишком далеко от текущей цены (>2.5 ATR)"]),
+                                      details=details + ["Зона входа слишком далеко от текущей цены (>2.5 ATR)"],
+                                      rejection_reasons=["ENTRY_TOO_FAR"]),
                         details + ["Цена ушла слишком далеко от институциональной зоны — сетап пропущен"]
                     )
                 entry = min(candidates)
@@ -1760,10 +1764,6 @@ class ICTSMCStrategy(BaseStrategy):
 
             # Анатомический структурный SL за OB high / FVG high / swing high + буфер
             base_sl = ob_zone[0] if ob_zone else (fvg_zone[1] if fvg_zone else hh1)
-            if is_gold:
-                sl_buffer = max(0.80, min(1.20, 0.15 * atr))
-            else:
-                sl_buffer = max(2.5 * pip_unit, 0.25 * atr)
             sl = base_sl + sl_buffer
             if (sl - entry) < min_sl_dist:
                 sl = entry + min_sl_dist
@@ -1772,38 +1772,34 @@ class ICTSMCStrategy(BaseStrategy):
             if 0.40 <= entry_dr_pct <= 0.60:
                 details.append(f"❌ Вход в центральной зоне флэта ({entry_dr_pct*100:.1f}% DR в 40%–60%) — заблокировано")
                 return self._make_result(
-                    StrategySignal(direction="NEUTRAL", confidence=0, details=details),
+                    StrategySignal(direction="NEUTRAL", confidence=0, details=details, rejection_reasons=["EQUILIBRIUM_ZONE"]),
                     details + ["Вход в 40%–60% Equilibrium жестко заблокирован"]
                 )
             if entry_dr_pct <= 0.55:
                 details.append(f"❌ Продажа <= 55% DR ({entry_dr_pct*100:.1f}%) — заблокировано")
                 return self._make_result(
-                    StrategySignal(direction="NEUTRAL", confidence=0, details=details),
+                    StrategySignal(direction="NEUTRAL", confidence=0, details=details, rejection_reasons=["NOT_IN_PREMIUM"]),
                     details + ["Продажа <= 55% DR жестко заблокирована"]
                 )
 
-            # Гарантия адаптивного диапазона SL для золота ($10.00 - $32.50)
-            if is_gold:
-                sl_dist = sl - entry
-                if sl_dist < 10.0:
-                    sl = entry + 10.0
-                elif sl_dist > 32.50:
-                    sl = entry + 32.50
+            # Строгое правило: НИКОГДА искусственно не урезаем широкий структурный SL ради подгонки под риск!
+            if is_gold and (sl - entry) < abs_min_gold_sl:
+                sl = entry + abs_min_gold_sl
 
             risk = sl - entry
 
-            # ═══ TP на ликвидности: Swing R:R >= 1:2.5 (цели +$40 до +$120) ═══
+            # ═══ TP на ликвидности: Intraday XAUUSD R:R >= 1:2.0 ═══
             if is_gold:
-                tp_buffer = max(0.50, min(1.00, 0.05 * atr))
+                tp_buffer = max(0.30, min(0.80, 0.05 * atr))
                 liq_target = self._find_liquidity_target(swing_highs, swing_lows, direction, entry, sl, df_d1=df_d1)
-                if liq_target and (entry - (liq_target + tp_buffer)) >= 2.5 * risk:
+                if liq_target and (entry - (liq_target + tp_buffer)) >= 2.0 * risk:
                     tp1 = liq_target + tp_buffer
-                    tp2 = entry - max(3.5 * risk, (entry - tp1) * 1.35)
+                    tp2 = entry - max(3.0 * risk, (entry - tp1) * 1.35)
                     details.append(f"🎯 TP1 на институциональном пуле ликвидности (Swing Low/PDL): {self._format_price(tp1, symbol)} (R:R {((entry-tp1)/risk):.1f})")
                 else:
-                    tp1 = entry - 3.0 * risk
-                    tp2 = entry - 4.0 * risk
-                    details.append(f"🎯 TP1 на расчетном институциональном свинг-таргете (3.0R): {self._format_price(tp1, symbol)}")
+                    tp1 = entry - 2.0 * risk
+                    tp2 = entry - 3.0 * risk
+                    details.append(f"🎯 TP1 на расчетном интрадей-таргете (2.0R): {self._format_price(tp1, symbol)}")
             else:
                 tp_buffer = max(3.5 * pip_unit, 0.12 * atr)
                 adx_low = bool('adx' in df.columns and pd.notna(df['adx'].iloc[-1]) and df['adx'].iloc[-1] < 25.0)
@@ -1826,9 +1822,9 @@ class ICTSMCStrategy(BaseStrategy):
 
         risk = abs(entry - sl)
 
-        # ── Институциональный лимит максимального стоп-лосса (Outlier Risk Protection) ──
+        # ── Институциональный лимит максимального стоп-лосса и проверка риск-бюджета ──
         if is_gold:
-            max_sl_limit = 32.50  # Максимум $32.50 для золота (жесткий потолок риска <= $65.00 при min 0.02 лота)
+            max_sl_limit = 25.00  # Абсолютный потолок $25.00 для золота (0.50% макс риск на $5,000 при мин лоте 0.01)
         elif 'JPY' in sym_clean:
             max_sl_limit = 0.85
         elif 'BTC' in sym_clean:
@@ -1843,31 +1839,76 @@ class ICTSMCStrategy(BaseStrategy):
                 StrategySignal(
                     direction="NEUTRAL",
                     confidence=0,
-                    details=details + [f"Стоп-лосс слишком широкий ({risk:.2f} > max {max_sl_limit:.2f}) — аномальный риск"]
+                    details=details + [f"⛔ Стоп-лосс слишком широкий ({risk:.2f} > max {max_sl_limit:.2f}) — превышает лимит риска (NO TRADE)"],
+                    rejection_reasons=["SL_EXCEEDS_MAX_RISK_LIMIT"],
                 ),
-                details + [f"Сетап отброшен: риск по стоп-лоссу превышает институциональный лимит безопасности ({max_sl_limit:.2f})"]
+                details + [f"Сетап отброшен: структурный SL ({risk:.2f}) превышает лимит риска ({max_sl_limit:.2f}). Искусственное сужение стопа запрещено."]
             )
+
+        # Проверяем единый калькулятор лота и риск-бюджета
+        calc_lot = 0.01
+        risk_pct_val = config.AUTOTRADE_DEFAULT_RISK
+        risk_usd_val = 0.0
+        try:
+            from trading.execution_bridge import bridge_manager
+            risk_pct_val = float(getattr(bridge_manager, "default_risk", config.AUTOTRADE_DEFAULT_RISK))
+            acct_bal = float(getattr(bridge_manager, "account_equity", 0.0) or getattr(bridge_manager, "account_balance", 0.0) or 5000.0)
+            sl_pips_val = risk / pip_unit if pip_unit > 0 else 0.0
+            calc_lot = bridge_manager.calculate_lot(
+                sym_clean,
+                sl_pips_val,
+                balance=acct_bal,
+                risk_pct=risk_pct_val,
+                sl_dist_usd=risk if is_gold else None,
+                entry=entry,
+                sl=sl,
+            )
+            if calc_lot <= 0.0:
+                max_budget_usd = acct_bal * (min(risk_pct_val, config.AUTOTRADE_MAX_RISK) / 100.0)
+                return self._make_result(
+                    StrategySignal(
+                        direction="NEUTRAL",
+                        confidence=0,
+                        details=details + [
+                            f"⛔ NO TRADE: Структурный SL ({risk:.2f}) при минимальном лоте 0.01 превышает риск-бюджет "
+                            f"${max_budget_usd:.2f} ({risk_pct_val:.2f}% от ${acct_bal:.0f})"
+                        ],
+                        rejection_reasons=["MIN_LOT_EXCEEDS_RISK_BUDGET"],
+                    ),
+                    details + ["Сетап отклонен риск-менеджером: минимальный лот 0.01 превышает допустимый риск на сделку (NO TRADE)"]
+                )
+            if is_gold:
+                risk_usd_val = round(calc_lot * risk * 100.0, 2)
+            else:
+                risk_usd_val = round(calc_lot * sl_pips_val * 10.0, 2)
+        except Exception as risk_err:
+            logger.debug("Risk budget check fallback in ICTSMCStrategy: %s", risk_err)
 
         reward_1 = abs(tp1 - entry)
         rr1 = reward_1 / risk if risk > 0 else 0.0
 
-        min_rr = 2.5 if is_gold else 1.5
+        min_rr = 2.0 if is_gold else 1.5
         if round(rr1, 2) < min_rr:
             return self._make_result(
-                StrategySignal(direction="NEUTRAL", confidence=0, details=[f"R:R 1:{rr1:.2f} < 1:{min_rr:.1f} — отброшен"]),
-                [f"Сетап не соответствует критерию Swing R:R >= 1:{min_rr:.1f}"]
+                StrategySignal(
+                    direction="NEUTRAL",
+                    confidence=0,
+                    details=[f"R:R 1:{rr1:.2f} < 1:{min_rr:.1f} — отброшен"],
+                    rejection_reasons=["RR_BELOW_MINIMUM"],
+                ),
+                [f"Сетап не соответствует критерию Intraday R:R >= 1:{min_rr:.1f}"]
             )
 
         # ═══ 4-ФАКТОРНАЯ ОЦЕНКА ЗВЁЗД ДЛЯ XAUUSD ═══
         if is_gold:
-            # 1. Направление D1/H4
+            # 1. Направление HTF (D1/H1)
             f1_trend = (d1_trend == "UP" if direction == "LONG" else (d1_trend == "DOWN" if direction == "SHORT" else False)) if ('d1_trend' in locals() and d1_trend and d1_trend != 'NEUTRAL') else True
             # 2. Снятие ликвидности (Sweep)
             f2_sweep = has_liquidity_sweep
             # 3. Импульсный возврат с имбалансом (Displacement + FVG/OB)
             f3_poi = bool((ob_zone is not None or fvg_zone is not None or ote_entry is not None or (dr_pct < 0.40 if direction == 'LONG' else dr_pct > 0.60)) and ltf_confirmed)
-            # 4. Запас хода до цели >= 2.5R
-            f4_headroom = bool(rr1 >= 2.5)
+            # 4. Запас хода до цели >= 2.0R
+            f4_headroom = bool(rr1 >= 2.0)
 
             aligned_factors = sum([1 for f in [f1_trend, f2_sweep, f3_poi, f4_headroom] if f])
             if aligned_factors >= 4:
@@ -1882,6 +1923,9 @@ class ICTSMCStrategy(BaseStrategy):
                 confidence_stars = min(2, aligned_factors)
                 details.append(f"ℹ️ Оценка XAUUSD: {aligned_factors}/4 факторов (слабый сетап {confidence_stars}★)")
 
+        now_utc_iso = (current_time or datetime.now(timezone.utc)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        setup_id = f"{sym_clean}_{timeframe}_{direction}_{int((current_time or datetime.now(timezone.utc)).timestamp())}"
+
         signal = StrategySignal(
             direction=direction,
             order_type=order_type,
@@ -1891,8 +1935,14 @@ class ICTSMCStrategy(BaseStrategy):
             stop_loss=sl,
             take_profit_1=tp1,
             take_profit_2=tp2,
-            risk_reward=round(rr1, 1),
+            risk_reward=round(rr1, 2),
             details=details,
+            setup_id=setup_id,
+            created_at=now_utc_iso,
+            timeframes_used=["D1", "H1", "M15", "M5"] if is_gold else [str(timeframe).upper()],
+            lot=calc_lot,
+            risk_usd=risk_usd_val,
+            risk_pct=risk_pct_val,
         )
         if 'entry_dr_pct' in locals() and entry_dr_pct is not None:
             signal.dr_pct = round(entry_dr_pct, 4)

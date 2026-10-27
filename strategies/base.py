@@ -69,6 +69,16 @@ class StrategySignal:
     risk_reward: Optional[float] = None
     details: list[str] = field(default_factory=list)
 
+    # Единый контракт сигнала и риска
+    setup_id: str = ""
+    created_at: str = ""
+    expires_at: str = ""
+    timeframes_used: list[str] = field(default_factory=list)
+    lot: float = 0.0
+    risk_usd: float = 0.0
+    risk_pct: float = 0.0
+    rejection_reasons: list[str] = field(default_factory=list)
+
     @property
     def sl(self) -> Optional[float]:
         return self.stop_loss
@@ -143,6 +153,16 @@ class MultiTFResult:
     pips_sl: Optional[float] = None
     pips_tp1: Optional[float] = None
     pips_tp2: Optional[float] = None
+
+    # Единый контракт сигнала и риска
+    setup_id: str = ""
+    created_at: str = ""
+    expires_at: str = ""
+    timeframes_used: list[str] = field(default_factory=list)
+    lot: float = 0.0
+    risk_usd: float = 0.0
+    risk_pct: float = 0.0
+    rejection_reasons: list[str] = field(default_factory=list)
 
     # Детали для отображения
     strategy_verdicts: list[tuple[str, str, str]] = field(default_factory=list)
