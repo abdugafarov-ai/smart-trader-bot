@@ -20,6 +20,9 @@ async def main():
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
     )
     
+    # Проверка целостности и безопасности конфигурации при старте
+    config.validate_config(raise_on_error=True)
+
     bot = Bot(token=config.BOT_TOKEN, default=DefaultBotProperties(protect_content=True))
     dp = Dispatcher()
 
@@ -43,6 +46,12 @@ async def main():
     
     async def on_startup():
         nonlocal bridge_runner
+        # Валидация активного торгового профиля и риск-границ
+        cfg_check = config.validate_config(raise_on_error=False)
+        if not cfg_check["valid"]:
+            logging.critical("Configuration validation failed on startup: %s", cfg_check["errors"])
+            raise ValueError("Invalid configuration: " + "; ".join(cfg_check["errors"]))
+
         # Инициализация базы данных
         await init_db()
         await init_users_table()
@@ -55,7 +64,10 @@ async def main():
         except Exception as e:
             logging.error("Failed to load bridge settings on startup: %s", e)
 
-        logging.info("Database initialized. Admin ID: %d", config.ADMIN_ID)
+        logging.info(
+            "Database initialized. Profile: %s | Admin ID: %d",
+            config.ACTIVE_TRADING_PROFILE, config.ADMIN_ID
+        )
         logging.info("Bot started. Scanning %d pairs every %d min.",
                       len(config.ALL_PAIRS), config.SCAN_INTERVAL_MINUTES)
 

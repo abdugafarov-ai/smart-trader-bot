@@ -1338,14 +1338,15 @@ class ICTSMCStrategy(BaseStrategy):
         sweep_pdh = bool(dol.get("pdh_swept"))
         sweep_pdl = bool(dol.get("pdl_swept"))
         sweep_judas = bool(judas.get("sweep_type"))
-        sweep_wick = bool(bull_wick_sweep or bear_wick_sweep)
+        sweep_wick = bool(bear_wick_sweep if direction == "LONG" else bull_wick_sweep)
         recent_12 = df.iloc[-min(12, len(df)):]
         local_low_swept = bool(direction == "LONG" and dr_pct < 0.45 and float(recent_12['low'].min()) <= hl1 * 1.002)
         local_high_swept = bool(direction == "SHORT" and dr_pct > 0.55 and float(recent_12['high'].max()) >= hh1 * 0.998)
+        htf_directional_sweep = bool(sweep_pdl if direction == "LONG" else sweep_pdh)
 
-        has_liquidity_sweep = bool(sweep_judas or sweep_wick or local_low_swept or local_high_swept or sweep_pdl or sweep_pdh)
+        has_liquidity_sweep = bool(sweep_judas or sweep_wick or local_low_swept or local_high_swept or htf_directional_sweep)
         if has_liquidity_sweep:
-            details.append(f"⚡ Подтверждено снятие ликвидности в рабочей зоне (Wick/Local: {sweep_wick or local_low_swept or local_high_swept}, Judas: {sweep_judas})")
+            details.append(f"⚡ Подтверждено снятие ликвидности в рабочей зоне (Wick/Local: {sweep_wick or local_low_swept or local_high_swept}, PDL/PDH: {htf_directional_sweep}, Judas: {sweep_judas})")
 
         # ═══ 100% ЖЕСТКИЙ БЛОК ДИРЕКЦИИ ОТНОСИТЕЛЬНО DEALING RANGE БЕЗ ЛАЗЕЕК ═══
         if direction == "LONG":
@@ -1901,29 +1902,64 @@ class ICTSMCStrategy(BaseStrategy):
                 [f"Сетап не соответствует критерию Intraday R:R >= 1:{min_rr:.1f}"]
             )
 
-        # ═══ 4-ФАКТОРНАЯ ОЦЕНКА ЗВЁЗД ДЛЯ XAUUSD ═══
+        # ═══ 4-ФАКТОРНАЯ ОЦЕНКА ЗВЁЗД ДЛЯ XAUUSD (МОДЕЛЬ A & МОДЕЛЬ B) ═══
         if is_gold:
-            # 1. Направление HTF (D1/H1)
-            f1_trend = (d1_trend == "UP" if direction == "LONG" else (d1_trend == "DOWN" if direction == "SHORT" else False)) if ('d1_trend' in locals() and d1_trend and d1_trend != 'NEUTRAL') else True
-            # 2. Снятие ликвидности (Sweep)
-            f2_sweep = has_liquidity_sweep
-            # 3. Импульсный возврат с имбалансом (Displacement + FVG/OB)
-            f3_poi = bool((ob_zone is not None or fvg_zone is not None or ote_entry is not None or (dr_pct < 0.40 if direction == 'LONG' else dr_pct > 0.60)) and ltf_confirmed)
-            # 4. Запас хода до цели >= 2.0R
-            f4_headroom = bool(rr1 >= 2.0)
+            entry_model_name = (
+                "MODEL_A_SWEEP_MSS_FVG"
+                if ((sweep_wick or sweep_judas) and fvg_zone is not None and ob_zone is None)
+                else "MODEL_B_TREND_OB_PULLBACK"
+            )
+            details.append(f"📐 Торговая модель входа: {entry_model_name}")
 
-            aligned_factors = sum([1 for f in [f1_trend, f2_sweep, f3_poi, f4_headroom] if f])
+            # 1. Направление HTF (D1/H1 согласование импульса)
+            htf_d1_ok = (
+                (d1_trend == "UP" if direction == "LONG" else (d1_trend == "DOWN" if direction == "SHORT" else False))
+                if ("d1_trend" in locals() and d1_trend and d1_trend != "NEUTRAL")
+                else True
+            )
+            htf_impulse_ok = bool(bull_impulse if direction == "LONG" else bear_impulse)
+            f1_trend = bool(htf_d1_ok and htf_impulse_ok)
+
+            # 2. Зона ценности (Discount < 45% DR для LONG / Premium > 55% DR для SHORT) + активная POI (OB / FVG / OTE / Sweep)
+            in_value_dr = bool(entry_dr_pct < 0.45 if direction == "LONG" else entry_dr_pct > 0.55)
+            has_active_poi = bool(
+                ob_zone is not None
+                or fvg_zone is not None
+                or ote_entry is not None
+                or has_liquidity_sweep
+            )
+            f2_value_zone = bool(in_value_dr and has_active_poi)
+
+            # 3. Подтверждение структуры на младшем ТФ (M5 MSS + Displacement)
+            f3_ltf_mss = bool(ltf_confirmed)
+
+            # 4. Запас хода R:R >= 1:2.0 и валидный риск-бюджет (calc_lot >= 0.01)
+            f4_headroom = bool(rr1 >= 2.0 and calc_lot >= 0.01)
+
+            aligned_factors = sum([1 for f in [f1_trend, f2_value_zone, f3_ltf_mss, f4_headroom] if f])
             if aligned_factors >= 4:
                 confidence_stars = 4
-                if in_kill_zone or in_macro or (ote_entry is not None):
+                if (
+                    has_liquidity_sweep
+                    or in_kill_zone
+                    or in_macro
+                    or (ote_entry is not None)
+                    or bool(smt.get("smt_confirmed"))
+                ):
                     confidence_stars = 5
-                details.append(f"⭐ Институциональная оценка XAUUSD: 4/4 фактора подтверждены ({confidence_stars}★)")
+                details.append(
+                    f"⭐ Институциональная оценка XAUUSD ({entry_model_name}): 4/4 базовых фактора подтверждены ({confidence_stars}★)"
+                )
             elif aligned_factors == 3:
                 confidence_stars = 3
-                details.append("ℹ️ Оценка XAUUSD: 3/4 фактора подтверждены (3★, только ручной мониторинг)")
+                details.append(
+                    f"ℹ️ Оценка XAUUSD ({entry_model_name}): 3/4 фактора подтверждены (3★, только ручной мониторинг)"
+                )
             else:
                 confidence_stars = min(2, aligned_factors)
-                details.append(f"ℹ️ Оценка XAUUSD: {aligned_factors}/4 факторов (слабый сетап {confidence_stars}★)")
+                details.append(
+                    f"ℹ️ Оценка XAUUSD ({entry_model_name}): {aligned_factors}/4 факторов (слабый сетап {confidence_stars}★)"
+                )
 
         from datetime import timedelta
         now_dt = current_time or datetime.now(timezone.utc)

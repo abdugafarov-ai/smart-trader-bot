@@ -458,23 +458,194 @@ def should_force_eod_flat(now_dt: Optional[datetime] = None) -> tuple[bool, str]
         return True, "EOD_ROLLOVER_FLAT (20:40 UTC)"
     return False, ""
 
-# ── FundingPips Challenge Profile ( 2 Step Flex) ───────
-CHALLENGE_BROKER = 'FundingPips'
-CHALLENGE_ACCOUNT = '21027982'
-CHALLENGE_PLAN = ' · 2 Step Flex (Biggest Max Loss)'
-CHALLENGE_INITIAL_BALANCE = 5000.0
-CHALLENGE_P1_TARGET_PCT = 10.0   # + -> ,500
-CHALLENGE_P2_TARGET_PCT = 8.0    # + -> ,400
-CHALLENGE_DAILY_LOSS_PCT = 4.0   # -/day
-CHALLENGE_MAX_LOSS_PCT = 12.0    # - static (floor ,400)
-CHALLENGE_MIN_DAYS = 1
-CHALLENGE_SPLIT = 'Up to 100%'
-CHALLENGE_PRICE_USD = 39.0
+# ── Динамическая загрузка профиля проп-челленджа (challenge_config.json) ───
+import json as _json
+
+_challenge_cfg_path = Path(__file__).parent / "challenge_config.json"
+_challenge_cfg: dict = {}
+if _challenge_cfg_path.exists():
+    try:
+        with open(_challenge_cfg_path, "r", encoding="utf-8") as _cf:
+            _loaded_cfg = _json.load(_cf)
+            if isinstance(_loaded_cfg, dict):
+                _challenge_cfg = _loaded_cfg
+    except Exception:
+        _challenge_cfg = {}
+
+
+def _mask_account_id(acct: str) -> str:
+    acct_s = str(acct or "").strip()
+    if len(acct_s) <= 4:
+        return "****"
+    return "*" * (len(acct_s) - 4) + acct_s[-4:]
+
+
+CHALLENGE_BROKER: str = os.getenv("CHALLENGE_BROKER", str(_challenge_cfg.get("broker", "FundingPips")))
+CHALLENGE_ACCOUNT: str = os.getenv("CHALLENGE_ACCOUNT", str(_challenge_cfg.get("account_number", "")))
+CHALLENGE_ACCOUNT_MASKED: str = _mask_account_id(CHALLENGE_ACCOUNT)
+CHALLENGE_PLAN: str = os.getenv(
+    "CHALLENGE_PLAN", str(_challenge_cfg.get("plan_name", "$5k · 2 Step Flex (Biggest Max Loss)"))
+)
+CHALLENGE_INITIAL_BALANCE: float = float(
+    os.getenv("CHALLENGE_INITIAL_BALANCE", str(_challenge_cfg.get("initial_balance_usd", 5000.0)))
+)
+CHALLENGE_P1_TARGET_PCT: float = float(
+    os.getenv("CHALLENGE_P1_TARGET_PCT", str(_challenge_cfg.get("phase_1_target_pct", 10.0)))
+)
+CHALLENGE_P2_TARGET_PCT: float = float(
+    os.getenv("CHALLENGE_P2_TARGET_PCT", str(_challenge_cfg.get("phase_2_target_pct", 8.0)))
+)
+CHALLENGE_DAILY_LOSS_PCT: float = float(
+    os.getenv("CHALLENGE_DAILY_LOSS_PCT", str(_challenge_cfg.get("daily_loss_pct", 4.0)))
+)
+CHALLENGE_MAX_LOSS_PCT: float = float(
+    os.getenv("CHALLENGE_MAX_LOSS_PCT", str(_challenge_cfg.get("max_loss_pct", 12.0)))
+)
+CHALLENGE_MIN_DAYS: int = int(
+    os.getenv("CHALLENGE_MIN_DAYS", str(_challenge_cfg.get("min_trading_days", 1)))
+)
+CHALLENGE_SPLIT: str = os.getenv(
+    "CHALLENGE_SPLIT", str(_challenge_cfg.get("profit_split_pct", "Up to 100%"))
+)
+CHALLENGE_PRICE_USD: float = float(
+    os.getenv("CHALLENGE_PRICE_USD", str(_challenge_cfg.get("challenge_price_usd", 39.0)))
+)
 
 # ── FundingPips Hard Equity Floor & Safety Buffer ───────
-CHALLENGE_MIN_EQUITY_FLOOR_USD = 4400.0   # Абсолютный пол просадки брокера FundingPips ($4,400.00)
-HARD_EQUITY_STOP_USD = 4450.0             # Аварийный хард-стоп эквити бота (запас $50.00 до пола брокера)
+_default_equity_floor = round(CHALLENGE_INITIAL_BALANCE * (1.0 - (CHALLENGE_MAX_LOSS_PCT / 100.0)), 2)
+CHALLENGE_MIN_EQUITY_FLOOR_USD: float = float(
+    os.getenv(
+        "CHALLENGE_MIN_EQUITY_FLOOR_USD",
+        str(_challenge_cfg.get("min_equity_floor_usd", _default_equity_floor)),
+    )
+)
+HARD_EQUITY_STOP_USD: float = float(
+    os.getenv(
+        "HARD_EQUITY_STOP_USD",
+        str(_challenge_cfg.get("hard_equity_stop_usd", CHALLENGE_MIN_EQUITY_FLOOR_USD + 50.0)),
+    )
+)
 
 # ── Часовой пояс сервера брокера MT5 (FundingPips) ─────
 # FundingPips сбрасывает дневной лимит в 00:00 сервера MT5 (EET: UTC+2 зима, UTC+3 лето)
-BROKER_TIMEZONE_NAME = 'Europe/Helsinki'
+BROKER_TIMEZONE_NAME: str = os.getenv("BROKER_TIMEZONE_NAME", "Europe/Helsinki")
+
+# ── Явные торговые профили (Explicit Trading Profiles) ─────────────────
+TRADING_PROFILES: dict[str, dict] = {
+    "XAUUSD_INTRADAY": {
+        "name": "XAUUSD_INTRADAY",
+        "description": "Strictly Intraday Gold (XAUUSD) via MT5 — H1 Context -> M15 POI -> M5 Trigger",
+        "symbol": "XAUUSD",
+        "allowed_symbols": ["XAUUSD"],
+        "timeframes": {
+            "context": "D1",
+            "htf": "H1",
+            "itf": "M15",
+            "ltf": "M5",
+        },
+        "multi_tf_list": ["M5", "M15", "H1", "D1"],
+        "default_timeframe": "M15",
+        "default_risk_pct": 0.25,
+        "max_risk_pct": 0.50,
+        "min_lot": 0.01,
+        "max_lot": 0.50,
+        "min_rr": 2.0,
+        "min_sl_usd": 2.0,
+        "max_sl_usd_at_default_risk": 12.50,
+        "max_sl_usd_hard_cap": 25.00,
+        "max_spread_pips": 6.0,
+        "max_spread_usd": 0.60,
+        "kill_zones": {
+            "london_open": {"timezone": "Europe/London", "start": "08:00", "end": "11:00"},
+            "ny_open": {"timezone": "America/New_York", "start": "08:00", "end": "11:30"},
+        },
+        "eod_new_trades_cutoff_utc": EOD_NEW_TRADES_CUTOFF_UTC,
+        "eod_flat_close_utc": EOD_FLAT_CLOSE_UTC,
+        "friday_new_trades_cutoff_utc": (19, 0),
+        "friday_flat_close_utc": (19, 30),
+        "auto_be_trigger_r": 1.0,
+        "partial_close_enabled": False,
+        "max_concurrent_positions": 1,
+        "autotrade_enabled_default": False,
+        "primary_entry_model": "MODEL_B_TREND_OB_PULLBACK",
+        "secondary_entry_model": "MODEL_A_SWEEP_MSS_FVG",
+        "status": "RESEARCH_VALIDATED_DEMO_CANDIDATE",
+    },
+    "LEGACY_MULTI_ASSET": {
+        "name": "LEGACY_MULTI_ASSET",
+        "description": "Legacy multi-currency / multi-strategy profile (EXPERIMENTAL / DISABLED BY DEFAULT)",
+        "symbol": "MULTI",
+        "allowed_symbols": BANNED_PAIRS,
+        "default_timeframe": "H1",
+        "default_risk_pct": 0.25,
+        "max_risk_pct": 0.50,
+        "min_lot": 0.01,
+        "max_lot": 0.50,
+        "min_rr": 1.5,
+        "autotrade_enabled_default": False,
+        "status": "EXPERIMENTAL_DISABLED",
+    },
+}
+
+ACTIVE_TRADING_PROFILE: str = os.getenv("ACTIVE_TRADING_PROFILE", "XAUUSD_INTRADAY").strip().upper()
+
+
+def get_active_profile() -> dict:
+    """Возвращает словарь настроек активного торгового профиля."""
+    return TRADING_PROFILES.get(ACTIVE_TRADING_PROFILE, TRADING_PROFILES["XAUUSD_INTRADAY"])
+
+
+def validate_config(raise_on_error: bool = True) -> dict:
+    """
+    Проверяет целостность и безопасность критических настроек при старте системы.
+    При обнаружении конфликта или выхода за безопасные границы либо выбрасывает ValueError,
+    либо возвращает словарь с перечнем ошибок.
+    """
+    errors: list[str] = []
+
+    if ACTIVE_TRADING_PROFILE not in TRADING_PROFILES:
+        errors.append(f"Unknown ACTIVE_TRADING_PROFILE='{ACTIVE_TRADING_PROFILE}'")
+
+    if not (0.0 < AUTOTRADE_DEFAULT_RISK <= AUTOTRADE_MAX_RISK <= 1.0):
+        errors.append(
+            f"Invalid risk bounds: AUTOTRADE_DEFAULT_RISK={AUTOTRADE_DEFAULT_RISK}%, "
+            f"AUTOTRADE_MAX_RISK={AUTOTRADE_MAX_RISK}% (required: 0 < default <= max <= 1.0%)"
+        )
+
+    if not (0.01 <= AUTOTRADE_DEFAULT_LOT <= 0.50):
+        errors.append(
+            f"Invalid AUTOTRADE_DEFAULT_LOT={AUTOTRADE_DEFAULT_LOT} (required: 0.01 <= lot <= 0.50)"
+        )
+
+    if CHALLENGE_INITIAL_BALANCE <= 0:
+        errors.append(f"Invalid CHALLENGE_INITIAL_BALANCE={CHALLENGE_INITIAL_BALANCE}")
+
+    if not (CHALLENGE_MIN_EQUITY_FLOOR_USD + 20.0 <= HARD_EQUITY_STOP_USD < CHALLENGE_INITIAL_BALANCE):
+        errors.append(
+            f"Invalid HARD_EQUITY_STOP_USD={HARD_EQUITY_STOP_USD} "
+            f"(must be >= floor {CHALLENGE_MIN_EQUITY_FLOOR_USD} + $20 buffer and < {CHALLENGE_INITIAL_BALANCE})"
+        )
+
+    if not (0.0 < MAX_DAILY_DRAWDOWN_PCT < CHALLENGE_DAILY_LOSS_PCT):
+        errors.append(
+            f"Invalid MAX_DAILY_DRAWDOWN_PCT={MAX_DAILY_DRAWDOWN_PCT}% "
+            f"(must be > 0 and strictly less than broker limit {CHALLENGE_DAILY_LOSS_PCT}%)"
+        )
+
+    if EOD_NEW_TRADES_CUTOFF_UTC >= EOD_FLAT_CLOSE_UTC:
+        errors.append(
+            f"Invalid EOD schedule: cutoff {EOD_NEW_TRADES_CUTOFF_UTC} must precede flat close {EOD_FLAT_CLOSE_UTC}"
+        )
+
+    if MAX_CONCURRENT_POSITIONS < 1 or MAX_CONCURRENT_ORDERS < 1:
+        errors.append("MAX_CONCURRENT_POSITIONS and MAX_CONCURRENT_ORDERS must be >= 1")
+
+    result = {
+        "valid": len(errors) == 0,
+        "profile": ACTIVE_TRADING_PROFILE,
+        "autotrade_enabled": AUTOTRADE_ENABLED,
+        "errors": errors,
+    }
+    if errors and raise_on_error:
+        raise ValueError("Configuration validation failed: " + "; ".join(errors))
+    return result

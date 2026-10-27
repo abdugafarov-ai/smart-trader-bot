@@ -674,7 +674,70 @@ class TestComprehensiveAudit(unittest.TestCase):
             self.assertFalse(dxy_5.empty, "5-major DXY must be synthesized when EUR/GBP/JPY/CHF/CAD are available!")
             self.assertEqual(len(dxy_5), 5)
 
+    def test_xauusd_intraday_profile_and_validate_config(self):
+        """
+        Verifies:
+        1. Explicit TRADING_PROFILES['XAUUSD_INTRADAY'] exists and has safe intraday defaults.
+        2. validate_config() passes on valid config and raises ValueError on unsafe risk/equity bounds.
+        3. Account number is masked in CHALLENGE_ACCOUNT_MASKED.
+        """
+        self.assertIn("XAUUSD_INTRADAY", config.TRADING_PROFILES)
+        prof = config.get_active_profile()
+        self.assertEqual(prof["symbol"], "XAUUSD")
+        self.assertEqual(prof["default_risk_pct"], 0.25)
+        self.assertEqual(prof["max_risk_pct"], 0.50)
+        self.assertEqual(prof["min_lot"], 0.01)
+        self.assertEqual(prof["min_rr"], 2.0)
+        self.assertFalse(prof["autotrade_enabled_default"])
+        self.assertTrue(config.CHALLENGE_ACCOUNT_MASKED.startswith("*"))
+
+        chk = config.validate_config(raise_on_error=True)
+        self.assertTrue(chk["valid"])
+        self.assertEqual(chk["errors"], [])
+
+        # Unsafe risk bound (default > max) must fail validation
+        with patch.object(config, "AUTOTRADE_DEFAULT_RISK", 0.80), \
+             patch.object(config, "AUTOTRADE_MAX_RISK", 0.50):
+            bad_chk = config.validate_config(raise_on_error=False)
+            self.assertFalse(bad_chk["valid"])
+            with self.assertRaises(ValueError):
+                config.validate_config(raise_on_error=True)
+
+    def test_model_b_pullback_without_outer_sweep_achieves_4_stars(self):
+        """
+        Verifies that Model B (Trend Pullback -> Unmitigated OB in Discount < 45% DR -> M5 MSS)
+        achieves >= 4 stars even when price does NOT sweep the outer swing low (hl1),
+        resolving the 3-star deadlock.
+        """
+        df_d1, df_h1, df_m15, df_m5 = _build_intraday_gold_frames()
+        # Separate the fractal Higher Low (hl1 at idx=17, low=2596.0 > hl2=2595.0 at idx=5)
+        # from the Bullish Order Block at idx=20 (low=2602.5, high=2606.0).
+        # Because idx=19 has low=2602.0 < 2602.5, idx=20 is NOT a 5-bar fractal swing low;
+        # thus hl1=2596.0 (hl1 * 1.002 = 2601.19 < 2605.2), so has_liquidity_sweep is False!
+        df_m15.loc[15, ["open", "high", "low", "close"]] = [2602.0, 2604.0, 2600.0, 2601.0]
+        df_m15.loc[16, ["open", "high", "low", "close"]] = [2601.0, 2602.0, 2598.0, 2599.0]
+        df_m15.loc[17, ["open", "high", "low", "close"]] = [2599.0, 2601.0, 2596.0, 2600.0]
+        df_m15.loc[18, ["open", "high", "low", "close"]] = [2600.0, 2604.0, 2599.0, 2603.0]
+        df_m15.loc[19, ["open", "high", "low", "close"]] = [2603.0, 2606.5, 2602.0, 2605.8]
+
+        df_d1.loc[df_d1.index[-2], "low"] = 2580.0  # Ensure PDL is below 2605.8 so pdl_swept is False
+        kz_time = datetime(2026, 10, 27, 8, 30, tzinfo=timezone.utc)
+        res = self.strategy.analyze(
+            df_m15,
+            symbol="XAUUSD",
+            timeframe="M15",
+            df_d1=df_d1,
+            df_ltf=df_m5,
+            current_time=kz_time,
+        )
+        self.assertEqual(res.signal.direction, "LONG", f"Details: {res.signal.details}")
+        self.assertGreaterEqual(res.signal.confidence, 4, "Model B pullback with M5 MSS must receive >= 4 stars!")
+        joined_details = "\n".join(res.signal.details)
+        self.assertIn("MODEL_B_TREND_OB_PULLBACK", joined_details)
+        self.assertNotIn("Подтверждено снятие ликвидности", joined_details)
+
 
 if __name__ == "__main__":
     unittest.main()
+
 
