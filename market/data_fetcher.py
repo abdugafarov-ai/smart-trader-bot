@@ -111,16 +111,7 @@ class DataFetcher:
         if cache_key in self._cache:
             cache_entry = self._cache[cache_key]
             if time.time() - cache_entry['timestamp'] < self._get_cache_ttl(timeframe):
-                df_cached = cache_entry['data'].copy()
-                live = self.get_live_price(sym_clean)
-                if live and live > 0 and not df_cached.empty:
-                    last_idx = df_cached.index[-1]
-                    df_cached.loc[last_idx, 'close'] = live
-                    if live > df_cached.loc[last_idx, 'high']:
-                        df_cached.loc[last_idx, 'high'] = live
-                    if live < df_cached.loc[last_idx, 'low']:
-                        df_cached.loc[last_idx, 'low'] = live
-                return df_cached
+                return cache_entry['data'].copy()
 
         df = None
 
@@ -137,23 +128,17 @@ class DataFetcher:
                 if config.is_crypto(sym_clean):
                     df = await self._fetch_crypto_binance(sym_clean, timeframe, limit)
                 elif sym_clean == "XAUUSD":
-                    df = await self._fetch_gold_binance(timeframe, limit)
+                    # Hard Rule: For live trading and signals on XAUUSD, never mix or fallback to PAXG!
+                    logger.warning("MT5 broker candles unavailable for XAUUSD %s. Refusing PAXG fallback (NO TRADE).", timeframe)
+                    return pd.DataFrame(columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
                 else:
                     df = await self._fetch_forex_kraken(sym_clean, timeframe, limit)
             except Exception as ex:
                 logger.warning("CCXT fetch error for %s %s: %s", sym_clean, timeframe, ex)
 
         if df is not None and not df.empty:
-            # Накладываем живой тик брокера из терминала MT5
-            live = self.get_live_price(sym_clean)
-            if live and live > 0:
-                last_idx = df.index[-1]
-                df.loc[last_idx, 'close'] = live
-                if live > df.loc[last_idx, 'high']:
-                    df.loc[last_idx, 'high'] = live
-                if live < df.loc[last_idx, 'low']:
-                    df.loc[last_idx, 'low'] = live
-
+            # Note: Closed historical bars must remain strictly immutable to prevent repainting / false confirmation.
+            # Live bid/ask quote is queried separately via get_live_price() during order execution.
             self._cache[cache_key] = {
                 'timestamp': time.time(),
                 'data': df.copy()
@@ -162,7 +147,7 @@ class DataFetcher:
 
         return pd.DataFrame(columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
 
-    def _read_mt5_bars(self, symbol: str, timeframe: str, limit: int = 300) -> Optional[pd.DataFrame]:
+    def _read_mt5_bars(self, symbol: str, timeframe: str, limit: int = 300, closed_only: bool = True) -> Optional[pd.DataFrame]:
         """Читает реальные бары брокера, экспортированные советником MT5."""
         if not os.path.exists(MT5_FILES_DIR):
             return None
@@ -179,7 +164,11 @@ class DataFetcher:
             for col in ['open', 'high', 'low', 'close']:
                 df[col] = pd.to_numeric(df[col], errors='coerce')
             df['volume'] = pd.to_numeric(df['volume'], errors='coerce').fillna(100.0)
-            df = df.dropna(subset=['open', 'high', 'low', 'close']).tail(limit).reset_index(drop=True)
+            df = df.dropna(subset=['open', 'high', 'low', 'close']).reset_index(drop=True)
+            # If closed_only is True, drop the last row which is the current unclosed live candle in MT5 export
+            if closed_only and len(df) > 1:
+                df = df.iloc[:-1].reset_index(drop=True)
+            df = df.tail(limit).reset_index(drop=True)
             return df if not df.empty else None
         except Exception as e:
             logger.debug("Failed reading MT5 bars file %s: %s", fpath, e)

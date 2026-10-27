@@ -61,9 +61,10 @@ WEBAPP_PORT: int = int(os.getenv("WEBAPP_PORT", "8080"))
 WEBAPP_URL: str = ""
 
 # ── Auto-Trading Bridge (MetaTrader 4/5) ───────────────────
-AUTOTRADE_ENABLED: bool = os.getenv("AUTOTRADE_ENABLED", "true").lower() in ("true", "1", "yes")
-AUTOTRADE_DEFAULT_RISK: float = float(os.getenv("AUTOTRADE_DEFAULT_RISK", "0.8"))
-AUTOTRADE_DEFAULT_LOT: float = float(os.getenv("AUTOTRADE_DEFAULT_LOT", "0.02"))
+# Safe Default: Never enable autotrade automatically without explicit manual env or toggle
+AUTOTRADE_ENABLED: bool = os.getenv("AUTOTRADE_ENABLED", "false").lower() in ("true", "1", "yes")
+AUTOTRADE_DEFAULT_RISK: float = float(os.getenv("AUTOTRADE_DEFAULT_RISK", "0.25"))
+AUTOTRADE_DEFAULT_LOT: float = float(os.getenv("AUTOTRADE_DEFAULT_LOT", "0.01"))
 
 # ── Стиль графиков (ict, dark, light) ────────────────────
 CHART_THEME: str = os.getenv("CHART_THEME", "ict")
@@ -72,7 +73,7 @@ CHART_THEME: str = os.getenv("CHART_THEME", "ict")
 MIN_SIGNAL_STARS: int = 4   # Только 4-5 звёзд → уведомление
 
 # ── Мульти-таймфрейм (Фрактальная 3-слойная модель HTF -> ITF -> LTF) ────
-MULTI_TF_LIST: list[str] = ["H1", "H4", "D1", "W1"]
+MULTI_TF_LIST: list[str] = ["M5", "M15", "H1", "D1"]
 
 # ── Новости ───────────────────────────────────────────────
 NEWS_CHECK_INTERVAL_MINUTES: int = 15
@@ -103,6 +104,7 @@ CURRENCY_COUNTRY: dict[str, str] = {
 
 # Какие валюты затрагивает пара
 PAIR_CURRENCIES: dict[str, list[str]] = {
+    "XAUUSD": ["USD"], "GOLD": ["USD"],
     "EURUSD": ["EUR", "USD"], "GBPUSD": ["GBP", "USD"],
     "USDJPY": ["USD", "JPY"], "USDCHF": ["USD", "CHF"],
     "AUDUSD": ["AUD", "USD"], "NZDUSD": ["NZD", "USD"],

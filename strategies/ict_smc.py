@@ -686,10 +686,49 @@ class ICTSMCStrategy(BaseStrategy):
         dir_clean = direction.upper()
 
         if "XAU" in clean_sym or "GOLD" in clean_sym:
-            res["smt_confirmed"] = True
-            res["smt_type"] = "SMT_GOLD_AUTONOMOUS"
-            res["details"].append("⚡ SMT: Для XAUUSD межрыночный анализ автономен (учет чистой институциональной динамики золота)")
-            return res
+            # Rigorous SMT: Gold (XAUUSD) requires inverse divergence comparison with DXY
+            # If DXY data is not available, do NOT fabricate fake SMT confluence
+            try:
+                from market.data_fetcher import DataFetcher
+                fetcher = DataFetcher()
+                df_dxy = fetcher.get_dxy_bars_sync(timeframe, limit=100)
+                if df_dxy is None or df_dxy.empty or len(df_dxy) < 20:
+                    res["smt_confirmed"] = False
+                    res["smt_type"] = "NONE"
+                    res["details"].append("ℹ️ SMT: Данные DXY недоступны для корректной сверки XAUUSD (NO SMT)")
+                    return res
+                # Compare Gold swings vs DXY swings (inverse correlation)
+                sw_dxy_h, sw_dxy_l = self._find_swing_points(df_dxy, lookback=2)
+                if not sw_dxy_h or not sw_dxy_l:
+                    res["smt_confirmed"] = False
+                    return res
+                # In Bullish Gold SMT: Gold makes Lower Low while DXY FAILS to make Higher High
+                if dir_clean == "LONG" and df_primary is not None and not df_primary.empty:
+                    gold_sw_h, gold_sw_l = self._find_swing_points(df_primary, lookback=2)
+                    if len(gold_sw_l) >= 2 and len(sw_dxy_h) >= 2:
+                        gold_ll = gold_sw_l[-1][1] < gold_sw_l[-2][1]
+                        dxy_fail_hh = sw_dxy_h[-1][1] <= sw_dxy_h[-2][1]
+                        if gold_ll and dxy_fail_hh:
+                            res["smt_confirmed"] = True
+                            res["smt_type"] = "BULLISH_XAU_DXY_DIVERGENCE"
+                            res["details"].append("⚡ Истинная бычья SMT: Золото обновило Low, но DXY НЕ смог обновить High!")
+                            return res
+                elif dir_clean == "SHORT" and df_primary is not None and not df_primary.empty:
+                    gold_sw_h, gold_sw_l = self._find_swing_points(df_primary, lookback=2)
+                    if len(gold_sw_h) >= 2 and len(sw_dxy_l) >= 2:
+                        gold_hh = gold_sw_h[-1][1] > gold_sw_h[-2][1]
+                        dxy_fail_ll = sw_dxy_l[-1][1] >= sw_dxy_l[-2][1]
+                        if gold_hh and dxy_fail_ll:
+                            res["smt_confirmed"] = True
+                            res["smt_type"] = "BEARISH_XAU_DXY_DIVERGENCE"
+                            res["details"].append("⚡ Истинная медвежья SMT: Золото обновило High, но DXY НЕ смог обновить Low!")
+                            return res
+                res["smt_confirmed"] = False
+                return res
+            except Exception as e:
+                res["smt_confirmed"] = False
+                res["details"].append(f"SMT check error: {e}")
+                return res
 
         try:
             from market.data_fetcher import DataFetcher
@@ -886,10 +925,11 @@ class ICTSMCStrategy(BaseStrategy):
                     if df_ltf is None or len(df_ltf) < 15:
                         df_ltf = fetcher._read_mt5_bars(clean_sym, "M5", limit=60)
             if df_ltf is None or len(df_ltf) < 15:
-                # Если локальных баров нет (напр. синтетический тест без файлов MT5)
-                res["poi_touched"] = True
-                res["mss_confirmed"] = True
-                res["displacement"] = True
+                # Strict Rule: Missing LTF bars strictly means NO CONFIRMATION / NO TRADE
+                res["poi_touched"] = False
+                res["mss_confirmed"] = False
+                res["displacement"] = False
+                res["details"].append("⛔ Отсутствуют бары младшего ТФ (M5/M15) — автоматическое подтверждение ЗАПРЕЩЕНО (NO TRADE)")
                 return res
 
             poi_low, poi_high = min(h1_poi_zone), max(h1_poi_zone)
@@ -1005,20 +1045,8 @@ class ICTSMCStrategy(BaseStrategy):
         # 2. Поиск свингов (lookback=2 для идеальной чувствительности)
         swing_highs, swing_lows = self._find_swing_points(df, lookback=2)
 
-        if len(swing_highs) < 2:
-            rolling_max = df['high'].rolling(5).max()
-            for idx in range(5, len(df)-1):
-                curr = float(df['high'].iloc[idx])
-                if curr == rolling_max.iloc[idx] and curr > float(df['high'].iloc[idx-1]):
-                    if not swing_highs or abs(swing_highs[-1][1] - curr) > 1e-7:
-                        swing_highs.append((idx, curr))
-        if len(swing_lows) < 2:
-            rolling_min = df['low'].rolling(5).min()
-            for idx in range(5, len(df)-1):
-                curr = float(df['low'].iloc[idx])
-                if curr == rolling_min.iloc[idx] and curr < float(df['low'].iloc[idx-1]):
-                    if not swing_lows or abs(swing_lows[-1][1] - curr) > 1e-7:
-                        swing_lows.append((idx, curr))
+        # Strict Rule: Do not synthesize fake swings if canonical fractal rule finds < 2 swings.
+        # Insufficient swings means market is consolidating or data history is too short -> strictly NEUTRAL.
 
         if len(swing_highs) < 2 or len(swing_lows) < 2:
             return self._make_result(
