@@ -13,10 +13,10 @@ venv/
 .venv/
 env/
 
-# Environment variables (ВАЖНО: содержит токен бота!)
+# Environment variables
 .env
 
-# Database (локальные данные сигналов)
+# Database
 data/
 *.db
 
@@ -37,10 +37,10 @@ desktop.ini
 # Scratch / Local debugging scripts & credentials
 scratch/
 
-# Temp test files
+# Temp test files in root
 bot.pid
-test_*.png
-test_*.py
+/test_*.png
+/test_*.py
 *.log*
 
 # Backups
