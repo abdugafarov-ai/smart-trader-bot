@@ -278,9 +278,9 @@ async def run_multi_tf_analysis(symbol: str) -> MultiTFResult:
         from trading.execution_bridge import bridge_manager
         risk_pct = float(getattr(bridge_manager, "default_risk", config.AUTOTRADE_DEFAULT_RISK))
         if hasattr(bridge_manager, "get_effective_balance"):
-            acct_bal = float(bridge_manager.get_effective_balance(5000.0))
+            acct_bal = float(bridge_manager.get_effective_balance(0.0))
         else:
-            acct_bal = float(getattr(bridge_manager, "account_equity", 0.0) or getattr(bridge_manager, "account_balance", 0.0) or 5000.0)
+            acct_bal = float(getattr(bridge_manager, "account_equity", 0.0) or getattr(bridge_manager, "account_balance", 0.0) or 0.0)
         sl_dist_usd = abs(entry - sl)
         calc_lot = bridge_manager.calculate_lot(
             symbol,

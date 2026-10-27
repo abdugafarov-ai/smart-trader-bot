@@ -1015,7 +1015,7 @@ class ICTSMCStrategy(BaseStrategy):
             except Exception:
                 return False
 
-    def analyze(self, df: pd.DataFrame, symbol: str, timeframe: str, df_d1: Optional[pd.DataFrame] = None, df_ltf: Optional[pd.DataFrame] = None, current_time: Optional[datetime] = None) -> StrategyResult:
+    def analyze(self, df: pd.DataFrame, symbol: str, timeframe: str, df_d1: Optional[pd.DataFrame] = None, df_ltf: Optional[pd.DataFrame] = None, current_time: Optional[datetime] = None, account_balance: Optional[float] = None) -> StrategyResult:
         # Support multi-timeframe dict input (e.g., {"D1": df_d1, "H1": df_h1, "M15": df_m15, "M5": df_m5})
         if isinstance(df, dict):
             mtf_dict = df
@@ -1852,10 +1852,12 @@ class ICTSMCStrategy(BaseStrategy):
         try:
             from trading.execution_bridge import bridge_manager
             risk_pct_val = float(getattr(bridge_manager, "default_risk", config.AUTOTRADE_DEFAULT_RISK))
-            if hasattr(bridge_manager, "get_effective_balance"):
-                acct_bal = float(bridge_manager.get_effective_balance(5000.0))
+            if account_balance is not None and account_balance > 0:
+                acct_bal = float(account_balance)
+            elif hasattr(bridge_manager, "get_effective_balance"):
+                acct_bal = float(bridge_manager.get_effective_balance(0.0))
             else:
-                acct_bal = float(getattr(bridge_manager, "account_equity", 0.0) or getattr(bridge_manager, "account_balance", 0.0) or 5000.0)
+                acct_bal = float(getattr(bridge_manager, "account_equity", 0.0) or getattr(bridge_manager, "account_balance", 0.0) or 0.0)
             sl_pips_val = risk / pip_unit if pip_unit > 0 else 0.0
             calc_lot = bridge_manager.calculate_lot(
                 sym_clean,
@@ -1868,17 +1870,20 @@ class ICTSMCStrategy(BaseStrategy):
             )
             if calc_lot <= 0.0:
                 max_budget_usd = acct_bal * (min(risk_pct_val, config.AUTOTRADE_MAX_RISK) / 100.0)
+                rejection_msg = (
+                    "⛔ NO TRADE: Отсутствуют достоверные данные о капитале MT5 (баланс/эквити <= $0.00)"
+                    if acct_bal <= 0.0
+                    else f"⛔ NO TRADE: Структурный SL ({risk:.2f}) при минимальном лоте 0.01 превышает риск-бюджет ${max_budget_usd:.2f} ({risk_pct_val:.2f}% от ${acct_bal:.0f})"
+                )
+                rej_code = "NO_CAPITAL_DATA" if acct_bal <= 0.0 else "MIN_LOT_EXCEEDS_RISK_BUDGET"
                 return self._make_result(
                     StrategySignal(
                         direction="NEUTRAL",
                         confidence=0,
-                        details=details + [
-                            f"⛔ NO TRADE: Структурный SL ({risk:.2f}) при минимальном лоте 0.01 превышает риск-бюджет "
-                            f"${max_budget_usd:.2f} ({risk_pct_val:.2f}% от ${acct_bal:.0f})"
-                        ],
-                        rejection_reasons=["MIN_LOT_EXCEEDS_RISK_BUDGET"],
+                        details=details + [rejection_msg],
+                        rejection_reasons=[rej_code],
                     ),
-                    details + ["Сетап отклонен риск-менеджером: минимальный лот 0.01 превышает допустимый риск на сделку (NO TRADE)"]
+                    details + [f"Сетап отклонен: {rejection_msg} (NO TRADE)"]
                 )
             if is_gold:
                 risk_usd_val = round(calc_lot * risk * 100.0, 2)

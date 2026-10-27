@@ -111,19 +111,16 @@ class ExecutionBridge:
         except (ValueError, TypeError):
             return 0.0
 
-    def get_effective_balance(self, default: float = 5000.0) -> float:
+    def get_effective_balance(self, default: float = 0.0) -> float:
         """
         Возвращает консервативный расчетный капитал для риск-менеджмента:
-        min(balance, equity) при наличии живой телеметрии MT5, иначе default ($5,000.00).
+        min(balance, equity) при наличии достоверной телеметрии MT5 (когда balance > 0 и equity > 0).
+        Если телеметрия отсутствует или капитал недостоверен, возвращает default (0.0).
         """
         bal = self.account_balance
         eq = self.account_equity
         if bal > 0 and eq > 0:
             return min(bal, eq)
-        if eq > 0:
-            return eq
-        if bal > 0:
-            return bal
         return float(default)
 
     def set_enabled(self, enabled: bool):
@@ -166,26 +163,35 @@ class ExecutionBridge:
         - Бюджет риска: default 0.25% ($12.50), max 0.50% ($25.00).
         - Если минимальный лот (0.01) превышает бюджет -> return 0.0 (NO TRADE).
         - Даже в режиме 'fixed' лот НИКОГДА не может превысить риск-бюджет (при превышении -> 0.0).
+        - Если достоверный баланс/эквити отсутствуют (<= 0) -> return 0.0 (NO TRADE).
+        - Нулевой лот ни при каких условиях не превращается в фиксированный объем.
         """
         sym_clean = symbol.upper().replace("/", "").replace("=X", "")
         max_r = getattr(config, "AUTOTRADE_MAX_RISK", 0.50)
         raw_risk = risk_pct if (risk_pct is not None and risk_pct > 0) else self.default_risk
         effective_risk = min(float(raw_risk), max_r)
-        bal_val = float(balance) if (balance is not None and balance > 0) else self.get_effective_balance(5000.0)
+        bal_val = float(balance) if (balance is not None and balance > 0) else self.get_effective_balance(0.0)
+
+        if bal_val <= 0.0:
+            logger.warning("calculate_lot: No valid account capital (bal=%.2f). Rejecting order (0.0).", bal_val)
+            return 0.0
 
         if "XAU" in sym_clean or "GOLD" in sym_clean:
             if sl_dist_usd is not None and sl_dist_usd > 0:
                 actual_sl_usd = float(sl_dist_usd)
-            elif entry is not None and sl is not None and entry > 0 and sl > 0:
+            elif entry is not None and sl is not None and entry > 0 and sl > 0 and abs(float(entry) - float(sl)) > 0.01:
                 actual_sl_usd = abs(float(entry) - float(sl))
-            else:
+            elif sl_pips > 0.01:
                 actual_sl_usd = float(sl_pips)
+            else:
+                logger.warning("calculate_lot: Invalid SL distance for %s. Rejecting order (0.0).", sym_clean)
+                return 0.0
 
             max_safe_lot = calculate_gold_swing_lot(bal_val, actual_sl_usd, effective_risk)
             if max_safe_lot <= 0.0:
                 return 0.0
             if self.lot_mode == "fixed":
-                if self.default_lot > max_safe_lot + 1e-9:
+                if self.default_lot <= 0.0 or self.default_lot > max_safe_lot + 1e-9:
                     logger.warning(
                         "Fixed lot %.2f exceeds risk budget (max safe lot %.2f for SL $%.2f) -> REJECT (0.0)",
                         self.default_lot, max_safe_lot, actual_sl_usd
@@ -204,9 +210,11 @@ class ExecutionBridge:
             return 0.0  # Min lot risk exceeds budget -> REJECT
         raw_lot = risk_usd / (sl_pips * pip_val)
         max_safe_forex_lot = math.floor((raw_lot + 1e-9) * 100.0) / 100.0
+        if max_safe_forex_lot < min_lot:
+            return 0.0
         max_safe_forex_lot = max(min_lot, min(max_lot, round(max_safe_forex_lot, 2)))
         if self.lot_mode == "fixed":
-            if self.default_lot > max_safe_forex_lot + 1e-9:
+            if self.default_lot <= 0.0 or self.default_lot > max_safe_forex_lot + 1e-9:
                 return 0.0
             return max(min_lot, min(max_lot, round(self.default_lot, 2)))
         return max_safe_forex_lot
@@ -344,9 +352,10 @@ class ExecutionBridge:
                 return q["bid"]
         return None
 
-    def get_live_spread_pips(self, symbol: str) -> Optional[float]:
+    def get_live_spread_pips(self, symbol: str, now_dt: Optional[datetime] = None) -> Optional[float]:
         """
         Вычисляет текущий спред брокера в пипсах из живого стакана котировок MT5.
+        Возвращает None, если котировка отсутствует, устарела (> 15 сек) или невалидна.
         """
         is_online, _ = self.is_mt5_online()
         if not is_online:
@@ -354,32 +363,45 @@ class ExecutionBridge:
         q = self.live_quotes.get(symbol.upper())
         if not q:
             return None
-        bid = float(q.get("bid", 0.0))
-        ask = float(q.get("ask", 0.0))
+        try:
+            bid = float(q.get("bid", 0.0))
+            ask = float(q.get("ask", 0.0))
+        except (ValueError, TypeError):
+            return None
         if bid <= 0 or ask <= 0 or ask < bid:
             return None
-        delta_p = (datetime.now(timezone.utc) - q["time"]).total_seconds()
-        if delta_p > 30.0:
+        q_time = q.get("time")
+        if not q_time or not isinstance(q_time, datetime):
+            return None
+        if q_time.tzinfo is None:
+            q_time = q_time.replace(tzinfo=timezone.utc)
+        curr_time = now_dt if now_dt is not None else datetime.now(timezone.utc)
+        if curr_time.tzinfo is None:
+            curr_time = curr_time.replace(tzinfo=timezone.utc)
+        delta_p = (curr_time - q_time).total_seconds()
+        if delta_p > 15.0 or delta_p < -5.0:
             return None
 
         diff = ask - bid
         sym_u = symbol.upper()
-        if "JPY" in sym_u:
+        if sym_u in ("XAUUSD", "GOLD"):
+            return round(diff * 10.0, 1)  # в центах/пунктах золота ($0.10 = 1.0 pt)
+        elif "JPY" in sym_u:
             return round(diff * 100.0, 1)
-        elif sym_u == "XAUUSD":
-            return round(diff * 10.0, 1)  # в центах/пунктах золота
         else:
             return round(diff * 10000.0, 1)
 
-    def is_spread_acceptable(self, symbol: str) -> tuple[bool, float, float]:
+    def is_spread_acceptable(self, symbol: str, now_dt: Optional[datetime] = None) -> tuple[bool, float, float]:
         """
         Проверяет, находится ли текущий спред брокера в пределах безопасной нормы.
         Возвращает (acceptable, current_spread, max_allowed_spread).
+        Если котировка отсутствует, невалидна или устарела, строго возвращает (False, -1.0, max_s).
+        Нельзя разрешать торговлю, если проверка спреда не смогла получить достоверные данные.
         """
-        cur = self.get_live_spread_pips(symbol)
+        cur = self.get_live_spread_pips(symbol, now_dt=now_dt)
         max_s = config.MAX_SPREAD_PIPS.get(symbol.upper(), config.MAX_SPREAD_PIPS.get("DEFAULT", 4.0))
         if cur is None:
-            return True, 0.0, max_s  # Если живого стакана нет (напр. выходные), не блокируем
+            return False, -1.0, max_s  # Строгий отказ от торговли при отсутствии достоверного спреда
         return (cur <= max_s), cur, max_s
 
     def is_mt5_online(self) -> tuple[bool, float]:
@@ -543,8 +565,9 @@ class ExecutionBridge:
                     total_risk_usd += lot * sl_dist * contract_mult
                 else:
                     # Консервативная оценка риска при отсутствии явного SL в телеметрии
-                    bal = self.get_effective_balance(5000.0)
-                    total_risk_usd += bal * (self.default_risk / 100.0)
+                    bal = self.get_effective_balance(0.0)
+                    if bal > 0:
+                        total_risk_usd += bal * (self.default_risk / 100.0)
             except Exception:
                 continue
         return round(total_risk_usd, 2)
@@ -579,7 +602,7 @@ class ExecutionBridge:
             return True, reason
         return True, reason
 
-    def can_open_new_position(self, symbol: str, trading_mode: str = "prop", new_trade_risk_usd: float = 0.0) -> tuple[bool, str]:
+    def can_open_new_position(self, symbol: str, trading_mode: str = "prop", new_trade_risk_usd: float = 0.0, now_dt: Optional[datetime] = None) -> tuple[bool, str]:
         """
         Институциональная 10-факторная валидация перед открытием ордера на реальные деньги.
         Возвращает (allowed: bool, reason: str).
@@ -607,7 +630,9 @@ class ExecutionBridge:
         if not w_open:
             return False, f"Торговое окно закрыто: {w_reason}"
 
-        now_utc = datetime.now(timezone.utc)
+        now_utc = now_dt if now_dt is not None else datetime.now(timezone.utc)
+        if now_utc.tzinfo is None:
+            now_utc = now_utc.replace(tzinfo=timezone.utc)
 
         # 3.1 Strictly Intraday Trading Window & EOD Cutoff (20:30 UTC Mon-Thu, 19:00/19:30 UTC Fri)
         if now_utc.weekday() == 4 and (now_utc.hour >= 20 or (now_utc.hour == 19 and now_utc.minute >= 0)):
@@ -620,10 +645,15 @@ class ExecutionBridge:
             if in_rollover:
                 return False, f"Защита от ролловера: {roll_reason}"
 
-        # 4. Проверка связи с терминалом MT5
+        # 4. Проверка связи с терминалом MT5 и достоверности капитала
         is_online, ping = self.is_mt5_online()
         if not is_online:
             return False, f"MT5 не в сети (задержка {ping}с)"
+
+        bal = self.account_balance
+        eq = self.account_equity
+        if bal <= 0 or eq <= 0:
+            return False, f"Невозможно достоверно установить состояние счёта MT5 (баланс ${bal:.2f}, эквити ${eq:.2f} <= 0)"
 
         # 6. Лимит одновременно активных слотов (позиции + отложенные ордера)
         positions = self.mt5_telemetry.get("positions") or []
@@ -635,20 +665,18 @@ class ExecutionBridge:
             return False, f"Лимит слотов исчерпан ({active_slots}/{max_slots} занято)"
 
         # 6.1 Совокупный риск (открытые позиции + отложенные ордера + дневной убыток + новая сделка)
-        bal = float(self.mt5_telemetry.get("balance", 0.0))
-        if bal > 0:
-            start_bal = float(self.today_stats_cache.get("start_balance", bal) or bal)
-            today_net_pnl = float(self.today_stats_cache.get("net_pnl", 0.0) or 0.0)
-            realized_or_floating_loss = abs(min(0.0, today_net_pnl))
-            open_risk = self.get_cumulative_open_risk_usd()
-            est_new_risk = new_trade_risk_usd if new_trade_risk_usd > 0 else (bal * (self.default_risk / 100.0))
-            max_daily_loss_usd = start_bal * (self.max_daily_loss_pct / 100.0)
-            if (realized_or_floating_loss + open_risk + est_new_risk) > max_daily_loss_usd + 1e-6:
-                return (
-                    False,
-                    f"Превышен совокупный дневной риск-лимит: убыток ${realized_or_floating_loss:.2f} + "
-                    f"открытый риск ${open_risk:.2f} + новая сделка ${est_new_risk:.2f} > лимита ${max_daily_loss_usd:.2f}"
-                )
+        start_bal = float(self.today_stats_cache.get("start_balance", bal) or bal)
+        today_net_pnl = float(self.today_stats_cache.get("net_pnl", 0.0) or 0.0)
+        realized_or_floating_loss = abs(min(0.0, today_net_pnl))
+        open_risk = self.get_cumulative_open_risk_usd()
+        est_new_risk = new_trade_risk_usd if new_trade_risk_usd > 0 else (bal * (self.default_risk / 100.0))
+        max_daily_loss_usd = start_bal * (self.max_daily_loss_pct / 100.0)
+        if (realized_or_floating_loss + open_risk + est_new_risk) > max_daily_loss_usd + 1e-6:
+            return (
+                False,
+                f"Превышен совокупный дневной риск-лимит: убыток ${realized_or_floating_loss:.2f} + "
+                f"открытый риск ${open_risk:.2f} + новая сделка ${est_new_risk:.2f} > лимита ${max_daily_loss_usd:.2f}"
+            )
 
         # 7. Защита от дублирования инструмента: не более 1 позиции на пару
         for p in positions:
@@ -681,8 +709,10 @@ class ExecutionBridge:
                 return False, f"Недостаточно маржи: ${mf:.2f} ({mf_pct:.1f}% свободных средств)"
 
         # 10. Защита от расширения спреда (Spread Spike Guard)
-        is_spread_ok, cur_spread, max_s = self.is_spread_acceptable(sym_u)
+        is_spread_ok, cur_spread, max_s = self.is_spread_acceptable(sym_u, now_dt=now_utc)
         if not is_spread_ok:
+            if cur_spread < 0:
+                return False, f"Спред недоступен или устарел (нет актуальной котировки для {sym_u})"
             return False, f"Спред расширен: {cur_spread:.1f} > max {max_s:.1f} pips"
 
         return True, "OK"

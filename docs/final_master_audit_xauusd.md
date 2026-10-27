@@ -4,7 +4,7 @@
 **Активный профиль:** `XAUUSD_INTRADAY` (`config.ACTIVE_TRADING_PROFILE`)  
 **Целевой счет:** FundingPips $5,000 1-Step Challenge (`***7982`, маскируется из `data/challenge_config.json`), MT5 «FundingPips Corp»  
 **Параметры проп-защиты:** Начальный баланс `$5,000.00` | Фатальный пол `$4,400.00` (Max Loss `12%`) | Хард-стоп бота `$4,450.00` (`+$50` буфер) | Дневной лимит потерь `4%` (`$200.00`, внутренний стоп бота `3.0%` = `$150.00`)  
-**Инфраструктура:** VPS Ubuntu Linux `194.87.130.137`, MetaTrader 5 (Wine, portable build 6254), советник `SmartTraderBridge.mq5` (`SmartTraderBridge.ex5`), веб-сервис Python (async FastAPI / long-polling)  
+**Инфраструктура:** VPS Ubuntu Linux `[VPS_PROTECTED_IP]`, MetaTrader 5 (Wine, portable build 6254), советник `SmartTraderBridge.mq5` (`SmartTraderBridge.ex5`), веб-сервис Python (async FastAPI / long-polling)  
 **Репозиторий:** `https://github.com/abdugafarov-ai/smart-trader-bot` (ветка `feat-xauusd-ict-audit`)  
 **Дата аудита:** Октябрь 2026 г.  
 
@@ -12,7 +12,7 @@
 
 ## РАЗДЕЛ A. ЧТО БЫЛО НАЙДЕНО В РЕПОЗИТОРИИ И НА СЕРВЕРЕ
 
-В ходе сквозного аудита репозитория `smart-trader-bot`, боевого сервера VPS (`194.87.130.137:/root/smart-trader-bot`) и терминала MetaTrader 5 были обнаружены критические дефекты архитектуры, риск-менеджмента, целостности рыночных данных и алгоритмов ICT/SMC:
+В ходе сквозного аудита репозитория `smart-trader-bot`, боевого сервера VPS (`[VPS_PROTECTED_IP]:/root/smart-trader-bot`) и терминала MetaTrader 5 были обнаружены критические дефекты архитектуры, риск-менеджмента, целостности рыночных данных и алгоритмов ICT/SMC:
 
 ### 1. Критические уязвимости безопасности и конфигурации
 1. **Опасное состояние автоторговли по умолчанию:** В старой конфигурации автопилот мог самопроизвольно активироваться при перезапуске контейнера/сервиса из-за чтения устаревшего флага `enabled=1` из SQLite (`bot_settings`), даже когда в `.env` стоял `AUTOTRADE_ENABLED=false`.

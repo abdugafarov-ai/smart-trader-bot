@@ -177,6 +177,9 @@ async def api_events(request: web.Request) -> web.Response:
 # AUTO-TRADING BRIDGE ENDPOINTS (ДЛЯ METATRADER 4/5)
 # ═══════════════════════════════════════════════════════════
 
+# In-flight order dispatch tracker: signal_id -> timestamp (prevents duplicate sends on network lag/MT5 retries)
+_dispatched_in_flight: dict[int, float] = {}
+
 def _check_api_key(request):
     """Проверяет API-ключ в заголовках запроса (или разрешает локальный сокет без прокси)."""
     api_key = (request.headers.get('X-API-Key') or request.headers.get('X-Bridge-Key') or '').strip()
@@ -482,14 +485,17 @@ async def bridge_get_orders(request: web.Request) -> web.Response:
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             })
 
-        # Берем активные и свежие сигналы из базы данных
+        # Берем только новые активные и неподтвержденные сигналы из базы данных
         from db.database import DB_PATH
         import aiosqlite
+        import time as _time
         async with aiosqlite.connect(str(DB_PATH)) as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute(
                 """SELECT * FROM signals 
-                   WHERE status IN ('ACTIVE', 'OPEN', 'TP1_PARTIAL', 'PENDING')
+                   WHERE status = 'ACTIVE'
+                     AND (broker_confirmed IS NULL OR broker_confirmed = 0)
+                     AND broker_ticket IS NULL
                    ORDER BY id DESC"""
             )
             rows = await cursor.fetchall()
@@ -507,6 +513,13 @@ async def bridge_get_orders(request: web.Request) -> web.Response:
         for sig in (active or []):
             sym = sig.get("symbol")
             if not sym or sym in dispatched_symbols:
+                continue
+
+            sig_id = int(sig.get("id") or 0)
+            now_ts = _time.time()
+            # Защита от дублирования при повторных запросах/таймаутах MT5:
+            if sig_id in _dispatched_in_flight and (now_ts - _dispatched_in_flight[sig_id]) < 45.0:
+                logger.debug("Signal #%s (%s) already in-flight to MT5, skipping duplicate dispatch", sig_id, sym)
                 continue
 
             # Проверка актуальности сигнала (запрет исполнения устаревших сигналов при включении автопилота с задержкой)
@@ -618,6 +631,7 @@ async def bridge_get_orders(request: web.Request) -> web.Response:
                 continue
 
             dispatched_symbols.add(sym)
+            _dispatched_in_flight[sig_id] = now_ts
             orders.append({
                 "id": sig.get("id"),
                 "symbol": sym,
@@ -688,6 +702,8 @@ async def bridge_post_report(request: web.Request) -> web.Response:
             activate_filled_signal, expire_signal_by_broker
         )
         ticket = int(data.get("ticket") or data.get("order") or 0)
+        if sig_id > 0:
+            _dispatched_in_flight.pop(sig_id, None)
 
         # 1. Лимитный ордер выставлен в стакан
         if action in ("BUY_LIMIT", "SELL_LIMIT"):
@@ -798,6 +814,20 @@ async def bridge_post_report(request: web.Request) -> web.Response:
                     f"❌ Причина: <code>{safe_reason}</code>\n\n"
                     f"💼 <i>Ордер в MT5 НЕ был открыт. Проверьте статус терминала.</i>"
                 )
+            await _send_admin_only(msg)
+
+        # Ошибка модификации стоп-лосса брокером
+        elif action == "SL_MODIFY_FAILED":
+            logger.warning("SL modification failed in MT5 for %s ticket %s: %s", symbol, ticket, reason)
+            import html
+            safe_reason = html.escape(str(reason or ""))
+            msg = (
+                f"⚠️ <b>ОШИБКА МОДИФИКАЦИИ STOP LOSS В METATRADER 5!</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"📊 <b>{symbol}</b> | Билет: <code>#{ticket}</code>\n"
+                f"❌ Причина: <code>{safe_reason}</code>\n\n"
+                f"💼 <i>Проверьте статус позиции и уровни стопа в MT5 вручную!</i>"
+            )
             await _send_admin_only(msg)
 
         # Ручное открытие сделки пользователем в MT5 — ТОЛЬКО АДМИНИСТРАТОРУ

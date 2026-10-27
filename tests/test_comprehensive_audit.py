@@ -124,12 +124,25 @@ def _build_intraday_gold_frames():
 
 class TestComprehensiveAudit(unittest.TestCase):
     def setUp(self):
-        self.bridge = ExecutionBridge()
+        from trading.execution_bridge import bridge_manager
+        self.bridge = bridge_manager
         self.bridge.default_risk = 0.25
         self.bridge.default_lot = 0.01
         self.bridge.lot_mode = "risk"
+        self.bridge.update_telemetry(
+            balance=5000.0, equity=5000.0, margin_free=4500.0,
+            broker="FundingPips", account="TEST_ACCT_12345",
+            positions=[], orders=[]
+        )
         self.fetcher = DataFetcher()
         self.strategy = ICTSMCStrategy()
+
+    def tearDown(self):
+        from trading.execution_bridge import bridge_manager
+        bridge_manager.mt5_telemetry["balance"] = 0.0
+        bridge_manager.mt5_telemetry["equity"] = 0.0
+        bridge_manager.mt5_telemetry["last_ping"] = None
+        bridge_manager.live_quotes.clear()
 
     def test_gold_sl_over_35_usd_bug_fixed(self):
         """
@@ -450,7 +463,7 @@ class TestComprehensiveAudit(unittest.TestCase):
                 "equity": 5000.0,
                 "margin_free": 5000.0,
                 "broker": "FundingPips",
-                "account": "21027982",
+                "account": "TEST_ACCT_12345",
                 "positions": [],
                 "orders": [],
                 "history": [

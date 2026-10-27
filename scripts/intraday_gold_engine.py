@@ -53,20 +53,23 @@ def load_candles():
     if not os.path.exists(m5_file):
         raise FileNotFoundError(f"Missing M5 candle file: {m5_file}")
 
+    broker_tz = ZoneInfo("Europe/Helsinki")
+    utc_tz = timezone.utc
+
     print("Loading M5 candles...", flush=True)
     df_m5 = pd.read_csv(m5_file)
-    df_m5["time"] = pd.to_datetime(df_m5["timestamp"])
-    df_m5 = df_m5.sort_values("time").drop_duplicates(subset=["time"], keep="last").reset_index(drop=True)
+    df_m5["time"] = pd.to_datetime(df_m5["timestamp"]).dt.tz_localize(broker_tz, ambiguous='NaT', nonexistent='shift_forward').dt.tz_convert(utc_tz)
+    df_m5 = df_m5.dropna(subset=["time"]).sort_values("time").drop_duplicates(subset=["time"], keep="last").reset_index(drop=True)
 
     print("Loading M15 candles...", flush=True)
     df_m15 = pd.read_csv(m15_file)
-    df_m15["time"] = pd.to_datetime(df_m15["timestamp"])
-    df_m15 = df_m15.sort_values("time").drop_duplicates(subset=["time"], keep="last").reset_index(drop=True)
+    df_m15["time"] = pd.to_datetime(df_m15["timestamp"]).dt.tz_localize(broker_tz, ambiguous='NaT', nonexistent='shift_forward').dt.tz_convert(utc_tz)
+    df_m15 = df_m15.dropna(subset=["time"]).sort_values("time").drop_duplicates(subset=["time"], keep="last").reset_index(drop=True)
 
     print("Loading H1 candles...", flush=True)
     df_h1 = pd.read_csv(h1_file)
-    df_h1["time"] = pd.to_datetime(df_h1["timestamp"])
-    df_h1 = df_h1.sort_values("time").drop_duplicates(subset=["time"], keep="last").reset_index(drop=True)
+    df_h1["time"] = pd.to_datetime(df_h1["timestamp"]).dt.tz_localize(broker_tz, ambiguous='NaT', nonexistent='shift_forward').dt.tz_convert(utc_tz)
+    df_h1 = df_h1.dropna(subset=["time"]).sort_values("time").drop_duplicates(subset=["time"], keep="last").reset_index(drop=True)
 
     return df_m5, df_m15, df_h1
 
@@ -87,17 +90,41 @@ def calculate_atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
     return tr.rolling(period).mean()
 
 
+LONDON_TZ = ZoneInfo("Europe/London")
+NY_TZ = ZoneInfo("America/New_York")
+UTC_TZ = timezone.utc
+
+
 def classify_session(dt: datetime) -> str:
-    """Returns 'LONDON_KZ', 'NY_KZ', or 'OUTSIDE_KZ'."""
-    if dt.weekday() > 4:
+    """
+    Returns 'LONDON_KZ', 'NY_KZ', or 'OUTSIDE_KZ' using dynamic DST local timezone boundaries:
+    - London Open KZ: 08:00 - 11:00 Europe/London (DST-aware GMT/BST)
+    - New York Open KZ: 08:00 - 11:30 America/New_York (DST-aware EST/EDT)
+    """
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC_TZ)
+    dt_utc = dt.astimezone(UTC_TZ)
+
+    # Weekend / Friday market close check
+    if dt_utc.weekday() > 4:
         return "OUTSIDE_KZ"
-    if dt.weekday() == 4 and dt.hour >= 19:
+    if dt_utc.weekday() == 4 and dt_utc.hour >= 19:
         return "OUTSIDE_KZ"
-    minute_of_day = dt.hour * 60 + dt.minute
-    if 7 * 60 <= minute_of_day <= 10 * 60 + 30:
+
+    dt_london = dt_utc.astimezone(LONDON_TZ)
+    dt_ny = dt_utc.astimezone(NY_TZ)
+
+    l_mins = dt_london.hour * 60 + dt_london.minute
+    ny_mins = dt_ny.hour * 60 + dt_ny.minute
+
+    # London Open Kill Zone: 08:00 - 11:00 Europe/London
+    if (8 * 60) <= l_mins < (11 * 60):
         return "LONDON_KZ"
-    if 12 * 60 + 30 <= minute_of_day <= 15 * 60 + 30:
+
+    # New York Open Kill Zone: 08:00 - 11:30 America/New_York
+    if (8 * 60) <= ny_mins < (11 * 60 + 30):
         return "NY_KZ"
+
     return "OUTSIDE_KZ"
 
 
@@ -106,9 +133,13 @@ def is_killzone(dt: datetime) -> bool:
 
 
 def is_eod_cutoff(dt: datetime) -> bool:
-    if dt.weekday() == 4 and (dt.hour > 19 or (dt.hour == 19 and dt.minute >= 30)):
+    """Intraday cutoff: 20:30 UTC Mon-Thu, 19:00 UTC Fri."""
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC_TZ)
+    dt_utc = dt.astimezone(UTC_TZ)
+    if dt_utc.weekday() == 4 and dt_utc.hour >= 19:
         return True
-    return (dt.hour == 20 and dt.minute >= 30) or (dt.hour > 20)
+    return (dt_utc.hour == 20 and dt_utc.minute >= 30) or (dt_utc.hour > 20)
 
 
 def calculate_lot(balance: float, risk_pct: float, sl_distance_usd: float, legacy_mode: bool = False) -> float:
@@ -170,9 +201,9 @@ class IntradaySimulator:
         self.spread_usd = spread_usd
         self.slippage_usd = slippage_usd
         self.legacy_mode = legacy_mode
-        self.split_date = pd.to_datetime(sample_split_date)
-        self.train_end_date = pd.to_datetime(train_end_date)
-        self.val_end_date = pd.to_datetime(val_end_date)
+        self.split_date = pd.to_datetime(sample_split_date, utc=True)
+        self.train_end_date = pd.to_datetime(train_end_date, utc=True)
+        self.val_end_date = pd.to_datetime(val_end_date, utc=True)
 
     def run(self):
         if self.model == "control_no_trade":
@@ -247,7 +278,12 @@ class IntradaySimulator:
 
         for i in range(100, n_m5):
             t_np = m5_times[i]
-            dt = pd.Timestamp(t_np).to_pydatetime()
+            ts = pd.Timestamp(t_np)
+            if ts.tzinfo is None:
+                ts = ts.tz_localize(UTC_TZ)
+            else:
+                ts = ts.tz_convert(UTC_TZ)
+            dt = ts.to_pydatetime()
 
             bar_date = dt.date()
             if bar_date != current_day:
@@ -343,6 +379,8 @@ class IntradaySimulator:
                     mfe_usd = open_pos["mfe_dist"] * open_pos["orig_lot"] * 100.0
 
                     ent_dt = open_pos["entry_time"]
+                    if getattr(ent_dt, "tzinfo", None) is None:
+                        ent_dt = ent_dt.replace(tzinfo=UTC_TZ)
                     if ent_dt < self.train_end_date:
                         phase = "TRAIN"
                     elif ent_dt < self.val_end_date:
@@ -888,8 +926,8 @@ class IntradaySimulator:
         ]
         walk_forward = {}
         for wf_name, wf_start, wf_end in wf_windows:
-            s_dt = pd.to_datetime(wf_start)
-            e_dt = pd.to_datetime(wf_end)
+            s_dt = pd.to_datetime(wf_start, utc=True)
+            e_dt = pd.to_datetime(wf_end, utc=True)
             wf_sub = df_t[(df_t["entry_time"] >= s_dt) & (df_t["entry_time"] < e_dt)]
             walk_forward[wf_name] = sub_metrics(wf_sub)
 

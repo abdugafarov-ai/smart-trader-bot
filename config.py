@@ -166,12 +166,6 @@ def is_in_macro_window(now_dt: Optional[datetime] = None) -> tuple[bool, str]:
     if (ny_h == 10 and ny_m >= 50) or (ny_h == 11 and ny_m <= 10):
         return True, "London Close / NY Macro (10:50–11:10 NY)"
 
-    current_mins = now.hour * 60 + now.minute
-    for mw in ICT_MACRO_WINDOWS:
-        s_mins = mw["start_h"] * 60 + mw["start_m"]
-        e_mins = mw["end_h"] * 60 + mw["end_m"]
-        if s_mins <= current_mins <= e_mins:
-            return True, mw["name"]
     return False, ""
 
 def is_ipda_time_banned(now_dt: Optional[datetime] = None) -> tuple[bool, str]:
@@ -257,10 +251,6 @@ def is_in_kill_zone(now_dt: Optional[datetime] = None) -> bool:
     if (8 * 60) <= ny_mins < (11 * 60 + 30):
         return True
 
-    current_hour = now.hour
-    for kz in KILL_ZONES_UTC.values():
-        if kz['start'] <= current_hour < kz['end']:
-            return True
     return False
 
 def get_current_kill_zone(now_dt: Optional[datetime] = None) -> str | None:
@@ -281,10 +271,6 @@ def get_current_kill_zone(now_dt: Optional[datetime] = None) -> str | None:
     if (8 * 60) <= ny_mins < (11 * 60 + 30):
         return KILL_ZONES_UTC["ny"]["name"]
 
-    current_hour = now.hour
-    for key, kz in KILL_ZONES_UTC.items():
-        if kz['start'] <= current_hour < kz['end']:
-            return kz['name']
     return None
 
 

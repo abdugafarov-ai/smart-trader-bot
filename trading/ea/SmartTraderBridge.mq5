@@ -623,8 +623,13 @@ void ParseAndExecuteOrders(string json)
       double sl    = ExtractDouble(block, "\"stop_loss\":");
       double tp1   = ExtractDouble(block, "\"tp1\":");
       double tp2   = ExtractDouble(block, "\"tp2\":");
-      double tp    = (tp2 > 0) ? tp2 : tp1;
-      if(sl <= 0 || tp <= 0) continue;
+      if(sl <= 0 || tp <= 0)
+      {
+         PrintFormat("⛔ [SmartTrader] ОТМЕНА: некорректный SL/TP (sl=%.5f, tp=%.5f) по %s", sl, tp, broker_symbol);
+         ReportExecution(pair, "REJECTED_PARAMS", entry, 0.0, "Invalid SL or TP", sig_id);
+         if(sig_id > 0) MarkSignalProcessed(sig_id);
+         continue;
+      }
 
       bool is_limit = (StringFind(block, "LIMIT") >= 0);
 
@@ -636,6 +641,13 @@ void ParseAndExecuteOrders(string json)
 
       // Рассчитываем итоговый объем ордера с обязательным контролем риск-бюджета (0.25% базовый, 0.50% макс)
       double entry_ref = is_limit ? entry : (is_long ? SymbolInfoDouble(broker_symbol, SYMBOL_ASK) : SymbolInfoDouble(broker_symbol, SYMBOL_BID));
+      if(entry_ref <= 0.0)
+      {
+         PrintFormat("⛔ [SmartTrader] ОТМЕНА: некорректная котировка entry_ref=%.5f по %s", entry_ref, broker_symbol);
+         ReportExecution(pair, "REJECTED_QUOTE", 0.0, 0.0, "Missing or invalid quote for execution", sig_id);
+         if(sig_id > 0) MarkSignalProcessed(sig_id);
+         continue;
+      }
       double eff_risk  = (json_risk > 0.0) ? MathMin(json_risk, 0.50) : MathMin(InpRiskPercent, 0.50);
       double max_safe_lot = CalculateRiskLot(broker_symbol, entry_ref, sl, eff_risk, InpFixedLot);
       double lot = 0.0;
@@ -1013,7 +1025,9 @@ void SyncPositionSL(string symbol, double target_sl)
             }
             else
             {
-               Print("⚠️ [SmartTrader] Ошибка модификации SL #", ticket, ": ", trade.ResultRetcode(), " - ", trade.ResultRetcodeDescription());
+               string err_desc = StringFormat("%d - %s", trade.ResultRetcode(), trade.ResultRetcodeDescription());
+               PrintFormat("⚠️ [SmartTrader] Ошибка модификации SL #%I64u: %s", ticket, err_desc);
+               ReportExecution(symbol, "SL_MODIFY_FAILED", 0.0, 0.0, err_desc, 0, ticket);
             }
          }
       }
@@ -1251,6 +1265,12 @@ void ManageOpenPositions()
                                      StringFormat("Structural BE (+%.1f pips locked behind Protected Low %.5f)", (target_sl - open_price) / pip_size, target_sl), 
                                      0, ticket, volume);
                   }
+                  else
+                  {
+                     string err_desc = StringFormat("%d - %s", trade.ResultRetcode(), trade.ResultRetcodeDescription());
+                     PrintFormat("⚠️ [SmartTrader Structural BE] Ошибка модификации SL #%I64u: %s", ticket, err_desc);
+                     ReportExecution(symbol, "SL_MODIFY_FAILED", 0.0, 0.0, err_desc, 0, ticket);
+                  }
                }
             }
          }
@@ -1275,6 +1295,12 @@ void ManageOpenPositions()
                                      StringFormat("Structural BE (+%.1f pips locked behind Protected High %.5f)", (open_price - target_sl) / pip_size, target_sl), 
                                      0, ticket, volume);
                   }
+                  else
+                  {
+                     string err_desc = StringFormat("%d - %s", trade.ResultRetcode(), trade.ResultRetcodeDescription());
+                     PrintFormat("⚠️ [SmartTrader Structural BE] Ошибка модификации SL #%I64u: %s", ticket, err_desc);
+                     ReportExecution(symbol, "SL_MODIFY_FAILED", 0.0, 0.0, err_desc, 0, ticket);
+                  }
                }
             }
          }
@@ -1288,14 +1314,20 @@ void ManageOpenPositions()
 double CalculateRiskLot(string symbol, double entry_price, double sl_price, double custom_risk = 0.0, double fallback_lot = 0.01)
 {
    double diff = MathAbs(entry_price - sl_price);
-   if(diff <= 0) return 0.0;
+   if(diff <= 0.00001) return 0.0;
 
    // Exact monetary risk calculation across all symbols including Gold
    // Formula: lot = risk_amt / ((diff / tick_size) * tick_val)
+   // Python and MQL5 apply strictly aligned conservative capital base: min(balance, equity)
 
    double balance   = AccountInfoDouble(ACCOUNT_BALANCE);
+   double equity    = AccountInfoDouble(ACCOUNT_EQUITY);
+   if(balance <= 0.0 || equity <= 0.0) return 0.0;
+   double effective_capital = MathMin(balance, equity);
+   if(effective_capital <= 0.0) return 0.0;
+
    double risk_pct  = (custom_risk > 0.0) ? MathMin(custom_risk, 0.50) : MathMin(InpRiskPercent, 0.50);
-   double risk_amt  = balance * (risk_pct / 100.0);
+   double risk_amt  = effective_capital * (risk_pct / 100.0);
    
    double tick_size = SymbolInfoDouble(symbol, SYMBOL_TRADE_TICK_SIZE);
    double tick_val  = SymbolInfoDouble(symbol, SYMBOL_TRADE_TICK_VALUE);
@@ -1307,6 +1339,7 @@ double CalculateRiskLot(string symbol, double entry_price, double sl_price, doub
    double min_lot = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MIN);
    double max_lot = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MAX);
    double step    = SymbolInfoDouble(symbol, SYMBOL_VOLUME_STEP);
+   if(min_lot <= 0 || max_lot <= 0) return 0.0;
    
    if(step > 0)
       lot = MathFloor((lot + 1e-9) / step) * step;
