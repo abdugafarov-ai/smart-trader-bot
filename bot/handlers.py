@@ -277,7 +277,10 @@ async def run_multi_tf_analysis(symbol: str) -> MultiTFResult:
     if overall_dir != 'NEUTRAL' and entry and sl and pips_sl:
         from trading.execution_bridge import bridge_manager
         risk_pct = float(getattr(bridge_manager, "default_risk", config.AUTOTRADE_DEFAULT_RISK))
-        acct_bal = float(getattr(bridge_manager, "account_equity", 0.0) or getattr(bridge_manager, "account_balance", 0.0) or 5000.0)
+        if hasattr(bridge_manager, "get_effective_balance"):
+            acct_bal = float(bridge_manager.get_effective_balance(5000.0))
+        else:
+            acct_bal = float(getattr(bridge_manager, "account_equity", 0.0) or getattr(bridge_manager, "account_balance", 0.0) or 5000.0)
         sl_dist_usd = abs(entry - sl)
         calc_lot = bridge_manager.calculate_lot(
             symbol,
@@ -565,19 +568,35 @@ async def cmd_autotrade(message: Message):
         return
     parts = message.text.split()
     from trading.execution_bridge import bridge_manager
+    from db.database import set_bot_setting
     if len(parts) > 1:
         sub = parts[1].lower()
         if sub in ("on", "1", "start", "enable"):
             is_hard, reason = bridge_manager.check_equity_hard_stop()
             if is_hard:
-                await message.answer(f"🚨 <b>АВТОПИЛОТ ЗАБЛОКИРОВАН ХАРД-СТОПОМ:</b>\n{reason}", parse_mode="HTML")
+                await message.answer(
+                    f"🚨 <b>АВТОПИЛОТ ЗАБЛОКИРОВАН ХАРД-СТОПОМ:</b>\n{reason}\n\n"
+                    f"<i>Для снятия блокировки после проверки счета введите:</i> <code>/autotrade unlock</code>",
+                    parse_mode="HTML"
+                )
                 return
             bridge_manager.set_enabled(True)
+            await set_bot_setting("autotrade_enabled", "true")
             await message.answer("✅ <b>АВТОПИЛОТ ВКЛЮЧЕН!</b>\nВсе подтвержденные сигналы передаются в MetaTrader советник.", parse_mode="HTML")
             return
         elif sub in ("off", "0", "stop", "disable"):
             bridge_manager.set_enabled(False)
+            await set_bot_setting("autotrade_enabled", "false")
             await message.answer("🛑 <b>АВТОПИЛОТ ВЫКЛЮЧЕН.</b>\nСоветник не будет открывать новые сделки.", parse_mode="HTML")
+            return
+        elif sub in ("unlock", "reset"):
+            bridge_manager.unlock_equity_hard_stop()
+            bridge_manager.unlock_daily_loss()
+            await message.answer(
+                "🔓 <b>АВАРИЙНЫЕ БЛОКИРОВКИ СБРОШЕНЫ АДМИНИСТРАТОРОМ.</b>\n"
+                "Автопилот остаётся выключенным до явной команды <code>/autotrade on</code>.",
+                parse_mode="HTML"
+            )
             return
 
     status = bridge_manager.get_status()
@@ -586,14 +605,15 @@ async def cmd_autotrade(message: Message):
         f"🤖 <b>СТАТУС МОСТА АВТО-ТОРГОВЛИ (METATRADER BRIDGE):</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         f"• Статус: <b>{st_badge}</b>\n"
-        f"• Риск на сделку: <code>{status['risk_percent']}%</code>\n"
-        f"• Торговый лот: <code>{status['default_lot']}</code>\n"
+        f"• Риск на сделку: <code>{status['risk_percent']:.2f}%</code> (базовый 0.25%, макс 0.50%)\n"
+        f"• Торговый лот: <code>{status['default_lot']:.2f}</code> (мин 0.01)\n"
         f"• Подключено терминалов: <code>{status['terminals_connected']}</code>\n\n"
         f"Управление:\n"
         f"• <code>/autotrade on</code> — включить автопилот\n"
         f"• <code>/autotrade off</code> — выключить автопилот\n"
-        f"• <code>/risk 1.5</code> — установить процент риска (от 0.1% до 5.0%)\n"
-        f"• <code>/lot 0.10</code> — установить фиксированный лот"
+        f"• <code>/autotrade unlock</code> — сбросить аварийную блокировку\n"
+        f"• <code>/risk 0.25</code> — установить процент риска (от 0.10% до 0.50%)\n"
+        f"• <code>/lot 0.01</code> — установить фиксированный лот (в рамках риск-бюджета)"
     )
     await message.answer(text, reply_markup=back_keyboard(), parse_mode="HTML")
 
@@ -611,11 +631,11 @@ async def cmd_risk(message: Message):
             bridge_manager.set_risk(val)
             await set_bot_setting("trading_risk", str(bridge_manager.default_risk))
             await set_bot_setting("lot_mode", "risk")
-            await message.answer(f"✅ Риск на сделку установлен: <b>{bridge_manager.default_risk:.1f}%</b> (Режим: Динамический)", parse_mode="HTML")
+            await message.answer(f"✅ Риск на сделку установлен: <b>{bridge_manager.default_risk:.2f}%</b> (Режим: Динамический)", parse_mode="HTML")
             return
         except ValueError:
             pass
-    await message.answer("Использование: <code>/risk 1.0</code> (процент риска от 0.1% до 5.0%)", parse_mode="HTML")
+    await message.answer("Использование: <code>/risk 0.25</code> (процент риска от 0.10% до 0.50%)", parse_mode="HTML")
 
 @router.message(Command("lot"))
 async def cmd_lot(message: Message):
@@ -631,11 +651,11 @@ async def cmd_lot(message: Message):
             bridge_manager.set_lot(val)
             await set_bot_setting("trading_lot", str(bridge_manager.default_lot))
             await set_bot_setting("lot_mode", "fixed")
-            await message.answer(f"✅ Фиксированный лот установлен: <b>{bridge_manager.default_lot:.2f}</b> (Режим: Фиксированный)", parse_mode="HTML")
+            await message.answer(f"✅ Фиксированный лот установлен: <b>{bridge_manager.default_lot:.2f}</b> (Режим: Фиксированный, ограничен риск-бюджетом)", parse_mode="HTML")
             return
         except ValueError:
             pass
-    await message.answer("Использование: <code>/lot 0.02</code> (размер лота от 0.01 до 10.0)", parse_mode="HTML")
+    await message.answer("Использование: <code>/lot 0.01</code> (размер лота от 0.01 до 0.50)", parse_mode="HTML")
 
 @router.message(Command("terminal"))
 @router.message(Command("account"))
@@ -844,14 +864,14 @@ async def cb_menu_actions(callback: CallbackQuery):
             )
             pool_str = "7 Мажоров (без Золота и кроссов)"
         else:
-            profile_name = "👑 Режим: FundingPips 5K (7 Мажоров)"
+            profile_name = "👑 Режим: FundingPips 5K (XAUUSD Intraday)"
             profile_desc = (
-                "• Инструменты: <b>Только 7 Мажоров</b> (Золото и кроссы ❌ отключены)\n"
-                "• Макс. сделок в рынке: <b>до 3</b> (1 пара = макс. 1 ордер)\n"
-                "• Стоп-лосс и R:R: <b>SL от 20 п. | Динамический R:R от 1:1.5+</b>\n"
-                "• Авто-Б/У и Защита: <b>+25 п. → +2 п. | Пауза 12ч после 3 стопов подряд</b>"
+                "• Инструменты: <b>XAUUSD Intraday</b> (H1 Bias → M15 POI → M5 MSS)\n"
+                "• Риск на сделку: <b>0.25% ($12.50)</b> | Макс: <b>0.50% ($25.00)</b> | Мин лот: <b>0.01</b>\n"
+                "• Стоп-лосс и R:R: <b>Структурный SL ≥ $2.00 | Строго R:R ≥ 1:2.0</b>\n"
+                "• Авто-Б/У и EOD Flat: <b>+1.0R → Б/У | Закрытие до 20:40 UTC / Пт 19:30 UTC</b>"
             )
-            pool_str = "7 Мажоров (EURUSD, GBPUSD, USDJPY, USDCHF, AUDUSD, NZDUSD, USDCAD)"
+            pool_str = "XAUUSD (Intraday Gold ICT/SMC)"
 
         lot_display = f"{bridge_manager.default_lot:.2f}"
         if getattr(bridge_manager, 'lot_mode', 'fixed') == "fixed":
@@ -1115,7 +1135,7 @@ async def cb_autotrade_actions(callback: CallbackQuery):
         await callback.answer(mode_text, show_alert=True)
     elif action == "mode_noop":
         cur_mode = parts[2]
-        name = "🛡️ Режим «Микро-депозит»" if cur_mode == "micro" else "👑 Режим: FundingPips 5K (7 Мажоров)"
+        name = "🛡️ Режим «Микро-депозит»" if cur_mode == "micro" else "👑 Режим: FundingPips 5K (XAUUSD Intraday)"
         await callback.answer(f"✅ {name} уже активен! Для смены нажмите на соседнюю кнопку.", show_alert=False)
         return
 
@@ -1132,14 +1152,14 @@ async def cb_autotrade_actions(callback: CallbackQuery):
         )
         pool_str = "7 Мажоров (без Золота и кроссов)"
     else:
-        profile_name = "👑 Режим: FundingPips 5K (7 Мажоров)"
+        profile_name = "👑 Режим: FundingPips 5K (XAUUSD Intraday)"
         profile_desc = (
-            "• Инструменты: <b>Только 7 Мажоров</b> (Золото и кроссы ❌ отключены)\n"
-            "• Макс. сделок в рынке: <b>до 3</b> (1 пара = макс. 1 ордер)\n"
-            "• Стоп-лосс и R:R: <b>SL от 20 п. | Динамический R:R от 1:1.5+</b>\n"
-            "• Авто-Б/У и Защита: <b>+25 п. → +2 п. | Пауза 12ч после 3 стопов подряд</b>"
+            "• Инструменты: <b>XAUUSD Intraday</b> (H1 Bias → M15 POI → M5 MSS)\n"
+            "• Риск на сделку: <b>0.25% ($12.50)</b> | Макс: <b>0.50% ($25.00)</b> | Мин лот: <b>0.01</b>\n"
+            "• Стоп-лосс и R:R: <b>Структурный SL ≥ $2.00 | Строго R:R ≥ 1:2.0</b>\n"
+            "• Авто-Б/У и EOD Flat: <b>+1.0R → Б/У | Закрытие до 20:40 UTC / Пт 19:30 UTC</b>"
         )
-        pool_str = "7 Мажоров (EURUSD, GBPUSD, USDJPY, USDCHF, AUDUSD, NZDUSD, USDCAD)"
+        pool_str = "XAUUSD (Intraday Gold ICT/SMC)"
 
     lot_display = f"{bridge_manager.default_lot:.2f}"
     if getattr(bridge_manager, 'lot_mode', 'fixed') == "fixed":
@@ -1456,7 +1476,17 @@ async def cb_exec_mt5(callback: CallbackQuery):
     await callback.answer("⏳ Анализирую и отправляю в MT5...", show_alert=False)
     
     try:
-        from db.database import save_signal, check_signal_exists
+        from db.database import save_signal, check_signal_exists, get_bot_setting
+        from trading.execution_bridge import bridge_manager
+
+        if await check_signal_exists(symbol, "ANY"):
+            await callback.message.answer(
+                f"⚠️ По <b>{symbol}</b> уже есть активный сигнал или открытая позиция в работе. "
+                f"Дублирующий вход заблокирован (Rule: Max 1 Order per Symbol).",
+                parse_mode="HTML"
+            )
+            return
+
         res = await run_multi_tf_analysis(symbol)
         
         if not res or res.overall_direction == "NEUTRAL" or not res.entry or res.overall_stars < 4 or getattr(res, "order_type", "") == "PENDING_CONFIRMATION" or getattr(res, "lot", 0.0) <= 0.0:
@@ -1466,6 +1496,17 @@ async def cb_exec_mt5(callback: CallbackQuery):
                 f"⚠️ По {symbol} сетап отклонен (рейтинг {stars_cnt}★, лот {getattr(res, 'lot', 0.0):.2f}"
                 f"{f', причины: {rej_str}' if rej_str else ''}). "
                 f"Исполнение в MT5 заблокировано стандартом риск-менеджмента (требуется >= 4★, подтвержденный вход на M5 и соблюдение риск-бюджета).",
+                parse_mode="HTML"
+            )
+            return
+
+        trading_mode = await get_bot_setting("trading_mode", "prop")
+        can_open, hold_reason = bridge_manager.can_open_new_position(
+            symbol, trading_mode=trading_mode, new_trade_risk_usd=float(getattr(res, "risk_usd", 0.0) or 0.0)
+        )
+        if not can_open:
+            await callback.message.answer(
+                f"🛡️ <b>Вход по {symbol} заблокирован защитой риска:</b>\n<code>{hold_reason}</code>",
                 parse_mode="HTML"
             )
             return
@@ -1487,6 +1528,7 @@ async def cb_exec_mt5(callback: CallbackQuery):
             risk_reward=res.risk_reward_1,
             strategies_agreed=strategies_str,
             timeframes_agreed=timeframes_str,
+            lot=res.lot,
         )
 
         confirm_text = (

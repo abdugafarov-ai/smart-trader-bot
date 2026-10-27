@@ -347,7 +347,7 @@ async def bridge_get_orders(request: web.Request) -> web.Response:
                                         f"🛡 <b>СДЕЛКА ЗАКРЫТА В БЕЗУБЫТОК!</b>\n"
                                         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
                                         f"📊 <b>{sym}</b> | <code>{deal_type} {lot} lot</code>\n"
-                                        f"💵 Результат: <b>{profit:+.2f} USD</b> ({pnl_pips:+.1f} pips)\n"
+                                        f"💵 Результат: <b>{profit_val:+.2f} USD</b> ({pnl_pips:+.1f} pips)\n"
                                         f"📍 Цена закрытия: <code>{close_p}</code>\n"
                                         f"🎫 Билет: <code>#{ticket_no}</code>\n"
                                         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -508,15 +508,35 @@ async def bridge_get_orders(request: web.Request) -> web.Response:
             sym = sig.get("symbol")
             if not sym or sym in dispatched_symbols:
                 continue
+
+            # Проверка актуальности сигнала (запрет исполнения устаревших сигналов при включении автопилота с задержкой)
+            if not sig.get("broker_confirmed") and sig.get("status", "ACTIVE") in ("ACTIVE", "PENDING"):
+                created_raw = sig.get("created_at")
+                if created_raw:
+                    try:
+                        created_dt = datetime.fromisoformat(str(created_raw).replace("Z", "+00:00"))
+                        if created_dt.tzinfo is None:
+                            created_dt = created_dt.replace(tzinfo=timezone.utc)
+                        age_sec = (datetime.now(timezone.utc) - created_dt).total_seconds()
+                        ord_t = str(sig.get("order_type", "BUY_MARKET")).upper()
+                        max_age_sec = 900.0 if "MARKET" in ord_t else 14400.0  # 15m for MARKET, 4h for LIMIT
+                        if age_sec > max_age_sec:
+                            logger.warning(
+                                "Signal #%s (%s, %s) EXPIRED before MT5 dispatch (age %.0fs > %.0fs)",
+                                sig.get("id"), sym, ord_t, age_sec, max_age_sec
+                            )
+                            await update_signal_status(
+                                sig.get("id"),
+                                "EXPIRED",
+                                result=f"NO TRADE: истёк срок актуальности сигнала ({int(age_sec // 60)} мин)"
+                            )
+                            continue
+                    except Exception as exp_err:
+                        logger.debug("Signal #%s created_at parse skipped: %s", sig.get("id"), exp_err)
+
             # Если активен 12-часовой кулдаун после 3 стопов подряд, не отправляем новые неподтвержденные сигналы
             if consec_sl >= 3 and not sig.get("broker_confirmed"):
                 logger.info("Signal #%s (%s) held by 12h 3-SL Cooldown (%d SLs)", sig.get("id"), sym, consec_sl)
-                continue
-
-            # Институциональная многофакторная валидация перед входом в рынок
-            can_open, hold_reason = bridge_manager.can_open_new_position(sym, trading_mode=trading_mode)
-            if not can_open:
-                logger.debug("Signal #%s (%s) held by Risk Guard: %s", sig.get("id"), sym, hold_reason)
                 continue
 
             # Институциональная проверка R:R (строго >= 1:2.0 для XAUUSD, >= 1:1.5 для Forex)
@@ -585,6 +605,17 @@ async def bridge_get_orders(request: web.Request) -> web.Response:
                     )
                     continue
                 order_lot = round(req_lot, 2)
+
+            contract_mult = 100.0 if ("XAU" in sym_clean or "GOLD" in sym_clean) else (1000.0 if "JPY" in sym_clean else 100000.0)
+            expected_risk_usd = round(order_lot * sl_dist * contract_mult, 2) if not sig.get("broker_confirmed") else 0.0
+
+            # Институциональная многофакторная валидация перед входом в рынок (включая суммарный открытый риск)
+            can_open, hold_reason = bridge_manager.can_open_new_position(
+                sym, trading_mode=trading_mode, new_trade_risk_usd=expected_risk_usd
+            )
+            if not can_open:
+                logger.debug("Signal #%s (%s) held by Risk Guard: %s", sig.get("id"), sym, hold_reason)
+                continue
 
             dispatched_symbols.add(sym)
             orders.append({
@@ -854,8 +885,8 @@ async def bridge_post_report(request: web.Request) -> web.Response:
             )
             await _send_telegram_notification(msg_part, text_admin=msg_part)
 
-        # Структурный Безубыток активирован (преодоление 1.0R -> стоп за Protected Swing)
-        elif action == "AUTO_BREAKEVEN":
+        # Структурный Безубыток или защита ролловера активирована (преодоление 1.0R -> стоп за Protected Swing)
+        elif action in ("AUTO_BREAKEVEN", "MIDNIGHT_ROLLOVER_GUARD"):
             try:
                 from db.database import DB_PATH
                 import aiosqlite
@@ -889,13 +920,13 @@ async def bridge_post_report(request: web.Request) -> web.Response:
                 f"📊 <b>{symbol}</b> | Билет: <code>#{ticket}</code>\n"
                 f"📈 Преодолен барьер 1.0R: <b>+{profit:.2f} USD</b>\n"
                 f"🔒 <b>Стоп-лосс перенесён за защитный локальный свинг (Protected Swing)!</b>\n"
-                f"ℹ️ Причина: <code>{reason or 'Protected Swing Lock'}</code>\n"
+                f"ℹ️ Причина: <code>{reason or action}</code>\n"
                 f"🎯 <i>Позиция в полной безопасности. Риск потерь ликвидирован.</i>"
             )
             await _send_admin_only(msg_be)
 
-        # Позиция закрыта в MT5 (TP, SL, безубыток)
-        elif action in ("DEAL_CLOSED", "STALE_PROFIT_CLOSE", "CLOSED"):
+        # Позиция закрыта в MT5 (TP, SL, безубыток, EOD Flat)
+        elif action in ("DEAL_CLOSED", "STALE_PROFIT_CLOSE", "CLOSED", "CLOSED_EOD_FLAT"):
             sig = await close_signal_by_broker(symbol, price, profit, reason)
             profit_sign = "+" if profit >= 0 else ""
             reason_u = str(reason or "").upper()

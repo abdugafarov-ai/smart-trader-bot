@@ -431,6 +431,250 @@ class TestComprehensiveAudit(unittest.TestCase):
 
         asyncio.run(run_bridge_orders_test())
 
+    def test_breakeven_deal_history_notification_no_name_error(self):
+        """
+        Verifies that when MT5 posts a closed deal with profit == 0.0 (breakeven)
+        in history to bridge_get_orders, no NameError ('profit' vs 'profit_val') occurs.
+        """
+        import json
+        import webapp.server as srv
+
+        async def run_test():
+            auth_req = MagicMock()
+            auth_req.method = "POST"
+            auth_req.headers = {"X-Bridge-Key": "test_secret_key"}
+            auth_req.query = {}
+            auth_req.remote = "127.0.0.1"
+            auth_req.json = AsyncMock(return_value={
+                "balance": 5000.0,
+                "equity": 5000.0,
+                "margin_free": 5000.0,
+                "broker": "FundingPips",
+                "account": "21027982",
+                "positions": [],
+                "orders": [],
+                "history": [
+                    {
+                        "ticket": 777001,
+                        "symbol": "XAUUSD",
+                        "type": "BUY",
+                        "lot": 0.01,
+                        "price": 2650.0,
+                        "profit": 0.0,  # Breakeven deal (profit_val == 0.0)
+                        "time": 1761570000,
+                        "magic": 888001,
+                        "comment": "SmartTrader#101",
+                    }
+                ],
+            })
+
+            class _HybridCursor:
+                async def fetchall(self):
+                    return []
+
+                async def fetchone(self):
+                    return None
+
+                def __await__(self):
+                    async def _coro():
+                        return self
+                    return _coro().__await__()
+
+                async def __aenter__(self):
+                    return self
+
+                async def __aexit__(self, exc_type, exc, tb):
+                    return None
+
+            mock_cursor = _HybridCursor()
+            mock_db = MagicMock()
+            mock_db.execute = MagicMock(return_value=mock_cursor)
+            mock_conn_ctx = MagicMock()
+            mock_conn_ctx.__aenter__ = AsyncMock(return_value=mock_db)
+            mock_conn_ctx.__aexit__ = AsyncMock(return_value=None)
+
+            with patch.object(config, "BRIDGE_API_KEY", "test_secret_key"), \
+                 patch("trading.execution_bridge.bridge_manager.enabled", False), \
+                 patch("trading.execution_bridge.bridge_manager.check_equity_hard_stop", return_value=(False, "")), \
+                 patch("trading.execution_bridge.bridge_manager.check_daily_loss", return_value=(False, 0.0, 0.0, 5000.0)), \
+                 patch("db.database.sync_broker_deals", new_callable=AsyncMock, return_value=[{
+                     "ticket": 777001,
+                     "symbol": "XAUUSD",
+                     "type": "BUY",
+                     "lot": 0.01,
+                     "price": 2650.0,
+                     "profit": 0.0,
+                     "time": 1761570000,
+                     "magic": 888001,
+                     "comment": "SmartTrader#101",
+                 }]), \
+                 patch("db.database.close_signal_by_broker", new_callable=AsyncMock, return_value={
+                     "entry_price": 2650.0,
+                     "stop_loss": 2645.0,
+                     "take_profit_1": 2660.0,
+                     "direction": "LONG",
+                 }), \
+                 patch("db.database.get_today_broker_pnl", new_callable=AsyncMock, return_value={"total_pnl": 0.0, "deals_count": 1}), \
+                 patch("db.database.get_bot_setting", new_callable=AsyncMock, return_value="prop"), \
+                 patch("market.data_fetcher.DataFetcher.fetch_ohlcv", new_callable=AsyncMock, return_value=pd.DataFrame()), \
+                 patch("aiosqlite.connect", return_value=mock_conn_ctx), \
+                 patch.object(srv, "_send_telegram_notification", new_callable=AsyncMock) as mock_notify:
+                resp = await srv.bridge_get_orders(auth_req)
+                payload = json.loads(resp.text)
+                self.assertEqual(payload["status"], "ok")
+                mock_notify.assert_called_once()
+                sent_admin_msg = mock_notify.call_args.kwargs.get("text_admin", "")
+                self.assertIn("+0.00 USD", sent_admin_msg)
+
+        asyncio.run(run_test())
+
+    def test_stale_unconfirmed_signal_expired_and_not_dispatched(self):
+        """
+        Verifies that an unconfirmed ACTIVE market signal older than 15 minutes
+        is marked EXPIRED and NOT dispatched to MT5 when autopilot is enabled later.
+        """
+        import json
+        import webapp.server as srv
+
+        async def run_test():
+            auth_req = MagicMock()
+            auth_req.method = "GET"
+            auth_req.headers = {"X-Bridge-Key": "test_secret_key"}
+            auth_req.query = {}
+            auth_req.remote = "127.0.0.1"
+
+            stale_signal = {
+                "id": 888,
+                "symbol": "XAUUSD",
+                "direction": "LONG",
+                "order_type": "BUY_MARKET",
+                "entry_price": 2650.0,
+                "stop_loss": 2645.0,
+                "take_profit_1": 2660.0,
+                "take_profit_2": 2665.0,
+                "stars": 5,
+                "lot": 0.02,
+                "status": "ACTIVE",
+                "broker_confirmed": 0,
+                "created_at": "2026-01-01T00:00:00Z",  # Hours/days old
+            }
+
+            mock_cursor = AsyncMock()
+            mock_cursor.fetchall = AsyncMock(return_value=[stale_signal])
+            mock_db = AsyncMock()
+            mock_db.execute = AsyncMock(return_value=mock_cursor)
+            mock_conn_ctx = MagicMock()
+            mock_conn_ctx.__aenter__ = AsyncMock(return_value=mock_db)
+            mock_conn_ctx.__aexit__ = AsyncMock(return_value=None)
+
+            with patch.object(config, "BRIDGE_API_KEY", "test_secret_key"), \
+                 patch("trading.execution_bridge.bridge_manager.enabled", True), \
+                 patch("trading.execution_bridge.bridge_manager.default_risk", 0.25), \
+                 patch("trading.execution_bridge.bridge_manager.check_equity_hard_stop", return_value=(False, "")), \
+                 patch("trading.execution_bridge.bridge_manager.check_daily_loss", return_value=(False, 0.0, 0.0, 5000.0)), \
+                 patch("trading.execution_bridge.bridge_manager.can_open_new_position", return_value=(True, "OK")), \
+                 patch("db.database.get_today_broker_pnl", new_callable=AsyncMock, return_value={"total_pnl": 0.0, "deals_count": 0}), \
+                 patch("db.database.get_bot_setting", new_callable=AsyncMock, return_value="prop"), \
+                 patch("db.database.get_consecutive_sl_count", new_callable=AsyncMock, return_value=0), \
+                 patch("aiosqlite.connect", return_value=mock_conn_ctx), \
+                 patch.object(srv, "update_signal_status", new_callable=AsyncMock) as mock_update_status:
+                resp = await srv.bridge_get_orders(auth_req)
+                payload = json.loads(resp.text)
+                self.assertEqual(payload["orders"], [], "Stale unconfirmed market signal must NOT be dispatched!")
+                mock_update_status.assert_called_once()
+                self.assertEqual(mock_update_status.call_args[0][0], 888)
+                self.assertEqual(mock_update_status.call_args[0][1], "EXPIRED")
+
+        asyncio.run(run_test())
+
+    def test_live_telemetry_balance_and_midnight_rollover_guard(self):
+        """
+        Verifies:
+        1. ExecutionBridge.account_balance, account_equity, and get_effective_balance()
+           use live MT5 telemetry (min of balance and equity).
+        2. check_midnight_rollover_guard reads 'price' from MT5 position telemetry
+           and computes safe_sl = open_price + 3.0 (not 0.0 + 3.0 = 3.0!).
+        """
+        self.bridge.mt5_telemetry["balance"] = 4800.0
+        self.bridge.mt5_telemetry["equity"] = 4720.0
+        self.assertEqual(self.bridge.account_balance, 4800.0)
+        self.assertEqual(self.bridge.account_equity, 4720.0)
+        self.assertEqual(self.bridge.get_effective_balance(5000.0), 4720.0)
+
+        # Test check_midnight_rollover_guard with 'price' key (as sent by SmartTraderBridge.mq5)
+        self.bridge.mt5_telemetry["positions"] = [
+            {
+                "ticket": 555111,
+                "symbol": "XAUUSD",
+                "type": "BUY",
+                "lot": 0.02,
+                "price": 2650.0,
+                "sl": 2645.0,
+                "tp": 2700.0,
+                "profit": 95.0,
+            }
+        ]
+        # Mock datetime.now in execution_bridge to 23:35 broker time (20:35 UTC in EEST UTC+3)
+        rollover_utc = datetime(2026, 10, 20, 20, 35, tzinfo=timezone.utc)
+        with patch("trading.execution_bridge.datetime") as mock_dt:
+            mock_dt.now.return_value = rollover_utc
+            actions = asyncio.run(self.bridge.check_midnight_rollover_guard())
+            self.assertEqual(len(actions), 1)
+            self.assertIn("2653.00", actions[0], "safe_sl must be 2650.0 + 3.0 = 2653.00, not 3.00!")
+
+    def test_circuit_breaker_persistence_and_dxy_5_majors(self):
+        """
+        Verifies:
+        1. Circuit breaker states (equity_hard_stop_triggered, daily_loss_locked) are restored
+           from DB on restart and block enabling autopilot until unlock_equity_hard_stop() is called.
+        2. get_dxy_bars_sync synthesizes 5-major DXY when USDSEK is not exported by the broker.
+        """
+        async def run_cb_test():
+            bridge = ExecutionBridge()
+            db_store = {
+                "equity_hard_stop_triggered": "true",
+                "equity_hard_stop_reason": "Equity $4440 <= $4450",
+                "autotrade_enabled": "true",
+            }
+            with patch("db.database.get_bot_setting", new_callable=AsyncMock) as mock_get, \
+                 patch("db.database.set_bot_setting", new_callable=AsyncMock):
+                mock_get.side_effect = lambda k, default="": db_store.get(k, default)
+                await bridge.load_settings_from_db()
+                self.assertTrue(bridge.equity_hard_stop_triggered)
+                self.assertFalse(bridge.enabled, "Hard stop must keep autopilot disabled on restart!")
+
+                # Attempting set_enabled(True) while hard stop is active must be refused
+                bridge.set_enabled(True)
+                self.assertFalse(bridge.enabled)
+
+                # Explicit admin unlock clears hard stop
+                bridge.unlock_equity_hard_stop()
+                await asyncio.sleep(0)
+                self.assertFalse(bridge.equity_hard_stop_triggered)
+
+        asyncio.run(run_cb_test())
+
+        # Test 5-major DXY synthesis when USDSEK is None
+        base_df = pd.DataFrame({
+            "timestamp": ["2026.10.27 10:00", "2026.10.27 10:15", "2026.10.27 10:30", "2026.10.27 10:45", "2026.10.27 11:00"],
+            "open":  [1.0800, 1.0805, 1.0810, 1.0815, 1.0820],
+            "high":  [1.0810, 1.0815, 1.0820, 1.0825, 1.0830],
+            "low":   [1.0790, 1.0795, 1.0800, 1.0805, 1.0810],
+            "close": [1.0805, 1.0810, 1.0815, 1.0820, 1.0825],
+            "volume": [100]*5,
+        })
+
+        def mock_read_bars(sym, tf, limit=150, closed_only=True):
+            if sym == "USDSEK":
+                return None  # Broker does not export USDSEK
+            return base_df.copy()
+
+        with patch.object(self.fetcher, "_read_mt5_bars", side_effect=mock_read_bars):
+            dxy_5 = self.fetcher.get_dxy_bars_sync("M15", limit=50)
+            self.assertFalse(dxy_5.empty, "5-major DXY must be synthesized when EUR/GBP/JPY/CHF/CAD are available!")
+            self.assertEqual(len(dxy_5), 5)
+
 
 if __name__ == "__main__":
     unittest.main()
+

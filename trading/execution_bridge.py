@@ -95,6 +95,37 @@ class ExecutionBridge:
         self.current_trade_date: str = get_broker_today_date_str()
         self.today_stats_cache: Dict[str, Any] = {}
 
+    @property
+    def account_balance(self) -> float:
+        """Возвращает актуальный баланс счета из живой телеметрии MT5 (0.0 если не получен)."""
+        try:
+            return float(self.mt5_telemetry.get("balance", 0.0) or 0.0)
+        except (ValueError, TypeError):
+            return 0.0
+
+    @property
+    def account_equity(self) -> float:
+        """Возвращает актуальное эквити счета из живой телеметрии MT5 (0.0 если не получено)."""
+        try:
+            return float(self.mt5_telemetry.get("equity", 0.0) or 0.0)
+        except (ValueError, TypeError):
+            return 0.0
+
+    def get_effective_balance(self, default: float = 5000.0) -> float:
+        """
+        Возвращает консервативный расчетный капитал для риск-менеджмента:
+        min(balance, equity) при наличии живой телеметрии MT5, иначе default ($5,000.00).
+        """
+        bal = self.account_balance
+        eq = self.account_equity
+        if bal > 0 and eq > 0:
+            return min(bal, eq)
+        if eq > 0:
+            return eq
+        if bal > 0:
+            return bal
+        return float(default)
+
     def set_enabled(self, enabled: bool):
         if enabled:
             is_hard, reason = self.check_equity_hard_stop()
@@ -140,7 +171,7 @@ class ExecutionBridge:
         max_r = getattr(config, "AUTOTRADE_MAX_RISK", 0.50)
         raw_risk = risk_pct if (risk_pct is not None and risk_pct > 0) else self.default_risk
         effective_risk = min(float(raw_risk), max_r)
-        bal_val = float(balance) if (balance is not None and balance > 0) else (float(self.mt5_telemetry.get("balance", 0.0)) or 5000.0)
+        bal_val = float(balance) if (balance is not None and balance > 0) else self.get_effective_balance(5000.0)
 
         if "XAU" in sym_clean or "GOLD" in sym_clean:
             if sl_dist_usd is not None and sl_dist_usd > 0:
@@ -181,7 +212,7 @@ class ExecutionBridge:
         return max_safe_forex_lot
 
     async def load_settings_from_db(self):
-        """Загружает персистентные настройки моста (лот, риск, режим) из базы данных SQLite."""
+        """Загружает персистентные настройки моста и состояния аварийных блокировок из базы данных SQLite."""
         from db.database import get_bot_setting
         try:
             lot_str = await get_bot_setting("trading_lot", "")
@@ -206,10 +237,58 @@ class ExecutionBridge:
             max_pos_str = await get_bot_setting("max_concurrent_positions", "")
             if max_pos_str:
                 self.max_concurrent_positions = max(1, min(10, int(max_pos_str)))
-            logger.info("Loaded Bridge settings from DB: lot=%.2f, risk=%.2f%%, lot_mode=%s, enabled=%s, daily_loss_limit=%.1f%%, max_positions=%d",
-                        self.default_lot, self.default_risk, self.lot_mode, self.enabled, self.max_daily_loss_pct, self.max_concurrent_positions)
+
+            # Восстановление аварийных блокировок (Circuit Breakers), чтобы рестарт не снимал защиту
+            hard_stop_str = await get_bot_setting("equity_hard_stop_triggered", "")
+            if hard_stop_str.lower() in ("true", "1", "yes"):
+                self.equity_hard_stop_triggered = True
+                self.equity_hard_stop_reason = await get_bot_setting(
+                    "equity_hard_stop_reason",
+                    f"Хард-стоп эквити <= ${self.hard_equity_stop_usd:.2f} (сохранен до ручной разблокировки)"
+                )
+                self.enabled = False
+
+            today_str = get_broker_today_date_str()
+            daily_lock_str = await get_bot_setting("daily_loss_locked", "")
+            daily_lock_date = await get_bot_setting("daily_lock_date", "")
+            if daily_lock_str.lower() in ("true", "1", "yes") and daily_lock_date == today_str:
+                self.daily_loss_locked = True
+                self.daily_lock_reason = await get_bot_setting(
+                    "daily_lock_reason",
+                    "Дневной лимит просадки исчерпан (сохранен после перезапуска)"
+                )
+
+            logger.info(
+                "Loaded Bridge settings from DB: lot=%.2f, risk=%.2f%%, lot_mode=%s, enabled=%s, daily_loss_limit=%.1f%%, max_positions=%d, hard_stop=%s, daily_locked=%s",
+                self.default_lot, self.default_risk, self.lot_mode, self.enabled,
+                self.max_daily_loss_pct, self.max_concurrent_positions,
+                self.equity_hard_stop_triggered, self.daily_loss_locked,
+            )
         except Exception as e:
             logger.error("Failed to load Bridge settings from DB: %s", e)
+
+    async def persist_circuit_breaker_state(self):
+        """Сохраняет состояние аварийных стоп-условий в SQLite (требует явной процедуры разблокировки)."""
+        try:
+            from db.database import set_bot_setting
+            await set_bot_setting("equity_hard_stop_triggered", "true" if self.equity_hard_stop_triggered else "false")
+            await set_bot_setting("equity_hard_stop_reason", self.equity_hard_stop_reason or "")
+            await set_bot_setting("daily_loss_locked", "true" if self.daily_loss_locked else "false")
+            await set_bot_setting("daily_lock_reason", self.daily_lock_reason or "")
+            await set_bot_setting("daily_lock_date", self.current_trade_date or get_broker_today_date_str())
+            if self.equity_hard_stop_triggered:
+                await set_bot_setting("autotrade_enabled", "false")
+        except Exception as e:
+            logger.debug("persist_circuit_breaker_state skipped/failed: %s", e)
+
+    def _schedule_persist_circuit_breaker(self):
+        """Безопасно планирует сохранение стоп-состояния в БД, если запущен event loop."""
+        try:
+            import asyncio
+            loop = asyncio.get_running_loop()
+            loop.create_task(self.persist_circuit_breaker_state())
+        except RuntimeError:
+            pass
 
     def update_telemetry(self, balance: float, equity: float, margin_free: float,
                          broker: str, account: str, positions: list, orders: list,
@@ -326,6 +405,7 @@ class ExecutionBridge:
         else:
             eq = float(current_equity)
         if 0 < eq <= self.hard_equity_stop_usd:
+            was_triggered = self.equity_hard_stop_triggered
             self.equity_hard_stop_triggered = True
             self.equity_hard_stop_reason = (
                 f"Хард-стоп эквити: ${eq:.2f} <= ${self.hard_equity_stop_usd:.2f} "
@@ -335,8 +415,17 @@ class ExecutionBridge:
                 self.enabled = False
                 logger.critical("🚨 ХАРД-СТОП ПО ЭКВИТИ АКТИВИРОВАН! %s. Автопилот заблокирован.", self.equity_hard_stop_reason)
             self.request_panic_close()
+            if not was_triggered:
+                self._schedule_persist_circuit_breaker()
             return True, self.equity_hard_stop_reason
         return self.equity_hard_stop_triggered, self.equity_hard_stop_reason
+
+    def unlock_equity_hard_stop(self):
+        """Явная процедура ручного сброса аварийного хард-стопа администратором после проверки счета."""
+        self.equity_hard_stop_triggered = False
+        self.equity_hard_stop_reason = ""
+        self._schedule_persist_circuit_breaker()
+        logger.info("Equity hard stop was MANUALLY RESET by admin.")
 
     def request_panic_close(self):
         self.panic_close_requested = True
@@ -373,6 +462,7 @@ class ExecutionBridge:
         """Ручной сброс блокировки дневного риска администратором."""
         self.daily_loss_locked = False
         self.daily_lock_reason = ""
+        self._schedule_persist_circuit_breaker()
         logger.info("Daily loss lock was MANUALLY RESET by admin.")
 
     def check_daily_loss(self, today_closed_pnl: float, today_deals_count: int = 0) -> tuple[bool, float, float, float]:
@@ -389,6 +479,7 @@ class ExecutionBridge:
             self.daily_loss_locked = False
             self.daily_lock_reason = ""
             self.daily_lock_alerted_date = ""
+            self._schedule_persist_circuit_breaker()
 
         is_online, _ = self.is_mt5_online()
         if not is_online:
@@ -418,8 +509,11 @@ class ExecutionBridge:
         if today_net_pnl < 0:
             dd_pct = (abs(today_net_pnl) / daily_start_balance) * 100.0
             if dd_pct >= self.max_daily_loss_pct:
+                was_locked = self.daily_loss_locked
                 self.daily_loss_locked = True
                 self.daily_lock_reason = f"Дневная просадка {dd_pct:.2f}% >= лимита {self.max_daily_loss_pct:.1f}% (PnL: {today_net_pnl:.2f} USD)"
+                if not was_locked:
+                    self._schedule_persist_circuit_breaker()
                 return True, today_net_pnl, dd_pct, daily_start_balance
             return self.daily_loss_locked, today_net_pnl, dd_pct, daily_start_balance
 
@@ -437,7 +531,7 @@ class ExecutionBridge:
             try:
                 sym = str(item.get("symbol", "XAUUSD")).upper()
                 lot = float(item.get("lot") or item.get("volume") or 0.01)
-                entry = float(item.get("price") or item.get("entry") or 0.0)
+                entry = float(item.get("price") or item.get("open_price") or item.get("entry") or 0.0)
                 sl = float(item.get("sl") or item.get("stop_loss") or 0.0)
                 p_type = str(item.get("type", "BUY")).upper()
                 if entry > 0 and sl > 0:
@@ -449,7 +543,7 @@ class ExecutionBridge:
                     total_risk_usd += lot * sl_dist * contract_mult
                 else:
                     # Консервативная оценка риска при отсутствии явного SL в телеметрии
-                    bal = float(self.mt5_telemetry.get("balance", 0.0)) or 5000.0
+                    bal = self.get_effective_balance(5000.0)
                     total_risk_usd += bal * (self.default_risk / 100.0)
             except Exception:
                 continue
@@ -744,7 +838,9 @@ class ExecutionBridge:
                     continue
                 profit = float(p.get("profit", 0.0))
                 ticket = int(p.get("ticket", 0))
-                open_p = float(p.get("open_price", 0.0))
+                open_p = float(p.get("price") or p.get("open_price") or p.get("entry") or 0.0)
+                if open_p <= 0.0:
+                    continue
                 curr_sl = float(p.get("sl", 0.0))
                 p_type = str(p.get("type", "")).upper()
 

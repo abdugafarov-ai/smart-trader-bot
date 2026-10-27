@@ -274,10 +274,10 @@ string GetActivePositionsSummary()
          double price = PositionGetDouble(POSITION_PRICE_OPEN);
          double sl = PositionGetDouble(POSITION_SL);
          double tp = PositionGetDouble(POSITION_TP);
-         double profit = PositionGetDouble(POSITION_PROFIT);
+         double profit = PositionGetDouble(POSITION_PROFIT) + PositionGetDouble(POSITION_SWAP);
          string type_str = (type == POSITION_TYPE_BUY) ? "BUY" : "SELL";
-         json += StringFormat("{\"ticket\":%I64u,\"symbol\":\"%s\",\"type\":\"%s\",\"lot\":%.2f,\"price\":%.5f,\"sl\":%.5f,\"tp\":%.5f,\"profit\":%.2f,\"magic\":%I64d,\"is_manual\":%s}",
-                              ticket, sym, type_str, volume, price, sl, tp, profit, magic, (magic == 0 ? "true" : "false"));
+         json += StringFormat("{\"ticket\":%I64u,\"symbol\":\"%s\",\"type\":\"%s\",\"lot\":%.2f,\"price\":%.5f,\"open_price\":%.5f,\"sl\":%.5f,\"tp\":%.5f,\"profit\":%.2f,\"magic\":%I64d,\"is_manual\":%s}",
+                              ticket, sym, type_str, volume, price, price, sl, tp, profit, magic, (magic == 0 ? "true" : "false"));
          count++;
       }
    }
@@ -362,7 +362,9 @@ string GetDealsHistorySummary()
          ENUM_DEAL_ENTRY entry = (ENUM_DEAL_ENTRY)HistoryDealGetInteger(ticket, DEAL_ENTRY);
          if(entry == DEAL_ENTRY_OUT || entry == DEAL_ENTRY_INOUT)
          {
-            double profit = HistoryDealGetDouble(ticket, DEAL_PROFIT);
+            double profit = HistoryDealGetDouble(ticket, DEAL_PROFIT)
+                          + HistoryDealGetDouble(ticket, DEAL_SWAP)
+                          + HistoryDealGetDouble(ticket, DEAL_COMMISSION);
             double price = HistoryDealGetDouble(ticket, DEAL_PRICE);
             double volume = HistoryDealGetDouble(ticket, DEAL_VOLUME);
             long time_close = HistoryDealGetInteger(ticket, DEAL_TIME);

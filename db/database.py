@@ -125,10 +125,10 @@ async def init_db():
             )
         """)
 
-        # По умолчанию устанавливаем режим micro для депозита $12 (если ещё не задан)
+        # По умолчанию устанавливаем режим prop для FundingPips $5,000 XAUUSD Intraday (если ещё не задан)
         await db.execute("""
             INSERT OR IGNORE INTO bot_settings (key, value, updated_at)
-            VALUES ('trading_mode', 'micro', ?)
+            VALUES ('trading_mode', 'prop', ?)
         """, (datetime.now(timezone.utc).isoformat(),))
 
         await db.commit()

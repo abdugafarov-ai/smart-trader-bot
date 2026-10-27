@@ -336,7 +336,22 @@ class DataFetcher:
                     dxy['volume'] = 100.0
                     return dxy.tail(limit).reset_index(drop=True)
 
-            return empty_df
+            # 5-major re-normalized DXY basket (EUR 57.6%, JPY 13.6%, GBP 11.9%, CAD 9.1%, CHF 3.6% = 95.8% total weight)
+            w_scale = 1.0 / 0.958
+            w_eur = -0.576 * w_scale
+            w_jpy = 0.136 * w_scale
+            w_gbp = -0.119 * w_scale
+            w_cad = 0.091 * w_scale
+            w_chf = 0.036 * w_scale
+            k5 = 50.14348112
+            dxy = pd.DataFrame()
+            dxy['timestamp'] = m['dt']
+            dxy['open'] = k5 * (m['open_eur'] ** w_eur) * (m['open_jpy'] ** w_jpy) * (m['open_gbp'] ** w_gbp) * (m['open_cad'] ** w_cad) * (m['open_chf'] ** w_chf)
+            dxy['close'] = k5 * (m['close_eur'] ** w_eur) * (m['close_jpy'] ** w_jpy) * (m['close_gbp'] ** w_gbp) * (m['close_cad'] ** w_cad) * (m['close_chf'] ** w_chf)
+            dxy['high'] = k5 * (m['low_eur'] ** w_eur) * (m['high_jpy'] ** w_jpy) * (m['low_gbp'] ** w_gbp) * (m['high_cad'] ** w_cad) * (m['high_chf'] ** w_chf)
+            dxy['low'] = k5 * (m['high_eur'] ** w_eur) * (m['low_jpy'] ** w_jpy) * (m['high_gbp'] ** w_gbp) * (m['low_cad'] ** w_cad) * (m['low_chf'] ** w_chf)
+            dxy['volume'] = 100.0
+            return dxy.tail(limit).reset_index(drop=True)
         except Exception as e:
             logger.error("Error synthesizing DXY: %s", e)
             return empty_df

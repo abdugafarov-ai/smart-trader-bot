@@ -1102,13 +1102,12 @@ class ICTSMCStrategy(BaseStrategy):
         choch_found = False
 
         # 3. ВАЛИДАЦИЯ СТРУКТУРЫ: СВИП ТЕНЬЮ vs ПРОБОЙ ТЕЛОМ (SWEEP vs BOS)
-        # Исключаем формирующуюся свечу iloc[-1] во избежание ложных пробоев внутри текущего тика.
-        # ВАЖНО: Оцениваем только закрытые свечи СТРОГО ПОСЛЕ точки свинга, никогда не проверяем свечи старше свинга!
+        # ВАЖНО: Оцениваем закрытые свечи СТРОГО ПОСЛЕ точки свинга (включая последний закрытый бар df.iloc[-1]).
         start_bull = hh1_idx + 1
-        bull_window = df.iloc[start_bull:-1] if start_bull < len(df) - 1 else df.iloc[0:0]
+        bull_window = df.iloc[start_bull:] if start_bull < len(df) else df.iloc[0:0]
 
         start_bear = hl1_idx + 1
-        bear_window = df.iloc[start_bear:-1] if start_bear < len(df) - 1 else df.iloc[0:0]
+        bear_window = df.iloc[start_bear:] if start_bear < len(df) else df.iloc[0:0]
 
         struct_bull = self.validate_structure_break(df, swing_high=hh1, swing_low=hl1, symbol=symbol, candles_window=bull_window)
         struct_bear = self.validate_structure_break(df, swing_high=hh1, swing_low=hl1, symbol=symbol, candles_window=bear_window)
@@ -1852,7 +1851,10 @@ class ICTSMCStrategy(BaseStrategy):
         try:
             from trading.execution_bridge import bridge_manager
             risk_pct_val = float(getattr(bridge_manager, "default_risk", config.AUTOTRADE_DEFAULT_RISK))
-            acct_bal = float(getattr(bridge_manager, "account_equity", 0.0) or getattr(bridge_manager, "account_balance", 0.0) or 5000.0)
+            if hasattr(bridge_manager, "get_effective_balance"):
+                acct_bal = float(bridge_manager.get_effective_balance(5000.0))
+            else:
+                acct_bal = float(getattr(bridge_manager, "account_equity", 0.0) or getattr(bridge_manager, "account_balance", 0.0) or 5000.0)
             sl_pips_val = risk / pip_unit if pip_unit > 0 else 0.0
             calc_lot = bridge_manager.calculate_lot(
                 sym_clean,
@@ -1923,8 +1925,15 @@ class ICTSMCStrategy(BaseStrategy):
                 confidence_stars = min(2, aligned_factors)
                 details.append(f"ℹ️ Оценка XAUUSD: {aligned_factors}/4 факторов (слабый сетап {confidence_stars}★)")
 
-        now_utc_iso = (current_time or datetime.now(timezone.utc)).strftime("%Y-%m-%dT%H:%M:%SZ")
-        setup_id = f"{sym_clean}_{timeframe}_{direction}_{int((current_time or datetime.now(timezone.utc)).timestamp())}"
+        from datetime import timedelta
+        now_dt = current_time or datetime.now(timezone.utc)
+        if now_dt.tzinfo is None:
+            now_dt = now_dt.replace(tzinfo=timezone.utc)
+        now_utc_iso = now_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+        ttl_minutes = 15 if "MARKET" in str(order_type).upper() else 240
+        exp_dt = now_dt + timedelta(minutes=ttl_minutes)
+        expires_utc_iso = exp_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+        setup_id = f"{sym_clean}_{timeframe}_{direction}_{int(now_dt.timestamp())}"
 
         signal = StrategySignal(
             direction=direction,
@@ -1939,6 +1948,7 @@ class ICTSMCStrategy(BaseStrategy):
             details=details,
             setup_id=setup_id,
             created_at=now_utc_iso,
+            expires_at=expires_utc_iso,
             timeframes_used=["D1", "H1", "M15", "M5"] if is_gold else [str(timeframe).upper()],
             lot=calc_lot,
             risk_usd=risk_usd_val,

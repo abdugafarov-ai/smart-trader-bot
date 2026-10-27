@@ -85,13 +85,19 @@ class SignalTracker:
             logger.error("Drawdown alert check error: %s", e)
 
     async def process_pending_timeouts(self):
-        """Отменяет отложенные ордера, которые не были исполнены брокером."""
+        """Отменяет отложенные и неподтвержденные ордера, которые не были исполнены брокером вовремя."""
         pending = await get_pending_signals()
-        if not pending:
+        active_list = await get_active_signals()
+        unconfirmed_active = [
+            s for s in (active_list or [])
+            if s.get("status") == "ACTIVE" and not s.get("broker_confirmed", 0)
+        ]
+        candidates = list(pending or []) + unconfirmed_active
+        if not candidates:
             return
 
         now = datetime.now(timezone.utc)
-        for sig in pending:
+        for sig in candidates:
             try:
                 signal_id = sig['id']
                 symbol = sig['symbol']
@@ -102,14 +108,24 @@ class SignalTracker:
                 created_raw = sig.get('created_at')
                 if not created_raw:
                     continue
-                created = datetime.fromisoformat(created_raw)
+                created = datetime.fromisoformat(str(created_raw).replace("Z", "+00:00"))
                 if created.tzinfo is None:
                     created = created.replace(tzinfo=timezone.utc)
 
                 age_minutes = (now - created).total_seconds() / 60.0
                 broker_confirmed = sig.get('broker_confirmed', 0)
 
-                # 1. Если ордер не был подтвержден MT5 за 5 минут — авто-отмена фантома
+                # 0. Если рыночный сигнал (ACTIVE) не был исполнен в MT5 за 15 минут (1 бар M15) -> EXPIRED
+                if status == "ACTIVE" and not broker_confirmed:
+                    if age_minutes > 15.0:
+                        await update_signal_status(
+                            signal_id, "EXPIRED",
+                            result=f"Истёк срок актуальности внутридневного сигнала ({int(age_minutes)} мин > 15 мин)"
+                        )
+                        logger.info("Unconfirmed ACTIVE signal #%d (%s) expired after %.1f min -> EXPIRED", signal_id, symbol, age_minutes)
+                    continue
+
+                # 1. Если лимитный ордер (PENDING) не был подтвержден MT5 за 5 минут — авто-отмена фантома
                 if not broker_confirmed and age_minutes > 5.0:
                     await update_signal_status(
                         signal_id, "CANCELLED_UNCONFIRMED",
