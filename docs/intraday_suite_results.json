@@ -1,0 +1,691 @@
+[
+  {
+    "category": "Model Comparison",
+    "config": "model_a",
+    "result": {
+      "model": "MODEL_A",
+      "risk_pct": "0.25%",
+      "rr_target": "1:2.0",
+      "entry_mode": "market",
+      "auto_be": true,
+      "partial_close": false,
+      "total_trades": 15,
+      "wins": 9,
+      "losses": 6,
+      "win_rate_pct": 60.0,
+      "profit_factor": 0.93,
+      "net_profit_usd": -4.91,
+      "total_r": -0.36,
+      "expectancy_r": -0.02,
+      "expectancy_usd": -0.33,
+      "max_daily_dd_usd": 12.7,
+      "max_total_dd_usd": 43.74,
+      "max_loss_streak": 2,
+      "fundingpips_rules_passed": true,
+      "long_metrics": {
+        "trades": 6,
+        "win_rate": 50.0,
+        "pf": 0.59,
+        "net_usd": -15.25,
+        "exp_r": -0.2
+      },
+      "short_metrics": {
+        "trades": 9,
+        "win_rate": 66.7,
+        "pf": 1.31,
+        "net_usd": 10.34,
+        "exp_r": 0.09
+      },
+      "in_sample": {
+        "trades": 3,
+        "win_rate": 33.3,
+        "pf": 0.82,
+        "net_usd": -4.6,
+        "exp_r": -0.12
+      },
+      "out_of_sample": {
+        "trades": 12,
+        "win_rate": 66.7,
+        "pf": 0.99,
+        "net_usd": -0.31,
+        "exp_r": 0.0
+      }
+    }
+  },
+  {
+    "category": "Model Comparison",
+    "config": "model_b",
+    "result": {
+      "model": "MODEL_B",
+      "risk_pct": "0.25%",
+      "rr_target": "1:2.0",
+      "entry_mode": "market",
+      "auto_be": true,
+      "partial_close": false,
+      "total_trades": 1513,
+      "wins": 928,
+      "losses": 585,
+      "win_rate_pct": 61.3,
+      "profit_factor": 1.1,
+      "net_profit_usd": 922.45,
+      "total_r": 69.8,
+      "expectancy_r": 0.05,
+      "expectancy_usd": 0.61,
+      "max_daily_dd_usd": 141.06,
+      "max_total_dd_usd": 377.39,
+      "max_loss_streak": 8,
+      "fundingpips_rules_passed": true,
+      "long_metrics": {
+        "trades": 774,
+        "win_rate": 60.5,
+        "pf": 1.11,
+        "net_usd": 482.15,
+        "exp_r": 0.05
+      },
+      "short_metrics": {
+        "trades": 739,
+        "win_rate": 62.2,
+        "pf": 1.1,
+        "net_usd": 440.3,
+        "exp_r": 0.05
+      },
+      "in_sample": {
+        "trades": 644,
+        "win_rate": 62.6,
+        "pf": 1.17,
+        "net_usd": 565.12,
+        "exp_r": 0.07
+      },
+      "out_of_sample": {
+        "trades": 869,
+        "win_rate": 60.4,
+        "pf": 1.07,
+        "net_usd": 357.33,
+        "exp_r": 0.03
+      }
+    }
+  },
+  {
+    "category": "Model Comparison",
+    "config": "model_c",
+    "result": {
+      "model": "MODEL_C",
+      "risk_pct": "0.25%",
+      "rr_target": "1:2.0",
+      "entry_mode": "market",
+      "auto_be": true,
+      "partial_close": false,
+      "total_trades": 148,
+      "wins": 69,
+      "losses": 79,
+      "win_rate_pct": 46.6,
+      "profit_factor": 0.65,
+      "net_profit_usd": -331.0,
+      "total_r": -27.2,
+      "expectancy_r": -0.18,
+      "expectancy_usd": -2.24,
+      "max_daily_dd_usd": 40.76,
+      "max_total_dd_usd": 356.1,
+      "max_loss_streak": 8,
+      "fundingpips_rules_passed": true,
+      "long_metrics": {
+        "trades": 73,
+        "win_rate": 50.7,
+        "pf": 0.97,
+        "net_usd": -13.83,
+        "exp_r": -0.01
+      },
+      "short_metrics": {
+        "trades": 75,
+        "win_rate": 42.7,
+        "pf": 0.38,
+        "net_usd": -317.17,
+        "exp_r": -0.35
+      },
+      "in_sample": {
+        "trades": 76,
+        "win_rate": 48.7,
+        "pf": 0.61,
+        "net_usd": -184.86,
+        "exp_r": -0.2
+      },
+      "out_of_sample": {
+        "trades": 72,
+        "win_rate": 44.4,
+        "pf": 0.69,
+        "net_usd": -146.14,
+        "exp_r": -0.17
+      }
+    }
+  },
+  {
+    "category": "Risk Comparison",
+    "config": "0.25%",
+    "result": {
+      "model": "MODEL_A",
+      "risk_pct": "0.25%",
+      "rr_target": "1:2.0",
+      "entry_mode": "market",
+      "auto_be": true,
+      "partial_close": false,
+      "total_trades": 15,
+      "wins": 9,
+      "losses": 6,
+      "win_rate_pct": 60.0,
+      "profit_factor": 0.93,
+      "net_profit_usd": -4.91,
+      "total_r": -0.36,
+      "expectancy_r": -0.02,
+      "expectancy_usd": -0.33,
+      "max_daily_dd_usd": 12.7,
+      "max_total_dd_usd": 43.74,
+      "max_loss_streak": 2,
+      "fundingpips_rules_passed": true,
+      "long_metrics": {
+        "trades": 6,
+        "win_rate": 50.0,
+        "pf": 0.59,
+        "net_usd": -15.25,
+        "exp_r": -0.2
+      },
+      "short_metrics": {
+        "trades": 9,
+        "win_rate": 66.7,
+        "pf": 1.31,
+        "net_usd": 10.34,
+        "exp_r": 0.09
+      },
+      "in_sample": {
+        "trades": 3,
+        "win_rate": 33.3,
+        "pf": 0.82,
+        "net_usd": -4.6,
+        "exp_r": -0.12
+      },
+      "out_of_sample": {
+        "trades": 12,
+        "win_rate": 66.7,
+        "pf": 0.99,
+        "net_usd": -0.31,
+        "exp_r": 0.0
+      }
+    }
+  },
+  {
+    "category": "Risk Comparison",
+    "config": "0.50%",
+    "result": {
+      "model": "MODEL_A",
+      "risk_pct": "0.50%",
+      "rr_target": "1:2.0",
+      "entry_mode": "market",
+      "auto_be": true,
+      "partial_close": false,
+      "total_trades": 70,
+      "wins": 36,
+      "losses": 34,
+      "win_rate_pct": 51.4,
+      "profit_factor": 1.1,
+      "net_profit_usd": 65.35,
+      "total_r": 2.78,
+      "expectancy_r": 0.04,
+      "expectancy_usd": 0.93,
+      "max_daily_dd_usd": 44.65,
+      "max_total_dd_usd": 120.57,
+      "max_loss_streak": 6,
+      "fundingpips_rules_passed": true,
+      "long_metrics": {
+        "trades": 31,
+        "win_rate": 38.7,
+        "pf": 0.39,
+        "net_usd": -233.23,
+        "exp_r": -0.3
+      },
+      "short_metrics": {
+        "trades": 39,
+        "win_rate": 61.5,
+        "pf": 1.98,
+        "net_usd": 298.58,
+        "exp_r": 0.31
+      },
+      "in_sample": {
+        "trades": 24,
+        "win_rate": 41.7,
+        "pf": 1.01,
+        "net_usd": 2.98,
+        "exp_r": 0.01
+      },
+      "out_of_sample": {
+        "trades": 46,
+        "win_rate": 56.5,
+        "pf": 1.16,
+        "net_usd": 62.37,
+        "exp_r": 0.06
+      }
+    }
+  },
+  {
+    "category": "RR Comparison",
+    "config": "1:1.5",
+    "result": {
+      "model": "MODEL_A",
+      "risk_pct": "0.25%",
+      "rr_target": "1:1.5",
+      "entry_mode": "market",
+      "auto_be": true,
+      "partial_close": false,
+      "total_trades": 16,
+      "wins": 9,
+      "losses": 7,
+      "win_rate_pct": 56.2,
+      "profit_factor": 0.93,
+      "net_profit_usd": -5.8,
+      "total_r": -0.43,
+      "expectancy_r": -0.03,
+      "expectancy_usd": -0.36,
+      "max_daily_dd_usd": 12.83,
+      "max_total_dd_usd": 45.45,
+      "max_loss_streak": 3,
+      "fundingpips_rules_passed": true,
+      "long_metrics": {
+        "trades": 7,
+        "win_rate": 42.9,
+        "pf": 0.56,
+        "net_usd": -21.93,
+        "exp_r": -0.25
+      },
+      "short_metrics": {
+        "trades": 9,
+        "win_rate": 66.7,
+        "pf": 1.49,
+        "net_usd": 16.13,
+        "exp_r": 0.15
+      },
+      "in_sample": {
+        "trades": 3,
+        "win_rate": 33.3,
+        "pf": 0.61,
+        "net_usd": -9.82,
+        "exp_r": -0.26
+      },
+      "out_of_sample": {
+        "trades": 13,
+        "win_rate": 61.5,
+        "pf": 1.07,
+        "net_usd": 4.02,
+        "exp_r": 0.03
+      }
+    }
+  },
+  {
+    "category": "RR Comparison",
+    "config": "1:2.0",
+    "result": {
+      "model": "MODEL_A",
+      "risk_pct": "0.25%",
+      "rr_target": "1:2.0",
+      "entry_mode": "market",
+      "auto_be": true,
+      "partial_close": false,
+      "total_trades": 15,
+      "wins": 9,
+      "losses": 6,
+      "win_rate_pct": 60.0,
+      "profit_factor": 0.93,
+      "net_profit_usd": -4.91,
+      "total_r": -0.36,
+      "expectancy_r": -0.02,
+      "expectancy_usd": -0.33,
+      "max_daily_dd_usd": 12.7,
+      "max_total_dd_usd": 43.74,
+      "max_loss_streak": 2,
+      "fundingpips_rules_passed": true,
+      "long_metrics": {
+        "trades": 6,
+        "win_rate": 50.0,
+        "pf": 0.59,
+        "net_usd": -15.25,
+        "exp_r": -0.2
+      },
+      "short_metrics": {
+        "trades": 9,
+        "win_rate": 66.7,
+        "pf": 1.31,
+        "net_usd": 10.34,
+        "exp_r": 0.09
+      },
+      "in_sample": {
+        "trades": 3,
+        "win_rate": 33.3,
+        "pf": 0.82,
+        "net_usd": -4.6,
+        "exp_r": -0.12
+      },
+      "out_of_sample": {
+        "trades": 12,
+        "win_rate": 66.7,
+        "pf": 0.99,
+        "net_usd": -0.31,
+        "exp_r": 0.0
+      }
+    }
+  },
+  {
+    "category": "RR Comparison",
+    "config": "1:2.5",
+    "result": {
+      "model": "MODEL_A",
+      "risk_pct": "0.25%",
+      "rr_target": "1:2.5",
+      "entry_mode": "market",
+      "auto_be": true,
+      "partial_close": false,
+      "total_trades": 16,
+      "wins": 9,
+      "losses": 7,
+      "win_rate_pct": 56.2,
+      "profit_factor": 0.66,
+      "net_profit_usd": -28.22,
+      "total_r": -2.22,
+      "expectancy_r": -0.14,
+      "expectancy_usd": -1.76,
+      "max_daily_dd_usd": 12.83,
+      "max_total_dd_usd": 68.08,
+      "max_loss_streak": 3,
+      "fundingpips_rules_passed": true,
+      "long_metrics": {
+        "trades": 7,
+        "win_rate": 42.9,
+        "pf": 0.02,
+        "net_usd": -49.16,
+        "exp_r": -0.56
+      },
+      "short_metrics": {
+        "trades": 9,
+        "win_rate": 66.7,
+        "pf": 1.64,
+        "net_usd": 20.94,
+        "exp_r": 0.19
+      },
+      "in_sample": {
+        "trades": 3,
+        "win_rate": 33.3,
+        "pf": 1.02,
+        "net_usd": 0.62,
+        "exp_r": 0.02
+      },
+      "out_of_sample": {
+        "trades": 13,
+        "win_rate": 61.5,
+        "pf": 0.5,
+        "net_usd": -28.84,
+        "exp_r": -0.17
+      }
+    }
+  },
+  {
+    "category": "Entry Mode Comparison",
+    "config": "market",
+    "result": {
+      "model": "MODEL_A",
+      "risk_pct": "0.25%",
+      "rr_target": "1:2.0",
+      "entry_mode": "market",
+      "auto_be": true,
+      "partial_close": false,
+      "total_trades": 15,
+      "wins": 9,
+      "losses": 6,
+      "win_rate_pct": 60.0,
+      "profit_factor": 0.93,
+      "net_profit_usd": -4.91,
+      "total_r": -0.36,
+      "expectancy_r": -0.02,
+      "expectancy_usd": -0.33,
+      "max_daily_dd_usd": 12.7,
+      "max_total_dd_usd": 43.74,
+      "max_loss_streak": 2,
+      "fundingpips_rules_passed": true,
+      "long_metrics": {
+        "trades": 6,
+        "win_rate": 50.0,
+        "pf": 0.59,
+        "net_usd": -15.25,
+        "exp_r": -0.2
+      },
+      "short_metrics": {
+        "trades": 9,
+        "win_rate": 66.7,
+        "pf": 1.31,
+        "net_usd": 10.34,
+        "exp_r": 0.09
+      },
+      "in_sample": {
+        "trades": 3,
+        "win_rate": 33.3,
+        "pf": 0.82,
+        "net_usd": -4.6,
+        "exp_r": -0.12
+      },
+      "out_of_sample": {
+        "trades": 12,
+        "win_rate": 66.7,
+        "pf": 0.99,
+        "net_usd": -0.31,
+        "exp_r": 0.0
+      }
+    }
+  },
+  {
+    "category": "Entry Mode Comparison",
+    "config": "limit_fvg",
+    "result": {
+      "model": "MODEL_A",
+      "risk_pct": "0.25%",
+      "rr_target": "1:2.0",
+      "entry_mode": "limit_fvg",
+      "auto_be": true,
+      "partial_close": false,
+      "total_trades": 13,
+      "wins": 7,
+      "losses": 6,
+      "win_rate_pct": 53.8,
+      "profit_factor": 0.92,
+      "net_profit_usd": -5.47,
+      "total_r": -0.42,
+      "expectancy_r": -0.03,
+      "expectancy_usd": -0.42,
+      "max_daily_dd_usd": 14.01,
+      "max_total_dd_usd": 42.62,
+      "max_loss_streak": 2,
+      "fundingpips_rules_passed": true,
+      "long_metrics": {
+        "trades": 5,
+        "win_rate": 40.0,
+        "pf": 0.54,
+        "net_usd": -16.83,
+        "exp_r": -0.27
+      },
+      "short_metrics": {
+        "trades": 8,
+        "win_rate": 62.5,
+        "pf": 1.36,
+        "net_usd": 11.36,
+        "exp_r": 0.12
+      },
+      "in_sample": {
+        "trades": 3,
+        "win_rate": 33.3,
+        "pf": 0.8,
+        "net_usd": -4.81,
+        "exp_r": -0.13
+      },
+      "out_of_sample": {
+        "trades": 10,
+        "win_rate": 60.0,
+        "pf": 0.98,
+        "net_usd": -0.66,
+        "exp_r": -0.0
+      }
+    }
+  },
+  {
+    "category": "Management Comparison",
+    "config": "No BE / No Partials",
+    "result": {
+      "model": "MODEL_A",
+      "risk_pct": "0.25%",
+      "rr_target": "1:2.0",
+      "entry_mode": "market",
+      "auto_be": false,
+      "partial_close": false,
+      "total_trades": 15,
+      "wins": 4,
+      "losses": 11,
+      "win_rate_pct": 26.7,
+      "profit_factor": 0.68,
+      "net_profit_usd": -40.09,
+      "total_r": -3.2,
+      "expectancy_r": -0.21,
+      "expectancy_usd": -2.67,
+      "max_daily_dd_usd": 12.7,
+      "max_total_dd_usd": 92.08,
+      "max_loss_streak": 8,
+      "fundingpips_rules_passed": true,
+      "long_metrics": {
+        "trades": 6,
+        "win_rate": 16.7,
+        "pf": 0.39,
+        "net_usd": -33.91,
+        "exp_r": -0.45
+      },
+      "short_metrics": {
+        "trades": 9,
+        "win_rate": 33.3,
+        "pf": 0.91,
+        "net_usd": -6.18,
+        "exp_r": -0.05
+      },
+      "in_sample": {
+        "trades": 3,
+        "win_rate": 33.3,
+        "pf": 0.82,
+        "net_usd": -4.6,
+        "exp_r": -0.12
+      },
+      "out_of_sample": {
+        "trades": 12,
+        "win_rate": 25.0,
+        "pf": 0.65,
+        "net_usd": -35.49,
+        "exp_r": -0.24
+      }
+    }
+  },
+  {
+    "category": "Management Comparison",
+    "config": "Auto-BE only",
+    "result": {
+      "model": "MODEL_A",
+      "risk_pct": "0.25%",
+      "rr_target": "1:2.0",
+      "entry_mode": "market",
+      "auto_be": true,
+      "partial_close": false,
+      "total_trades": 15,
+      "wins": 9,
+      "losses": 6,
+      "win_rate_pct": 60.0,
+      "profit_factor": 0.93,
+      "net_profit_usd": -4.91,
+      "total_r": -0.36,
+      "expectancy_r": -0.02,
+      "expectancy_usd": -0.33,
+      "max_daily_dd_usd": 12.7,
+      "max_total_dd_usd": 43.74,
+      "max_loss_streak": 2,
+      "fundingpips_rules_passed": true,
+      "long_metrics": {
+        "trades": 6,
+        "win_rate": 50.0,
+        "pf": 0.59,
+        "net_usd": -15.25,
+        "exp_r": -0.2
+      },
+      "short_metrics": {
+        "trades": 9,
+        "win_rate": 66.7,
+        "pf": 1.31,
+        "net_usd": 10.34,
+        "exp_r": 0.09
+      },
+      "in_sample": {
+        "trades": 3,
+        "win_rate": 33.3,
+        "pf": 0.82,
+        "net_usd": -4.6,
+        "exp_r": -0.12
+      },
+      "out_of_sample": {
+        "trades": 12,
+        "win_rate": 66.7,
+        "pf": 0.99,
+        "net_usd": -0.31,
+        "exp_r": 0.0
+      }
+    }
+  },
+  {
+    "category": "Management Comparison",
+    "config": "Auto-BE + 50% Partials",
+    "result": {
+      "model": "MODEL_A",
+      "risk_pct": "0.25%",
+      "rr_target": "1:2.0",
+      "entry_mode": "market",
+      "auto_be": true,
+      "partial_close": true,
+      "total_trades": 16,
+      "wins": 9,
+      "losses": 7,
+      "win_rate_pct": 56.2,
+      "profit_factor": 0.85,
+      "net_profit_usd": -12.16,
+      "total_r": -0.94,
+      "expectancy_r": -0.06,
+      "expectancy_usd": -0.76,
+      "max_daily_dd_usd": 12.83,
+      "max_total_dd_usd": 50.99,
+      "max_loss_streak": 3,
+      "fundingpips_rules_passed": true,
+      "long_metrics": {
+        "trades": 7,
+        "win_rate": 42.9,
+        "pf": 0.44,
+        "net_usd": -28.08,
+        "exp_r": -0.32
+      },
+      "short_metrics": {
+        "trades": 9,
+        "win_rate": 66.7,
+        "pf": 1.48,
+        "net_usd": 15.92,
+        "exp_r": 0.14
+      },
+      "in_sample": {
+        "trades": 3,
+        "win_rate": 33.3,
+        "pf": 0.82,
+        "net_usd": -4.6,
+        "exp_r": -0.12
+      },
+      "out_of_sample": {
+        "trades": 13,
+        "win_rate": 61.5,
+        "pf": 0.87,
+        "net_usd": -7.56,
+        "exp_r": -0.04
+      }
+    }
+  }
+]
