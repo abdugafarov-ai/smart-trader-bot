@@ -392,8 +392,8 @@ string GetDealsHistorySummary()
 //+------------------------------------------------------------------+
 void ExportBrokerRates()
 {
-   ENUM_TIMEFRAMES tfs[4] = {PERIOD_H1, PERIOD_H4, PERIOD_D1, PERIOD_W1};
-   string tf_names[4] = {"H1", "H4", "D1", "W1"};
+   ENUM_TIMEFRAMES tfs[6] = {PERIOD_M5, PERIOD_M15, PERIOD_H1, PERIOD_H4, PERIOD_D1, PERIOD_W1};
+   string tf_names[6] = {"M5", "M15", "H1", "H4", "D1", "W1"};
    
    for(int p = 0; p < ArraySize(common_pairs); p++)
    {
@@ -401,11 +401,13 @@ void ExportBrokerRates()
       string sym = GetBrokerSymbol(standard_sym);
       int digits = (int)SymbolInfoInteger(sym, SYMBOL_DIGITS);
       if(digits <= 0) digits = 2;
-      for(int t = 0; t < 4; t++)
+      for(int t = 0; t < 6; t++)
       {
          MqlRates rates[];
          ArraySetAsSeries(rates, true);
-         int n_bars = (t == 0) ? 10000 : ((t == 1) ? 5000 : ((t == 2) ? 2000 : 500));
+         int max_req = (t == 0) ? 50000 : ((t == 1) ? 35000 : ((t == 2) ? 15000 : ((t == 3) ? 5000 : ((t == 4) ? 2000 : 500))));
+         int avail = iBars(sym, tfs[t]);
+         int n_bars = (avail > 0) ? MathMin(avail, max_req) : max_req;
          int copied = CopyRates(sym, tfs[t], 0, n_bars, rates);
          if(copied > 0)
          {
@@ -651,24 +653,14 @@ void ParseAndExecuteOrders(string json)
          PrintFormat("📊 [SmartTrader] %s: Фиксированный лот из команды бота -> %.2f", broker_symbol, lot);
       }
 
-      // Жесткий предохранитель FundingPips для Золота (0.02 - 0.05 лота, риск <= $65)
-      bool is_gold_sym = (StringFind(broker_symbol, "XAU") >= 0 || StringFind(broker_symbol, "GOLD") >= 0);
-      if(is_gold_sym)
+      // Single source of truth: validate minimum broker lot
+      double min_vol = SymbolInfoDouble(broker_symbol, SYMBOL_VOLUME_MIN);
+      if(lot < min_vol)
       {
-         lot = MathMax(0.02, MathMin(0.05, lot));
-         double sl_diff = MathAbs(entry - sl);
-         if(sl_diff > 0)
-         {
-            while(lot > 0.02 && (lot * 100.0 * sl_diff) > 65.0)
-               lot = MathRound((lot - 0.01) * 100.0) / 100.0;
-            if((lot * 100.0 * sl_diff) > 65.0)
-            {
-               PrintFormat("⛔ [SmartTrader] ОТМЕНА: риск по SL ($%.2f) > $65.00 hard cap!", lot * 100.0 * sl_diff);
-               ReportExecution(pair, "REJECTED_RISK", entry, 0.0, "Risk exceeds $65.00 hard cap", sig_id);
-               if(sig_id > 0) MarkSignalProcessed(sig_id);
-               continue;
-            }
-         }
+         PrintFormat("⛔ [SmartTrader] ОТМЕНА: рассчитанный лот %.4f ниже мин. лота %.2f (риск превышает бюджет)!", lot, min_vol);
+         ReportExecution(pair, "REJECTED_RISK", entry, 0.0, "Risk exceeds budget at min lot", sig_id);
+         if(sig_id > 0) MarkSignalProcessed(sig_id);
+         continue;
       }
 
       // Институциональная маржинальная защита (Margin Guard)
@@ -1272,20 +1264,8 @@ double CalculateRiskLot(string symbol, double entry_price, double sl_price, doub
    double diff = MathAbs(entry_price - sl_price);
    if(diff <= 0) return InpFixedLot;
 
-   if(StringFind(symbol, "XAU") >= 0 || StringFind(symbol, "GOLD") >= 0)
-   {
-      double lot = 0.02;
-      if(diff < 12.0) lot = 0.05;
-      else if(diff < 14.0) lot = 0.04;
-      else if(diff < 20.0) lot = 0.03;
-      else lot = 0.02;
-
-      while(lot > 0.02 && (lot * 100.0 * diff) > 65.0)
-         lot = MathRound((lot - 0.01) * 100.0) / 100.0;
-
-      lot = MathMax(0.02, MathMin(0.05, lot));
-      return lot;
-   }
+   // Exact monetary risk calculation across all symbols including Gold
+   // Formula: lot = risk_amt / ((diff / tick_size) * tick_val)
 
    double balance   = AccountInfoDouble(ACCOUNT_BALANCE);
    double risk_pct  = (custom_risk > 0.0) ? custom_risk : InpRiskPercent;
@@ -1305,7 +1285,9 @@ double CalculateRiskLot(string symbol, double entry_price, double sl_price, doub
    
    if(step > 0)
       lot = MathFloor(lot / step) * step;
-   return MathMax(min_lot, MathMin(max_lot, lot));
+   if(lot < min_lot)
+      return 0.0; // Risk budget exceeded by minimum lot
+   return MathMin(max_lot, lot);
 }
 
 //+------------------------------------------------------------------+
