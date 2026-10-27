@@ -220,7 +220,10 @@ class DataFetcher:
             if closed_only and len(df) > 1:
                 df = df.iloc[:-1].reset_index(drop=True)
             df = df.tail(limit).reset_index(drop=True)
-            return df if not df.empty else None
+            if not df.empty:
+                df.attrs['is_broker_time'] = True
+                return df
+            return None
         except Exception as e:
             logger.debug("Failed reading MT5 bars file %s: %s", fpath, e)
             return None
