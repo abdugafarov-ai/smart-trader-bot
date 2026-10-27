@@ -69,6 +69,22 @@ class StrategySignal:
     risk_reward: Optional[float] = None
     details: list[str] = field(default_factory=list)
 
+    @property
+    def sl(self) -> Optional[float]:
+        return self.stop_loss
+
+    @property
+    def tp1(self) -> Optional[float]:
+        return self.take_profit_1
+
+    @property
+    def tp2(self) -> Optional[float]:
+        return self.take_profit_2
+
+    @property
+    def confidence_stars(self) -> int:
+        return self.confidence
+
 
 # ── Результат стратегии ───────────────────────────────────
 

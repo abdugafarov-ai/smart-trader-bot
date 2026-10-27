@@ -6,6 +6,7 @@ Smart Trader Bot — Configuration
 import os
 from pathlib import Path
 from datetime import datetime
+from typing import Optional
 from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 
@@ -32,24 +33,19 @@ TIMEZONE: str = os.getenv("TIMEZONE", "Asia/Tashkent")
 DEFAULT_TIMEFRAME: str = os.getenv("DEFAULT_TIMEFRAME", "H4")
 
 # ── Торговые пары по категориям ───────────────────────────
-PAIRS_MAJORS: list[str] = [
-    "EURUSD", "GBPUSD", "USDJPY", "USDCHF", "AUDUSD", "NZDUSD", "USDCAD",
-]
-PAIRS_CROSSES: list[str] = [
-    "EURGBP", "EURJPY", "GBPJPY", "EURAUD", "GBPAUD",
-    "EURCHF", "CADJPY", "AUDCAD", "AUDNZD",
-]
-PAIRS_COMMODITIES: list[str] = []
+PAIRS_MAJORS: list[str] = []
+PAIRS_CROSSES: list[str] = []
+PAIRS_COMMODITIES: list[str] = ["XAUUSD"]
 PAIRS_INDICES: list[str] = []
 PAIRS_CRYPTO: list[str] = []
-BANNED_PAIRS: list[str] = ["XAUUSD", "GOLD"]
+BANNED_PAIRS: list[str] = ["EURUSD", "GBPUSD", "USDJPY", "USDCHF", "AUDUSD", "NZDUSD", "USDCAD", "EURGBP", "EURJPY", "GBPJPY", "EURAUD", "GBPAUD", "EURCHF", "CADJPY", "AUDCAD", "AUDNZD"]
 
 ALL_PAIRS: list[str] = (
-    PAIRS_MAJORS + PAIRS_CROSSES + PAIRS_COMMODITIES
+    PAIRS_COMMODITIES
 )
 
 # Пары по умолчанию (из .env или все)
-_symbols_raw = os.getenv("DEFAULT_SYMBOLS", ",".join(ALL_PAIRS))
+_symbols_raw = os.getenv("DEFAULT_SYMBOLS", "XAUUSD")
 DEFAULT_SYMBOLS: list[str] = [s.strip().upper() for s in _symbols_raw.split(",") if s.strip()]
 
 # ── Авто-уведомления ──────────────────────────────────────
@@ -66,8 +62,8 @@ WEBAPP_URL: str = ""
 
 # ── Auto-Trading Bridge (MetaTrader 4/5) ───────────────────
 AUTOTRADE_ENABLED: bool = os.getenv("AUTOTRADE_ENABLED", "true").lower() in ("true", "1", "yes")
-AUTOTRADE_DEFAULT_RISK: float = float(os.getenv("AUTOTRADE_DEFAULT_RISK", "1.0"))
-AUTOTRADE_DEFAULT_LOT: float = float(os.getenv("AUTOTRADE_DEFAULT_LOT", "0.03"))
+AUTOTRADE_DEFAULT_RISK: float = float(os.getenv("AUTOTRADE_DEFAULT_RISK", "0.8"))
+AUTOTRADE_DEFAULT_LOT: float = float(os.getenv("AUTOTRADE_DEFAULT_LOT", "0.02"))
 
 # ── Стиль графиков (ict, dark, light) ────────────────────
 CHART_THEME: str = os.getenv("CHART_THEME", "ict")
@@ -75,8 +71,8 @@ CHART_THEME: str = os.getenv("CHART_THEME", "ict")
 # ── Минимальные звёзды для уведомления ────────────────────
 MIN_SIGNAL_STARS: int = 4   # Только 4-5 звёзд → уведомление
 
-# ── Мульти-таймфрейм ─────────────────────────────────────
-MULTI_TF_LIST: list[str] = ["M15", "H1", "H4", "D1"]
+# ── Мульти-таймфрейм (Фрактальная 3-слойная модель HTF -> ITF -> LTF) ────
+MULTI_TF_LIST: list[str] = ["H1", "H4", "D1", "W1"]
 
 # ── Новости ───────────────────────────────────────────────
 NEWS_CHECK_INTERVAL_MINUTES: int = 15
@@ -131,39 +127,80 @@ KILL_ZONES_UTC = {
     "ny": {"start": 12, "end": 15, "name": "New York Open KZ"},
 }
 
+# ── IPDA ALGORITHMIC TIMINGS & ICT MACRO WINDOWS (UTC) ────
+# 1. ICT Macro Windows (Окна максимальной межбанковской алгоритмической ликвидности):
+#    - London Morning Macro: 08:50 - 09:10 UTC
+#    - New York Morning Macro: 13:50 - 14:10 UTC (09:50 - 10:10 ET)
+ICT_MACRO_WINDOWS = [
+    {"start_h": 8, "start_m": 50, "end_h": 9, "end_m": 10, "name": "London Morning Macro (08:50–09:10 UTC)"},
+    {"start_h": 13, "start_m": 50, "end_h": 14, "end_m": 10, "name": "New York AM Macro (13:50–14:10 UTC)"},
+]
+
+# 2. Временные запреты на новые входы (Algorithmic Trading Bans):
+#    - Пре-Лондон фикс/закрытие: 15:45 - 16:00 UTC (за 15 мин до закрытия Лондона 16:00 UTC)
+#    - Мертвая зона ликвидности: 17:00 - 00:00 UTC (расползание спредов, закрытие NY)
+PRE_LONDON_CLOSE_BAN_START_MIN = 15 * 60 + 45  # 15:45 UTC
+PRE_LONDON_CLOSE_BAN_END_MIN   = 16 * 60 + 0   # 16:00 UTC
+DEAD_ZONE_START_MIN            = 17 * 60 + 0   # 17:00 UTC
+DEAD_ZONE_END_MIN              = 24 * 60 + 0   # 00:00 UTC
+
+def is_in_macro_window(now_dt: Optional[datetime] = None) -> tuple[bool, str]:
+    """Проверяет, находится ли текущее время внутри ICT Macro Window (08:50-09:10 или 13:50-14:10 UTC)."""
+    if now_dt is None:
+        now = datetime.now(ZoneInfo('UTC'))
+    else:
+        now = now_dt.astimezone(ZoneInfo('UTC')) if now_dt.tzinfo else now_dt.replace(tzinfo=ZoneInfo('UTC'))
+    current_mins = now.hour * 60 + now.minute
+    for mw in ICT_MACRO_WINDOWS:
+        s_mins = mw["start_h"] * 60 + mw["start_m"]
+        e_mins = mw["end_h"] * 60 + mw["end_m"]
+        if s_mins <= current_mins <= e_mins:
+            return True, mw["name"]
+    return False, ""
+
+def is_ipda_time_banned(now_dt: Optional[datetime] = None) -> tuple[bool, str]:
+    """
+    Проверяет институциональные временные запреты IPDA:
+    1. За 15 минут до закрытия Лондонской сессии (15:45-16:00 UTC)
+    2. Мертвая зона ликвидности (17:00-00:00 UTC)
+    """
+    if now_dt is None:
+        now = datetime.now(ZoneInfo('UTC'))
+    else:
+        now = now_dt.astimezone(ZoneInfo('UTC')) if now_dt.tzinfo else now_dt.replace(tzinfo=ZoneInfo('UTC'))
+    current_mins = now.hour * 60 + now.minute
+    
+    # 1. За 15 минут до закрытия Лондона (15:45-16:00 UTC)
+    if PRE_LONDON_CLOSE_BAN_START_MIN <= current_mins < PRE_LONDON_CLOSE_BAN_END_MIN:
+        return True, "Запрет входа: 15 минут до закрытия Лондона (15:45–16:00 UTC) — фиксация институциональных позиций"
+        
+    # 2. Мертвая зона (17:00-00:00 UTC)
+    if current_mins >= DEAD_ZONE_START_MIN:
+        return True, "Мертвая зона ликвидности (17:00–00:00 UTC) — закрытие NY, тонкий рынок и расползание спредов"
+        
+    return False, ""
+
 # ── Session Filter: какие пары активны в какие сессии (UTC часы) ──
 # Пара торгуется ТОЛЬКО когда хотя бы одна её сессия активна
 PAIR_ACTIVE_SESSIONS = {
-    # EUR pairs — London + NY (07:00-20:00 UTC)
-    "EURUSD": [(7, 20)], "EURGBP": [(7, 16)], "EURJPY": [(0, 9), (7, 16)],
-    "EURAUD": [(0, 9), (7, 16)], "EURCHF": [(7, 16)],
-    # GBP pairs — London + NY (07:00-20:00 UTC)
-    "GBPUSD": [(7, 20)], "GBPJPY": [(0, 9), (7, 16)], "GBPAUD": [(0, 9), (7, 16)],
-    # USD pairs — NY session primary (12:00-20:00), London secondary
-    "USDJPY": [(0, 9), (12, 20)], "USDCHF": [(7, 20)], "USDCAD": [(12, 20)],
-    # AUD/NZD pairs — Sydney/Tokyo + London open
-    "AUDUSD": [(0, 9), (7, 16)], "NZDUSD": [(0, 9), (7, 16)],
-    "AUDCAD": [(0, 9), (12, 20)], "AUDNZD": [(0, 6)],
-    # JPY crosses — Tokyo + London
-    "CADJPY": [(0, 9), (12, 20)],
+    "XAUUSD": [(0, 24)],
 }
 
-# ── Correlation Groups (для ограничения одновременных ордеров) ──
 CORRELATION_GROUPS = {
     "USD_LONG": ["EURUSD", "GBPUSD", "AUDUSD", "NZDUSD"],   # SHORT USD = LONG these
     "USD_SHORT": ["USDJPY", "USDCHF", "USDCAD"],              # LONG USD = LONG these
     "JPY_PAIRS": ["EURJPY", "GBPJPY", "CADJPY", "USDJPY"],
     "AUD_PAIRS": ["AUDUSD", "EURAUD", "GBPAUD", "AUDCAD", "AUDNZD"],
 }
-MAX_CORRELATED_SIGNALS = 2  # Max simultaneous signals in one correlation group
+MAX_CORRELATED_SIGNALS: int = 3  # Max simultaneous signals in one correlation group
 
 # ── Order Limits (Лимит одновременно открытых ордеров) ────
-MAX_CONCURRENT_ORDERS = 4  # Синхронизировано с MAX_CONCURRENT_POSITIONS (макс. 4 позиции в рынке)
+MAX_CONCURRENT_ORDERS: int = 1  # Синхронизировано с MAX_CONCURRENT_POSITIONS (макс. 4 позиции в рынке)
 
 # ── Micro Account Protection Mode ($12 - $100) ────────────
 MICRO_MAX_CONCURRENT_ORDERS = 1      # Строго 1 сделка в рынке одновременно
 MICRO_MAX_SL_PIPS = 18.0             # Максимальный стоп-лосс в пипсах (макс. риск ~$1.80 на 0.01 лота)
-MICRO_EXCLUDED_PAIRS = ["XAUUSD"]    # Золото исключено для защиты от разрушительной волатильности
+MICRO_EXCLUDED_PAIRS: list[str] = []    # Золото исключено для защиты от разрушительной волатильности
 
 # ── Daily Limits ──────────────────────────────────────────
 MAX_SIGNALS_PER_DAY = 7    # Максимум 7 сигналов в сутки
@@ -182,17 +219,23 @@ def is_pair_in_active_session(symbol: str) -> bool:
                 return True
     return False
 
-def is_in_kill_zone() -> bool:
+def is_in_kill_zone(now_dt: Optional[datetime] = None) -> bool:
     """Проверяет, находимся ли мы в ICT Kill Zone (London/NY Open)."""
-    current_hour = datetime.now(ZoneInfo('UTC')).hour
+    if now_dt is None:
+        current_hour = datetime.now(ZoneInfo('UTC')).hour
+    else:
+        current_hour = (now_dt.astimezone(ZoneInfo('UTC')) if now_dt.tzinfo else now_dt.replace(tzinfo=ZoneInfo('UTC'))).hour
     for kz in KILL_ZONES_UTC.values():
         if kz['start'] <= current_hour < kz['end']:
             return True
     return False
 
-def get_current_kill_zone() -> str | None:
+def get_current_kill_zone(now_dt: Optional[datetime] = None) -> str | None:
     """Возвращает название текущей Kill Zone или None."""
-    current_hour = datetime.now(ZoneInfo('UTC')).hour
+    if now_dt is None:
+        current_hour = datetime.now(ZoneInfo('UTC')).hour
+    else:
+        current_hour = (now_dt.astimezone(ZoneInfo('UTC')) if now_dt.tzinfo else now_dt.replace(tzinfo=ZoneInfo('UTC'))).hour
     for key, kz in KILL_ZONES_UTC.items():
         if kz['start'] <= current_hour < kz['end']:
             return kz['name']
@@ -208,29 +251,12 @@ def get_affected_pairs(currency: str) -> list[str]:
 # ── SPREAD SPIKE GUARD ──
 # Защита от расширения спреда: если текущий спред брокера выше лимита (в пипсах), вход блокируется
 MAX_SPREAD_PIPS: dict[str, float] = {
-    "EURUSD": 2.5,
-    "GBPUSD": 3.0,
-    "USDJPY": 2.5,
-    "USDCHF": 3.0,
-    "AUDUSD": 3.0,
-    "NZDUSD": 3.5,
-    "USDCAD": 3.0,
-    "EURGBP": 3.0,
-    "EURJPY": 3.0,
-    "GBPJPY": 4.0,
-    "EURAUD": 4.0,
-    "GBPAUD": 4.5,
-    "EURCHF": 3.5,
-    "CADJPY": 3.5,
-    "AUDCAD": 3.5,
-    "AUDNZD": 3.5,
-    "DEFAULT": 4.0
+    "XAUUSD": 6.0,
+    "DEFAULT": 6.0
 }
 
 
-# ── SMART WEEKLY TRADING WINDOW (Защита понедельника и пятницы) ──
-# Понедельник: старт новых сделок с 07:00 UTC (12:00 Ташкент / открытие Лондона)
-# Пятница: запрет новых сделок после 14:00 UTC (19:00 Ташкент / защита от гэпа на выходных)
+# ── WEEKLY TRADING WINDOW ──
 WEEKLY_WINDOW_ENABLED: bool = True
 MONDAY_START_HOUR_UTC: int = 7    # 12:00 Ташкент (UTC+5)
 FRIDAY_END_HOUR_UTC: int = 14     # 19:00 Ташкент (UTC+5)
@@ -269,7 +295,7 @@ def is_weekly_trading_window_open() -> tuple[bool, str]:
 WINE_MT5_PATH = os.getenv('WINE_MT5_PATH', '/home/trader/.wine/drive_c/Program Files/MetaTrader 5')
 
 
-BRIDGE_API_KEY = os.getenv('BRIDGE_API_KEY', 'stb-default-key-change-me-2026')
+BRIDGE_API_KEY = os.getenv('BRIDGE_API_KEY', 'stb-fp-9f8e7d6c5b4a3f2e1d0c-2026')
 
 
 # ── РИСК-МЕНЕДЖМЕНТ ДЛЯ РЕАЛЬНЫХ ДЕНЕГ (REAL MONEY PROTECTION) ──
@@ -277,10 +303,69 @@ BRIDGE_API_KEY = os.getenv('BRIDGE_API_KEY', 'stb-default-key-change-me-2026')
 MAX_DAILY_DRAWDOWN_PCT: float = 2.5  # При дневном убытке 2.5% ($125) автопилот блокируется (запас $75 до лимита брокера 4%/$200)
 
 # 2. Ограничение совокупного риска и количества позиций
-MAX_CONCURRENT_POSITIONS: int = 4    # Не более 4 одновременно открытых позиций во всем терминале
+MAX_CONCURRENT_POSITIONS: int = 1    # Не более 4 одновременно открытых позиций во всем терминале
 MAX_POSITIONS_PER_PAIR: int = 1      # Не более 1 позиции на одну валютную пару
-MAX_CURRENCY_EXPOSURE: int = 2       # Не более 2 пар с одинаковой валютой (защита от скачков USD/EUR)
+MAX_CURRENCY_EXPOSURE: int = 1       # Не более 2 пар с одинаковой валютой (защита от скачков USD/EUR)
 
 # 3. Маржинальная защита (Margin Guard)
 MIN_MARGIN_FREE_USD: float = 50.0    # Минимальная свободная маржа в USD
 MIN_MARGIN_FREE_PCT: float = 25.0    # Минимальный запас свободной маржи (% от баланса)
+
+
+# ── ROLLOVER & VOLATILITY PROTECTION (Защита от ночного ролловера и узких стопов) ──
+ROLLOVER_GUARD_ENABLED: bool = True
+ROLLOVER_START_UTC_HOUR: int = 20
+ROLLOVER_START_UTC_MIN: int = 30
+ROLLOVER_END_UTC_HOUR: int = 21
+ROLLOVER_END_UTC_MIN: int = 45
+
+CROSS_PAIRS_5D = {"EURAUD", "GBPAUD", "AUDCAD", "AUDNZD", "EURCHF", "EURGBP"}
+CROSS_PAIRS_JPY = {"EURJPY", "GBPJPY", "CADJPY"}
+MIN_SL_PIPS_CROSS: float = 20.0
+MIN_SL_PIPS_MAJOR: float = 8.0
+
+
+def get_min_sl_pips(symbol: str) -> float:
+    sym_u = symbol.upper().replace("/", "").replace("=X", "")
+    if "XAU" in sym_u or "GOLD" in sym_u:
+        return 10.0  # $10.00 minimum for Gold swing (10.0 pips @ $1.00/pip)
+    if sym_u in CROSS_PAIRS_5D or sym_u in CROSS_PAIRS_JPY:
+        return MIN_SL_PIPS_CROSS
+    return MIN_SL_PIPS_MAJOR
+
+
+def is_rollover_window() -> tuple[bool, str]:
+    """
+    Проверяет, находимся ли мы в окне банковского ролловера (20:30 - 21:45 UTC / 23:30 - 00:45 MT5 Server Time).
+    В это время ликвидность падает, а спреды на кросс-парах (EURAUD, GBPAUD и др.) расширяются в 5-10 раз.
+    """
+    if not ROLLOVER_GUARD_ENABLED:
+        return False, ""
+    now = datetime.now(ZoneInfo('UTC'))
+    mins = now.hour * 60 + now.minute
+    start_mins = ROLLOVER_START_UTC_HOUR * 60 + ROLLOVER_START_UTC_MIN
+    end_mins = ROLLOVER_END_UTC_HOUR * 60 + ROLLOVER_END_UTC_MIN
+    if start_mins <= mins <= end_mins:
+        return True, "Банковский ролловер (20:30–21:45 UTC) — защита от 10-кратного расширения спредов"
+    return False, ""
+
+# ── FundingPips Challenge Profile ( 2 Step Flex) ───────
+CHALLENGE_BROKER = 'FundingPips'
+CHALLENGE_ACCOUNT = '21027982'
+CHALLENGE_PLAN = ' · 2 Step Flex (Biggest Max Loss)'
+CHALLENGE_INITIAL_BALANCE = 5000.0
+CHALLENGE_P1_TARGET_PCT = 10.0   # + -> ,500
+CHALLENGE_P2_TARGET_PCT = 8.0    # + -> ,400
+CHALLENGE_DAILY_LOSS_PCT = 4.0   # -/day
+CHALLENGE_MAX_LOSS_PCT = 12.0    # - static (floor ,400)
+CHALLENGE_MIN_DAYS = 1
+CHALLENGE_SPLIT = 'Up to 100%'
+CHALLENGE_PRICE_USD = 39.0
+
+# ── FundingPips Hard Equity Floor & Safety Buffer ───────
+CHALLENGE_MIN_EQUITY_FLOOR_USD = 4400.0   # Абсолютный пол просадки брокера FundingPips ($4,400.00)
+HARD_EQUITY_STOP_USD = 4450.0             # Аварийный хард-стоп эквити бота (запас $50.00 до пола брокера)
+
+# ── Часовой пояс сервера брокера MT5 (FundingPips) ─────
+# FundingPips сбрасывает дневной лимит в 00:00 сервера MT5 (EET: UTC+2 зима, UTC+3 лето)
+BROKER_TIMEZONE_NAME = 'Europe/Helsinki'

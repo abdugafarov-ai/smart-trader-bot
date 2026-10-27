@@ -42,3 +42,7 @@ bot.pid
 test_*.png
 test_*.py
 *.log*
+
+# Backups
+*.bak
+backup_dr_task/

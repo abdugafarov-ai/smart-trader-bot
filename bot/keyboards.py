@@ -337,10 +337,10 @@ def autotrade_keyboard(
     # Отдельные кнопки для выбора профиля (Radio-style)
     if mode == "micro":
         btn_micro = InlineKeyboardButton(text="✅ 🛡️ Режим «Микро-депозит»", callback_data="autotrade:mode_noop:micro")
-        btn_prop  = InlineKeyboardButton(text="👑 Режим: Институционал", callback_data="autotrade:mode:prop")
+        btn_prop  = InlineKeyboardButton(text="👑 Режим: FundingPips 5K (7 Мажоров)", callback_data="autotrade:mode:prop")
     else:
         btn_micro = InlineKeyboardButton(text="🛡️ Режим «Микро-депозит»", callback_data="autotrade:mode:micro")
-        btn_prop  = InlineKeyboardButton(text="✅ 👑 Режим: Институционал", callback_data="autotrade:mode_noop:prop")
+        btn_prop  = InlineKeyboardButton(text="✅ 👑 Режим: FundingPips 5K (7 Мажоров)", callback_data="autotrade:mode_noop:prop")
     builder.row(btn_micro)
     builder.row(btn_prop)
 
@@ -357,18 +357,18 @@ def autotrade_keyboard(
     # Пресеты фиксированного лота с галочками
     is_fixed = (lot_mode == "fixed")
     
-    t_001 = "✅ 0.01" if (is_fixed and abs(current_lot - 0.01) < 0.001) else "🔹 Лот 0.01"
-    t_002 = "✅ 0.02" if (is_fixed and abs(current_lot - 0.02) < 0.001) else "🔹 Лот 0.02"
+    t_003 = "✅ 0.03" if (is_fixed and abs(current_lot - 0.03) < 0.001) else "🔹 Лот 0.03"
     t_005 = "✅ 0.05" if (is_fixed and abs(current_lot - 0.05) < 0.001) else "🔹 Лот 0.05"
+    t_010 = "✅ 0.10" if (is_fixed and abs(current_lot - 0.10) < 0.001) else "🔹 Лот 0.10"
 
     builder.row(
-        InlineKeyboardButton(text=t_001, callback_data="autotrade:lot:0.01"),
-        InlineKeyboardButton(text=t_002, callback_data="autotrade:lot:0.02"),
-        InlineKeyboardButton(text=t_005, callback_data="autotrade:lot:0.05")
+        InlineKeyboardButton(text=t_003, callback_data="autotrade:lot:0.03"),
+        InlineKeyboardButton(text=t_005, callback_data="autotrade:lot:0.05"),
+        InlineKeyboardButton(text=t_010, callback_data="autotrade:lot:0.10")
     )
 
     # Кнопка ручного ввода своего лота
-    is_custom = is_fixed and (abs(current_lot - 0.01) >= 0.001 and abs(current_lot - 0.02) >= 0.001 and abs(current_lot - 0.05) >= 0.001)
+    is_custom = is_fixed and (abs(current_lot - 0.03) >= 0.001 and abs(current_lot - 0.05) >= 0.001 and abs(current_lot - 0.10) >= 0.001)
     custom_btn_text = f"✅ ✍️ Свой лот: {current_lot:.2f}" if is_custom else "✍️ Задать свой лот"
     builder.row(
         InlineKeyboardButton(text=custom_btn_text, callback_data="autotrade:custom_lot")

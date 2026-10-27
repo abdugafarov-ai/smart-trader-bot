@@ -65,6 +65,8 @@ async def init_db():
             await db.execute("ALTER TABLE signals ADD COLUMN broker_confirmed INTEGER DEFAULT 0")
         if "broker_ticket" not in columns:
             await db.execute("ALTER TABLE signals ADD COLUMN broker_ticket INTEGER DEFAULT 0")
+        if "lot" not in columns:
+            await db.execute("ALTER TABLE signals ADD COLUMN lot REAL")
 
         await db.execute("""
             CREATE TABLE IF NOT EXISTS daily_stats (
@@ -176,6 +178,7 @@ async def save_signal(
     risk_reward: float | None,
     strategies_agreed: str = "",
     timeframes_agreed: str = "",
+    lot: float | None = None,
 ) -> int | None:
     """Сохраняет новый сигнал в БД (ACTIVE для MARKET ордеров, PENDING для LIMIT). Возвращает ID."""
     try:
@@ -189,14 +192,14 @@ async def save_signal(
                    (symbol, direction, order_type, tag_emoji, stars,
                     current_price, entry_price, stop_loss,
                     take_profit_1, take_profit_2, risk_reward,
-                    strategies_agreed, timeframes_agreed, status, created_at, activated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    strategies_agreed, timeframes_agreed, status, created_at, activated_at, lot)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     symbol, direction, order_type, tag_emoji, stars,
                     current_price, entry_price, stop_loss,
                     take_profit_1, take_profit_2, risk_reward,
                     strategies_agreed, timeframes_agreed,
-                    initial_status, now_iso, activated_at
+                    initial_status, now_iso, activated_at, lot
                 ),
             )
             await db.commit()
@@ -390,13 +393,32 @@ async def close_signal_by_broker(symbol: str, close_price: float, profit_usd: fl
             row = await cursor.fetchone()
             if row:
                 sig = dict(row)
-                status = "TP1_HIT" if profit_usd > 0 else ("SL_HIT" if profit_usd < 0 else "BREAKEVEN")
-                res_text = f"MT5: {profit_usd:+.2f}$ ({reason})" if reason else f"MT5: {profit_usd:+.2f}$"
+                entry_p = float(sig.get("entry_price") or close_price or 0.0)
+                direction = str(sig.get("direction") or "LONG").upper()
+                sym_u = str(sig.get("symbol") or symbol).upper()
+                pip_mult = 100.0 if "JPY" in sym_u else (10.0 if "XAU" in sym_u else 10000.0)
+                if entry_p > 0 and close_price > 0:
+                    raw_pips = (close_price - entry_p) * pip_mult if direction == "LONG" else (entry_p - close_price) * pip_mult
+                    pnl_pips = round(raw_pips, 1)
+                else:
+                    pnl_pips = 0.0
+
+                reason_u = str(reason or "").upper()
+                # Если сделка закрыта по Умному Безубытку (+2 п. от входа) — статус BREAKEVEN (не считается стопом и не путается с полным TP)
+                if "BREAKEVEN" in reason_u or (profit_usd >= -0.50 and abs(pnl_pips) <= 3.5 and "TP" not in reason_u):
+                    status = "BREAKEVEN"
+                elif profit_usd > 0:
+                    status = "TP1_HIT"
+                elif profit_usd < 0:
+                    status = "SL_HIT"
+                else:
+                    status = "BREAKEVEN"
+                res_text = f"MT5: {profit_usd:+.2f}$ ({reason})" if reason else f"MT5: {profit_usd:+.2f}$" 
                 await db.execute(
                     """UPDATE signals
-                       SET status = ?, close_price = ?, closed_at = ?, result = ?
+                       SET status = ?, close_price = ?, pnl_pips = ?, closed_at = ?, result = ?
                        WHERE id = ?""",
-                    (status, close_price, now_iso, res_text, sig['id'])
+                    (status, close_price, pnl_pips, now_iso, res_text, sig['id'])
                 )
                 await db.commit()
                 return sig
@@ -569,7 +591,7 @@ async def sync_broker_deals(deals: list[dict]) -> list[dict]:
 
                 sym = str(d.get("symbol", "")).upper()
                 deal_type = str(d.get("type", "BUY")).upper()
-                lot = float(d.get("lot") or d.get("volume") or 0.01)
+                lot = float(d.get("lot") or d.get("volume") or 0.03)
                 price = float(d.get("price") or 0.0)
                 profit = float(d.get("profit") or 0.0)
                 magic = int(d.get("magic") or 0)
@@ -579,6 +601,7 @@ async def sync_broker_deals(deals: list[dict]) -> list[dict]:
                     """INSERT INTO broker_deals (ticket, symbol, deal_type, lot, price, profit_usd, close_time, magic, comment, created_at)
                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                        ON CONFLICT(ticket) DO UPDATE SET
+                           lot = excluded.lot,
                            profit_usd = excluded.profit_usd,
                            price = excluded.price,
                            comment = excluded.comment""",
@@ -907,6 +930,7 @@ async def get_consecutive_sl_count(max_lookback_hours: float = 12.0) -> int:
             )
             rows = await cursor.fetchall()
             sl_count = 0
+            latest_sl_dt = None
             now = datetime.now(timezone.utc)
             for status, closed_at_str in rows:
                 if not closed_at_str:
@@ -916,21 +940,26 @@ async def get_consecutive_sl_count(max_lookback_hours: float = 12.0) -> int:
                     if closed_at.tzinfo is None:
                         closed_at = closed_at.replace(tzinfo=timezone.utc)
 
-                    # 1. Если сделка закрыта до последнего ручного сброса просадки — стоп
+                    # 1. Если сделка закрыта до последнего сброса просадки — стоп
                     if reset_dt and closed_at < reset_dt:
                         break
-
-                    # 2. Если сделка закрыта более max_lookback_hours назад — авто-сброс
-                    age_hours = (now - closed_at).total_seconds() / 3600.0
-                    if age_hours > max_lookback_hours:
-                        break
                 except Exception:
-                    pass
+                    closed_at = None
 
                 if status == 'SL_HIT':
+                    if latest_sl_dt is None and closed_at is not None:
+                        latest_sl_dt = closed_at
                     sl_count += 1
                 else:
                     break
+
+            # Если получено 3 стопа подряд: проверяем, прошло ли 12 часов с момента 3-го (последнего) стопа
+            if sl_count >= 3 and latest_sl_dt is not None:
+                age_since_latest = (now - latest_sl_dt).total_seconds() / 3600.0
+                if age_since_latest > max_lookback_hours:
+                    # 12 часов паузы после 3-го стопа истекли — автоматически сбрасываем серию в 0
+                    await set_drawdown_reset_now()
+                    return 0
             return sl_count
     except Exception as e:
         logger.error("get_consecutive_sl_count error: %s", e)
@@ -938,15 +967,16 @@ async def get_consecutive_sl_count(max_lookback_hours: float = 12.0) -> int:
 
 
 async def get_today_signal_count() -> int:
-    """Считает количество реально исполненных/активных сигналов за сегодня (исключая отменённые MT5)."""
+    """Считает количество реально исполненных/активных сигналов за сегодня по времени брокера (исключая отменённые MT5)."""
     try:
-        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        from utils.broker_time import get_broker_today_midnight
+        today_start_iso = get_broker_today_midnight().astimezone(timezone.utc).isoformat()
         async with aiosqlite.connect(str(DB_PATH), timeout=30.0) as db:
             cursor = await db.execute(
                 """SELECT COUNT(*) FROM signals 
-                   WHERE created_at LIKE ? 
+                   WHERE created_at >= ? 
                    AND status NOT IN ('CANCELLED_BY_MT5', 'CANCELLED_UNCONFIRMED', 'EXPIRED')""",
-                (f"{today}%",),
+                (today_start_iso,),
             )
             count = (await cursor.fetchone())[0]
             return count
@@ -978,7 +1008,7 @@ async def get_last_signal_time_for_pair(symbol: str) -> Optional[datetime]:
 
 async def get_today_broker_pnl() -> dict:
     """
-    Возвращает статистику закрытых сделок брокера за текущий календарный день (с 00:00:00 UTC):
+    Возвращает статистику закрытых сделок брокера за текущий торговый день MT5 (с 00:00:00 EET брокера):
     - total_pnl: суммарный закрытый PnL в USD
     - profit_sum: сумма прибыльных сделок
     - loss_sum: сумма убыточных сделок
@@ -987,9 +1017,8 @@ async def get_today_broker_pnl() -> dict:
     - losses: кол-во убыточных
     """
     try:
-        now_utc = datetime.now(timezone.utc)
-        today_midnight = datetime(now_utc.year, now_utc.month, now_utc.day, tzinfo=timezone.utc)
-        today_ts = int(today_midnight.timestamp())
+        from utils.broker_time import get_broker_today_midnight_ts
+        today_ts = get_broker_today_midnight_ts()
 
         async with aiosqlite.connect(str(DB_PATH), timeout=30.0) as db:
             cursor = await db.execute(

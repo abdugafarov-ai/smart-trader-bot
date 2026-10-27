@@ -97,6 +97,9 @@ from utils.emoji_markers import get_random_marker
 async def run_multi_tf_analysis(symbol: str) -> MultiTFResult:
     tf_analyses = []
     
+    # 0. Загружаем D1 данные заранее для трендового фильтра старшего ТФ
+    df_d1 = await fetcher.fetch_ohlcv(symbol, "D1")
+    
     for tf in config.MULTI_TF_LIST:
         df = await fetcher.fetch_ohlcv(symbol, tf)
         if df is None or df.empty or len(df) < 20:
@@ -105,8 +108,17 @@ async def run_multi_tf_analysis(symbol: str) -> MultiTFResult:
         indicators = TechnicalIndicators.calculate(df)
         
         strategy_results = []
+        df_ltf_for_tf = None
+        if tf == "H4":
+            df_ltf_for_tf = await fetcher.fetch_ohlcv(symbol, "H1")
+        elif tf == "D1":
+            df_ltf_for_tf = await fetcher.fetch_ohlcv(symbol, "H4")
+
         for strategy in ALL_STRATEGIES:
-            result = strategy.analyze(df, symbol, tf)
+            if hasattr(strategy, "short_name") and strategy.short_name == 'ict_smc':
+                result = strategy.analyze(df, symbol, tf, df_d1=df_d1, df_ltf=df_ltf_for_tf)
+            else:
+                result = strategy.analyze(df, symbol, tf)
             strategy_results.append(result)
         
         # Получаем сигнал ICT/SMC как главный якорный сигнал таймфрейма
@@ -123,28 +135,73 @@ async def run_multi_tf_analysis(symbol: str) -> MultiTFResult:
     if not tf_analyses:
         return MultiTFResult(symbol=symbol, tag_emoji=get_random_marker())
     
-    non_neutral = [t for t in tf_analyses if t.direction != 'NEUTRAL']
-    if non_neutral:
-        long_tfs = sum(1 for t in non_neutral if t.direction == 'LONG')
-        short_tfs = sum(1 for t in non_neutral if t.direction == 'SHORT')
-        if long_tfs > short_tfs:
-            overall_dir = 'LONG'
-            tf_agree = long_tfs
-        elif short_tfs > long_tfs:
-            overall_dir = 'SHORT'
-            tf_agree = short_tfs
+    is_gold_sym = ("XAU" in symbol.upper() or "GOLD" in symbol.upper())
+    h4_analysis = next((t for t in tf_analyses if str(t.timeframe).upper() == "H4"), None)
+    h4_is_neutral = (h4_analysis is None or h4_analysis.direction == 'NEUTRAL')
+
+    # ═══ БЛОКИРОВКА ПРОВАЛА НА H1: если H4 == NEUTRAL, никаких сделок с H1 ═══
+    if h4_is_neutral:
+        valid_tfs = [t for t in tf_analyses if str(t.timeframe).upper() != "H1"]
+    else:
+        valid_tfs = tf_analyses
+
+    if is_gold_sym:
+        if not h4_is_neutral:
+            # Для Золота рабочий ТФ поиска институциональных сетапов — СТРОГО H4 (Swing Model)
+            overall_dir = h4_analysis.direction
+            tf_agree = 1
+            d1_cand = next((t for t in valid_tfs if str(t.timeframe).upper() == "D1"), None)
+            if d1_cand and d1_cand.direction == overall_dir:
+                tf_agree += 1
+            h1_cand = next((t for t in valid_tfs if str(t.timeframe).upper() == "H1"), None)
+            if h1_cand and h1_cand.direction == overall_dir:
+                tf_agree += 1
         else:
             overall_dir = 'NEUTRAL'
             tf_agree = 0
     else:
-        overall_dir = 'NEUTRAL'
-        tf_agree = 0
+        non_neutral = [t for t in valid_tfs if t.direction != 'NEUTRAL']
+        if non_neutral:
+            long_tfs = sum(1 for t in non_neutral if t.direction == 'LONG')
+            short_tfs = sum(1 for t in non_neutral if t.direction == 'SHORT')
+            if long_tfs > short_tfs:
+                overall_dir = 'LONG'
+                tf_agree = long_tfs
+            elif short_tfs > long_tfs:
+                overall_dir = 'SHORT'
+                tf_agree = short_tfs
+            else:
+                overall_dir = 'NEUTRAL'
+                tf_agree = 0
+        else:
+            overall_dir = 'NEUTRAL'
+            tf_agree = 0
+
+    # ── Трендовый фильтр D1 (СТРОГО ПО ТРЕНДУ) ──
+    # Запретить покупки (LONG), если дневная свеча и EMA50 направлены вниз.
+    # Запретить продажи (SHORT), если D1 направлен вверх.
+    if overall_dir != 'NEUTRAL' and df_d1 is not None and len(df_d1) >= 5:
+        ict_strat = next((s for s in ALL_STRATEGIES if getattr(s, 'short_name', '') == 'ict_smc'), None)
+        if ict_strat:
+            d1_trend, d1_reason = ict_strat._check_d1_trend(df_d1)
+            if overall_dir == 'LONG' and d1_trend == 'DOWN':
+                logger.info("Signal %s LONG rejected by D1 Trend Filter: %s", symbol, d1_reason)
+                overall_dir = 'NEUTRAL'
+                tf_agree = 0
+            elif overall_dir == 'SHORT' and d1_trend == 'UP':
+                logger.info("Signal %s SHORT rejected by D1 Trend Filter: %s", symbol, d1_reason)
+                overall_dir = 'NEUTRAL'
+                tf_agree = 0
     
     # Институциональная Top-Down модель:
     # Тренд определяется старшими TF, а вход (Entry/SL/TP) берется с рабочего таймфрейма (H1 -> M15 -> H4)
     best_tf = None
-    for target_tf in ["H1", "M15", "H4", "D1"]:
-        cand = next((t for t in tf_analyses if t.timeframe == target_tf and t.direction == overall_dir), None)
+    target_tfs = ["H4", "H1", "D1"] if is_gold_sym else ["M15", "H1", "M5", "H4", "D1"]
+    if h4_is_neutral:
+        # Жесткий блок: если H4 == NEUTRAL, никаких сделок с H1
+        target_tfs = [tf for tf in target_tfs if str(tf).upper() != "H1"]
+    for target_tf in target_tfs:
+        cand = next((t for t in valid_tfs if str(t.timeframe).upper() == str(target_tf).upper() and t.direction == overall_dir), None)
         if cand:
             ict_cand = next((s for s in cand.strategies if s.name == 'ICT / Smart Money Concepts'), None)
             if ict_cand and ict_cand.signal.direction == overall_dir and ict_cand.signal.entry:
@@ -152,8 +209,8 @@ async def run_multi_tf_analysis(symbol: str) -> MultiTFResult:
                 break
                 
     if not best_tf:
-        matching_tfs = [t for t in tf_analyses if t.direction == overall_dir]
-        best_tf = max(matching_tfs, key=lambda t: t.confidence) if matching_tfs else tf_analyses[0]
+        matching_tfs = [t for t in valid_tfs if t.direction == overall_dir]
+        best_tf = max(matching_tfs, key=lambda t: t.confidence) if matching_tfs else (valid_tfs[0] if valid_tfs else tf_analyses[0])
     
     # Берем институциональные параметры ICT/SMC из рабочего таймфрейма
     best_ict = next((s for s in best_tf.strategies if s.name == 'ICT / Smart Money Concepts'), None)
@@ -183,10 +240,17 @@ async def run_multi_tf_analysis(symbol: str) -> MultiTFResult:
     pips_tp1 = round(abs(tp1 - entry) * pip_mult, 1) if entry and tp1 else None
     pips_tp2 = round(abs(tp2 - entry) * pip_mult, 1) if entry and tp2 else None
     
-    # Звезды уверенности: ТОЛЬКО 4★ и 5★ (строгий порог по просьбе трейдера)
-    # Требуется: tf_agree >= 2 И R:R >= 2.0
-    if overall_dir != 'NEUTRAL' and rr1 and rr1 >= 2.0 and tf_agree >= 2:
-        overall_stars = 5 if tf_agree >= 3 else 4
+    # Звезды уверенности: 4★ и 5★ для входа, 3★ для неподтвержденных SMT
+    min_rr_req = 2.5 if is_gold_sym else 1.5
+    min_agree = 1 if is_gold_sym else 2
+
+    if overall_dir != 'NEUTRAL' and rr1 and rr1 >= min_rr_req and tf_agree >= min_agree:
+        if is_gold_sym and best_ict:
+            overall_stars = best_ict.signal.confidence
+        else:
+            overall_stars = 5 if tf_agree >= 3 else 4
+            if best_ict and best_ict.signal.confidence <= 3:
+                overall_stars = 3
     else:
         overall_stars = 0
         overall_dir = "NEUTRAL"
@@ -234,10 +298,16 @@ async def run_full_analysis(symbol: str, timeframe: str) -> FullAnalysisResult:
         return None
     df = TechnicalIndicators.calculate_all(df)
     indicators = TechnicalIndicators.calculate(df)
+
+    # 0. Загружаем D1 данные для трендового фильтра старшего ТФ
+    df_d1 = await fetcher.fetch_ohlcv(symbol, "D1")
     
     strategy_results = []
     for strategy in ALL_STRATEGIES:
-        result = strategy.analyze(df, symbol, timeframe)
+        if hasattr(strategy, "short_name") and strategy.short_name == 'ict_smc':
+            result = strategy.analyze(df, symbol, timeframe, df_d1=df_d1)
+        else:
+            result = strategy.analyze(df, symbol, timeframe)
         strategy_results.append(result)
     
     session_text = sessions.format_sessions_text()
@@ -336,7 +406,7 @@ async def cmd_start(message: Message):
             "🏛 <b>ДОБРО ПОЖАЛОВАТЬ В SMART TRADER TERMINAL</b>\n"
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
             "🎯 <b>Профессиональные торговые сигналы Smart Money / ICT:</b>\n"
-            "• 17 торговых инструментов (Forex Majors + Crosses + Золото)\n"
+            "• Только 7 Мажоров Forex (EURUSD, GBPUSD, USDJPY, USDCHF, AUDUSD, NZDUSD, USDCAD)\n"
             "• Точные уровни входа (Entry, Stop Loss, Take Profit 1 & 2)\n"
             "• Анализ институционального капитала в реальном времени\n\n"
             "🎁 <b>Активируйте бесплатный тест-драйв на 3 дня</b> или отправьте заявку на доступ нажатием кнопки ниже 👇",
@@ -432,6 +502,10 @@ async def cmd_autotrade(message: Message):
     if len(parts) > 1:
         sub = parts[1].lower()
         if sub in ("on", "1", "start", "enable"):
+            is_hard, reason = bridge_manager.check_equity_hard_stop()
+            if is_hard:
+                await message.answer(f"🚨 <b>АВТОПИЛОТ ЗАБЛОКИРОВАН ХАРД-СТОПОМ:</b>\n{reason}", parse_mode="HTML")
+                return
             bridge_manager.set_enabled(True)
             await message.answer("✅ <b>АВТОПИЛОТ ВКЛЮЧЕН!</b>\nВсе подтвержденные сигналы передаются в MetaTrader советник.", parse_mode="HTML")
             return
@@ -453,7 +527,7 @@ async def cmd_autotrade(message: Message):
         f"• <code>/autotrade on</code> — включить автопилот\n"
         f"• <code>/autotrade off</code> — выключить автопилот\n"
         f"• <code>/risk 1.5</code> — установить процент риска (от 0.1% до 5.0%)\n"
-        f"• <code>/lot 0.05</code> — установить фиксированный лот"
+        f"• <code>/lot 0.10</code> — установить фиксированный лот"
     )
     await message.answer(text, reply_markup=back_keyboard(), parse_mode="HTML")
 
@@ -691,7 +765,7 @@ async def cb_menu_actions(callback: CallbackQuery):
         from trading.execution_bridge import bridge_manager
         from bot.keyboards import autotrade_keyboard
         from db.database import get_bot_setting
-        trading_mode = await get_bot_setting("trading_mode", "micro")
+        trading_mode = await get_bot_setting("trading_mode", "prop")
         status_emoji = "🟢 ВКЛЮЧЕН (АКТИВЕН)" if bridge_manager.enabled else "🔴 ПРИОСТАНОВЛЕН (ПАУЗА)"
 
         if trading_mode == "micro":
@@ -702,16 +776,16 @@ async def cb_menu_actions(callback: CallbackQuery):
                 "• Макс. стоп-лосс: <b>≤ 18 пипсов</b> (риск ~$1.80)\n"
                 "• Режим сделок: <b>Pure Swing</b> (свободный ход до Take Profit)"
             )
-            pool_str = "16 валютных пар (без Золота)"
+            pool_str = "7 Мажоров (без Золота и кроссов)"
         else:
-            profile_name = "👑 Режим: Институционал"
+            profile_name = "👑 Режим: FundingPips 5K (7 Мажоров)"
             profile_desc = (
-                "• Золото (XAUUSD): ✅ <b>ВКЛЮЧЕНО</b>\n"
-                "• Макс. сделок в рынке: <b>до 7</b>\n"
-                "• Макс. стоп-лосс: по структуре ICT/SMC\n"
-                "• Режим сделок: <b>Pure Swing</b> (удержание до полного Take Profit)"
+                "• Инструменты: <b>Только 7 Мажоров</b> (Золото и кроссы ❌ отключены)\n"
+                "• Макс. сделок в рынке: <b>до 3</b> (1 пара = макс. 1 ордер)\n"
+                "• Стоп-лосс и R:R: <b>SL от 20 п. | Динамический R:R от 1:1.5+</b>\n"
+                "• Авто-Б/У и Защита: <b>+25 п. → +2 п. | Пауза 12ч после 3 стопов подряд</b>"
             )
-            pool_str = "17 пар (Форекс + Золото)"
+            pool_str = "7 Мажоров (EURUSD, GBPUSD, USDJPY, USDCHF, AUDUSD, NZDUSD, USDCAD)"
 
         lot_display = f"{bridge_manager.default_lot:.2f}"
         if getattr(bridge_manager, 'lot_mode', 'fixed') == "fixed":
@@ -916,6 +990,10 @@ async def cb_autotrade_actions(callback: CallbackQuery):
     parts = callback.data.split(":")
     action = parts[1]
     if action == "on":
+        is_hard, reason = bridge_manager.check_equity_hard_stop()
+        if is_hard:
+            await callback.answer(f"❌ Заблокировано: {reason}", show_alert=True)
+            return
         bridge_manager.set_enabled(True)
         await set_bot_setting("autotrade_enabled", "true")
         await callback.answer("🟢 Автопилот включен!")
@@ -967,15 +1045,15 @@ async def cb_autotrade_actions(callback: CallbackQuery):
     elif action == "mode":
         new_mode = parts[2]  # "micro" or "prop"
         await set_bot_setting("trading_mode", new_mode)
-        mode_text = "🛡️ Режим «Микро-депозит» активирован!" if new_mode == "micro" else "👑 Режим: Институционал активирован!"
+        mode_text = "🛡️ Режим «Микро-депозит» активирован!" if new_mode == "micro" else "👑 Режим: FundingPips 5K (7 Мажоров) активирован!"
         await callback.answer(mode_text, show_alert=True)
     elif action == "mode_noop":
         cur_mode = parts[2]
-        name = "🛡️ Режим «Микро-депозит»" if cur_mode == "micro" else "👑 Режим: Институционал"
+        name = "🛡️ Режим «Микро-депозит»" if cur_mode == "micro" else "👑 Режим: FundingPips 5K (7 Мажоров)"
         await callback.answer(f"✅ {name} уже активен! Для смены нажмите на соседнюю кнопку.", show_alert=False)
         return
 
-    trading_mode = await get_bot_setting("trading_mode", "micro")
+    trading_mode = await get_bot_setting("trading_mode", "prop")
     status_emoji = "🟢 ВКЛЮЧЕН (АКТИВЕН)" if bridge_manager.enabled else "🔴 ПРИОСТАНОВЛЕН (ПАУЗА)"
 
     if trading_mode == "micro":
@@ -986,16 +1064,16 @@ async def cb_autotrade_actions(callback: CallbackQuery):
             "• Макс. стоп-лосс: <b>≤ 18 пипсов</b> (риск ~$1.80)\n"
             "• Режим сделок: <b>Pure Swing</b> (свободный ход до Take Profit)"
         )
-        pool_str = "16 валютных пар (без Золота)"
+        pool_str = "7 Мажоров (без Золота и кроссов)"
     else:
-        profile_name = "👑 Режим: Институционал"
+        profile_name = "👑 Режим: FundingPips 5K (7 Мажоров)"
         profile_desc = (
-            "• Золото (XAUUSD): ✅ <b>ВКЛЮЧЕНО</b>\n"
-            "• Макс. сделок в рынке: <b>до 7</b>\n"
-            "• Макс. стоп-лосс: по структуре ICT/SMC\n"
-            "• Режим сделок: <b>Pure Swing</b> (удержание до полного Take Profit)"
+            "• Инструменты: <b>Только 7 Мажоров</b> (Золото и кроссы ❌ отключены)\n"
+            "• Макс. сделок в рынке: <b>до 3</b> (1 пара = макс. 1 ордер)\n"
+            "• Стоп-лосс и R:R: <b>SL от 20 п. | Динамический R:R от 1:1.5+</b>\n"
+            "• Авто-Б/У и Защита: <b>+25 п. → +2 п. | Пауза 12ч после 3 стопов подряд</b>"
         )
-        pool_str = "17 пар (Форекс + Золото)"
+        pool_str = "7 Мажоров (EURUSD, GBPUSD, USDJPY, USDCHF, AUDUSD, NZDUSD, USDCAD)"
 
     lot_display = f"{bridge_manager.default_lot:.2f}"
     if getattr(bridge_manager, 'lot_mode', 'fixed') == "fixed":
@@ -1228,7 +1306,7 @@ async def handle_user_text_input(message: Message):
         await set_bot_setting("trading_lot", str(val))
         await set_bot_setting("lot_mode", "fixed")
 
-        trading_mode = await get_bot_setting("trading_mode", "micro")
+        trading_mode = await get_bot_setting("trading_mode", "prop")
         status_emoji = "🟢 ВКЛЮЧЕН (АКТИВЕН)" if bridge_manager.enabled else "🔴 ПРИОСТАНОВЛЕН (ПАУЗА)"
 
         if trading_mode == "micro":
@@ -1239,16 +1317,16 @@ async def handle_user_text_input(message: Message):
                 "• Макс. стоп-лосс: <b>≤ 18 пипсов</b> (риск ~$1.80)\n"
                 "• Режим сделок: <b>Pure Swing</b> (свободный ход до Take Profit)"
             )
-            pool_str = "16 валютных пар (без Золота)"
+            pool_str = "7 Мажоров (без Золота и кроссов)"
         else:
-            profile_name = "👑 Режим: Институционал"
+            profile_name = "👑 Режим: FundingPips 5K (7 Мажоров)"
             profile_desc = (
-                "• Золото (XAUUSD): ✅ <b>ВКЛЮЧЕНО</b>\n"
-                "• Макс. сделок в рынке: <b>до 7</b>\n"
-                "• Макс. стоп-лосс: по структуре ICT/SMC\n"
-                "• Режим сделок: <b>Pure Swing</b> (удержание до полного Take Profit)"
+                "• Инструменты: <b>Только 7 Мажоров</b> (Золото и кроссы ❌ отключены)\n"
+                "• Макс. сделок в рынке: <b>до 3</b> (1 пара = макс. 1 ордер)\n"
+                "• Стоп-лосс и R:R: <b>SL от 20 п. | Динамический R:R от 1:1.5+</b>\n"
+                "• Авто-Б/У и Защита: <b>+25 п. → +2 п. | Пауза 12ч после 3 стопов подряд</b>"
             )
-            pool_str = "17 пар (Форекс + Золото)"
+            pool_str = "7 Мажоров (EURUSD, GBPUSD, USDJPY, USDCHF, AUDUSD, NZDUSD, USDCAD)"
 
         text = (
             f"✅ <b>Рабочий лот успешно установлен: {val:.2f}</b>\n\n"
@@ -1288,7 +1366,7 @@ async def cb_symbol(callback: CallbackQuery):
     res = await run_multi_tf_analysis(symbol)
     if res:
         text = format_multi_tf_analysis(res)
-        can_exec = bool(res.overall_direction != "NEUTRAL" and res.entry and res.stop_loss and res.overall_stars >= 3)
+        can_exec = bool(res.overall_direction != "NEUTRAL" and res.entry and res.stop_loss and res.overall_stars >= 4 and getattr(res, "order_type", "") != "PENDING_CONFIRMATION")
         kb = analysis_result_keyboard(symbol, can_execute=can_exec)
         chunks = split_message_text(text, 4000)
         for i, chunk in enumerate(chunks):
@@ -1315,8 +1393,13 @@ async def cb_exec_mt5(callback: CallbackQuery):
         from db.database import save_signal, check_signal_exists
         res = await run_multi_tf_analysis(symbol)
         
-        if not res or res.overall_direction == "NEUTRAL" or not res.entry:
-            await callback.message.answer(f"⚠️ По {symbol} сейчас нет четкого направленного сетапа (NEUTRAL). Ордер не создан.", parse_mode="HTML")
+        if not res or res.overall_direction == "NEUTRAL" or not res.entry or res.overall_stars < 4 or getattr(res, "order_type", "") == "PENDING_CONFIRMATION":
+            stars_cnt = res.overall_stars if res else 0
+            await callback.message.answer(
+                f"⚠️ По {symbol} сетап имеет рейтинг {stars_cnt}★ (или ожидает LTF MSS). "
+                f"Исполнение в MT5 заблокировано стандартом Tier-1 Prop Desk (требуется >= 4★ и подтвержденный вход).",
+                parse_mode="HTML"
+            )
             return
             
         strategies_str = ", ".join([f"{e} {n}: {v}" for e, n, v in res.strategy_verdicts])
@@ -1327,7 +1410,7 @@ async def cb_exec_mt5(callback: CallbackQuery):
             direction=res.overall_direction,
             order_type=res.order_type,
             tag_emoji=res.tag_emoji,
-            stars=max(4, res.overall_stars),
+            stars=res.overall_stars,
             current_price=res.current_price,
             entry_price=res.entry,
             stop_loss=res.stop_loss,
@@ -1447,9 +1530,9 @@ async def cb_request_actions(callback: CallbackQuery):
                     "🎉 <b>БЕСПЛАТНЫЙ ТЕСТ-ДРАЙВ АКТИВИРОВАН!</b>\n"
                     "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
                     "Вам открыт полный доступ ко всем сигналам на <b>3 дня (72 часа)</b> без ограничений! 🚀\n\n"
-                    "• Все 17 инструментов (Forex мажоры, кроссы и Золото XAUUSD)\n"
+                    "• Только 7 Мажоров Forex (EURUSD, GBPUSD, USDJPY, USDCHF, AUDUSD, NZDUSD, USDCAD)\n"
                     "• Алгоритмы Smart Money / ICT (BOS, OB, FVG, OTE)\n"
-                    "• Точки входа, Take Profit и Stop Loss с R:R от 1:2.5\n\n"
+                    "• Точки входа, Take Profit и Stop Loss с динамическим R:R от 1:1.5+\n\n"
                     "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
                     "Нажмите кнопку ниже или отправьте /start, чтобы открыть меню! 📊"
                 )

@@ -124,6 +124,10 @@ class DataFetcher:
 
         df = None
 
+        # 0. Синтетический индекс доллара (DXY / USDX)
+        if sym_clean in ("DXY", "USDX", "DX"):
+            return await self.fetch_dxy(timeframe, limit)
+
         # 1. Проверяем наличие баров, экспортированных советником MT5 напрямую
         df = self._read_mt5_bars(sym_clean, timeframe, limit)
 
@@ -215,3 +219,105 @@ class DataFetcher:
         df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
         df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
         return df
+
+    def get_dxy_bars_sync(
+        self,
+        timeframe: str = 'H1',
+        limit: int = 150,
+        df_eur_override: Optional[pd.DataFrame] = None
+    ) -> pd.DataFrame:
+        """
+        Синхронно рассчитывает синтетический индекс доллара (DXY) по институциональной формуле ICE:
+        DXY = 50.14348112 * (EURUSD^-0.576) * (USDJPY^0.136) * (GBPUSD^-0.119) * (USDCAD^0.091) * (USDSEK^0.042) * (USDCHF^0.036)
+        С выравниванием по общим таймстемпам брокерских баров.
+        """
+        try:
+            if df_eur_override is not None and not df_eur_override.empty:
+                df_eur = df_eur_override.copy()
+            else:
+                df_eur = self._read_mt5_bars("EURUSD", timeframe, limit=limit)
+
+            df_gbp = self._read_mt5_bars("GBPUSD", timeframe, limit=limit)
+            df_jpy = self._read_mt5_bars("USDJPY", timeframe, limit=limit)
+            df_chf = self._read_mt5_bars("USDCHF", timeframe, limit=limit)
+            df_cad = self._read_mt5_bars("USDCAD", timeframe, limit=limit)
+
+            if df_eur is None or df_eur.empty:
+                return pd.DataFrame(columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+
+            # Align on timestamp
+            for d in [df_eur, df_gbp, df_jpy, df_chf, df_cad]:
+                if d is not None and not d.empty:
+                    if 'timestamp' in d.columns:
+                        dt_s = pd.to_datetime(d['timestamp'])
+                    elif isinstance(d.index, pd.DatetimeIndex):
+                        dt_s = pd.to_datetime(d.index)
+                    else:
+                        dt_s = pd.to_datetime(d.iloc[:, 0])
+                    if getattr(dt_s.dt, 'tz', None) is not None:
+                        dt_s = dt_s.dt.tz_localize(None)
+                    d['dt'] = dt_s
+
+            m = df_eur[['dt', 'open', 'high', 'low', 'close']].copy()
+            m = m.rename(columns={'open': 'open_eur', 'high': 'high_eur', 'low': 'low_eur', 'close': 'close_eur'})
+
+            if df_gbp is not None and not df_gbp.empty:
+                m = pd.merge(m, df_gbp[['dt', 'open', 'high', 'low', 'close']], on='dt', how='left')
+                m = m.rename(columns={'open': 'open_gbp', 'high': 'high_gbp', 'low': 'low_gbp', 'close': 'close_gbp'})
+                m['close_gbp'] = m['close_gbp'].fillna(1.27)
+                m['open_gbp'] = m['open_gbp'].fillna(1.27)
+                m['high_gbp'] = m['high_gbp'].fillna(1.27)
+                m['low_gbp'] = m['low_gbp'].fillna(1.27)
+            else:
+                m['open_gbp'] = m['high_gbp'] = m['low_gbp'] = m['close_gbp'] = 1.27
+
+            if df_jpy is not None and not df_jpy.empty:
+                m = pd.merge(m, df_jpy[['dt', 'open', 'high', 'low', 'close']], on='dt', how='left')
+                m = m.rename(columns={'open': 'open_jpy', 'high': 'high_jpy', 'low': 'low_jpy', 'close': 'close_jpy'})
+                m['close_jpy'] = m['close_jpy'].fillna(150.0)
+                m['open_jpy'] = m['open_jpy'].fillna(150.0)
+                m['high_jpy'] = m['high_jpy'].fillna(150.0)
+                m['low_jpy'] = m['low_jpy'].fillna(150.0)
+            else:
+                m['open_jpy'] = m['high_jpy'] = m['low_jpy'] = m['close_jpy'] = 150.0
+
+            if df_chf is not None and not df_chf.empty:
+                m = pd.merge(m, df_chf[['dt', 'open', 'high', 'low', 'close']], on='dt', how='left')
+                m = m.rename(columns={'open': 'open_chf', 'high': 'high_chf', 'low': 'low_chf', 'close': 'close_chf'})
+                m['close_chf'] = m['close_chf'].fillna(0.90)
+                m['open_chf'] = m['open_chf'].fillna(0.90)
+                m['high_chf'] = m['high_chf'].fillna(0.90)
+                m['low_chf'] = m['low_chf'].fillna(0.90)
+            else:
+                m['open_chf'] = m['high_chf'] = m['low_chf'] = m['close_chf'] = 0.90
+
+            if df_cad is not None and not df_cad.empty:
+                m = pd.merge(m, df_cad[['dt', 'open', 'high', 'low', 'close']], on='dt', how='left')
+                m = m.rename(columns={'open': 'open_cad', 'high': 'high_cad', 'low': 'low_cad', 'close': 'close_cad'})
+                m['close_cad'] = m['close_cad'].fillna(1.35)
+                m['open_cad'] = m['open_cad'].fillna(1.35)
+                m['high_cad'] = m['high_cad'].fillna(1.35)
+                m['low_cad'] = m['low_cad'].fillna(1.35)
+            else:
+                m['open_cad'] = m['high_cad'] = m['low_cad'] = m['close_cad'] = 1.35
+
+            usdsek = 10.5
+            k = 50.14348112 * (usdsek ** 0.042)
+
+            dxy = pd.DataFrame()
+            dxy['timestamp'] = m['dt']
+            dxy['open'] = k * (m['open_eur'] ** -0.576) * (m['open_jpy'] ** 0.136) * (m['open_gbp'] ** -0.119) * (m['open_cad'] ** 0.091) * (m['open_chf'] ** 0.036)
+            dxy['close'] = k * (m['close_eur'] ** -0.576) * (m['close_jpy'] ** 0.136) * (m['close_gbp'] ** -0.119) * (m['close_cad'] ** 0.091) * (m['close_chf'] ** 0.036)
+            dxy['high'] = k * (m['low_eur'] ** -0.576) * (m['high_jpy'] ** 0.136) * (m['low_gbp'] ** -0.119) * (m['high_cad'] ** 0.091) * (m['high_chf'] ** 0.036)
+            dxy['low'] = k * (m['high_eur'] ** -0.576) * (m['low_jpy'] ** 0.136) * (m['high_gbp'] ** -0.119) * (m['low_cad'] ** 0.091) * (m['low_chf'] ** 0.036)
+            dxy['volume'] = 100.0
+
+            return dxy.tail(limit).reset_index(drop=True)
+        except Exception as e:
+            logger.error("Error synthesizing DXY: %s", e)
+            return pd.DataFrame(columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+
+    async def fetch_dxy(self, timeframe: str = 'H1', limit: int = 150) -> pd.DataFrame:
+        """Асинхронная обертка для fetch_dxy."""
+        return self.get_dxy_bars_sync(timeframe=timeframe, limit=limit)
+

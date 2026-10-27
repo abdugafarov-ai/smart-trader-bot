@@ -97,8 +97,21 @@ async def handle_status(request: web.Request) -> web.Response:
     })
 
 
+def _check_public_api_auth(request: web.Request):
+    """Защищает публичные эндпоинты от несанкционированного доступа извне (через туннель)."""
+    key = request.headers.get("X-API-Key") or request.query.get("api_key") or ""
+    if key == config.BRIDGE_API_KEY:
+        return
+    # Разрешаем локальные запросы с самого сервера (без заголовков внешнего прокси Cloudflare)
+    is_proxied = bool(request.headers.get("CF-Connecting-IP") or request.headers.get("X-Forwarded-For"))
+    if not is_proxied and request.remote in ("127.0.0.1", "::1", "localhost"):
+        return
+    raise web.HTTPForbidden(text='{"status":"error","message":"Forbidden: API key required"}', content_type="application/json")
+
+
 async def api_signals(request: web.Request) -> web.Response:
     """Возвращает активные и недавние сигналы в формате JSON."""
+    _check_public_api_auth(request)
     try:
         active = await get_active_signals()
         pending = await get_pending_signals()
@@ -117,6 +130,7 @@ async def api_signals(request: web.Request) -> web.Response:
 
 async def api_stats(request: web.Request) -> web.Response:
     """Возвращает общую статистику торговли."""
+    _check_public_api_auth(request)
     try:
         stats = await get_stats()
         return web.json_response({
@@ -131,6 +145,7 @@ async def api_stats(request: web.Request) -> web.Response:
 
 async def api_events(request: web.Request) -> web.Response:
     """Возвращает экономический календарь High-Impact событий."""
+    _check_public_api_auth(request)
     try:
         from news.economic_calendar import EconomicCalendar
         calendar = EconomicCalendar(config.TIMEZONE)
@@ -200,6 +215,7 @@ async def bridge_get_orders(request: web.Request) -> web.Response:
             margin_free = float(post_data.get("margin_free") or request.query.get("margin_free") or request.headers.get("X-MT5-Margin-Free") or 0.0)
             broker = str(post_data.get("broker") or request.query.get("broker") or request.headers.get("X-MT5-Broker") or "")
             account = str(post_data.get("account") or request.query.get("account") or request.headers.get("X-MT5-Account") or "")
+            server_time = int(post_data.get("server_time") or request.query.get("server_time") or 0)
             
             positions = post_data.get("positions")
             orders_list = post_data.get("orders") or post_data.get("orders_list")
@@ -235,7 +251,7 @@ async def bridge_get_orders(request: web.Request) -> web.Response:
                             profit_sign = "+" if profit_val >= 0 else ""
                             sym = nd.get('symbol', '').upper()
                             deal_type = nd.get('type', 'BUY').upper()
-                            lot = nd.get('lot', 0.01)
+                            lot = float(nd.get('lot') or bridge_manager.default_lot or 0.10)
                             close_p = float(nd.get("price") or 0.0)
                             ticket_no = nd.get("ticket", 0)
                             comment = str(nd.get("comment") or "")
@@ -327,7 +343,7 @@ async def bridge_get_orders(request: web.Request) -> web.Response:
                                         f"🛡 <b>СДЕЛКА ЗАКРЫТА В БЕЗУБЫТОК!</b>\n"
                                         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
                                         f"📊 <b>{sym}</b> | <code>{deal_type} {lot} lot</code>\n"
-                                        f"💵 Результат: <b>0.00 USD</b>\n"
+                                        f"💵 Результат: <b>{profit:+.2f} USD</b> ({pnl_pips:+.1f} pips)\n"
                                         f"📍 Цена закрытия: <code>{close_p}</code>\n"
                                         f"🎫 Билет: <code>#{ticket_no}</code>\n"
                                         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -360,12 +376,13 @@ async def bridge_get_orders(request: web.Request) -> web.Response:
                 except Exception as hist_err:
                     logger.error("Failed to sync broker deals from EA: %s", hist_err)
 
-            if balance > 0 or equity > 0 or broker or positions is not None or orders_list is not None:
+            if balance > 0 or equity > 0 or broker or positions is not None or orders_list is not None or server_time > 0:
                 bridge_manager.update_telemetry(
                     balance=balance, equity=equity, margin_free=margin_free,
                     broker=broker, account=account,
                     positions=positions if positions is not None else [],
-                    orders=orders_list if orders_list is not None else []
+                    orders=orders_list if orders_list is not None else [],
+                    server_time=server_time
                 )
             else:
                 bridge_manager.mt5_telemetry["last_ping"] = datetime.now(timezone.utc)
@@ -377,7 +394,37 @@ async def bridge_get_orders(request: web.Request) -> web.Response:
             bridge_manager.panic_close_requested = False
             logger.warning("Sending panic_close_all=True to MT5 terminal!")
 
-        use_risk_flag = 1 if (getattr(bridge_manager, 'lot_mode', 'fixed') == 'risk') else 0
+        use_risk_flag = 1 if (getattr(bridge_manager, 'lot_mode', 'fixed') in ('risk', 'dynamic')) else 0
+
+        # 0. Проверка аварийного хард-стопа по эквити ($4,450.00 с запасом $50 до пола $4,400.00)
+        from utils.broker_time import get_broker_today_date_str
+        today_str = get_broker_today_date_str()
+        is_hard_stop, hard_reason = bridge_manager.check_equity_hard_stop()
+        if is_hard_stop:
+            if getattr(bridge_manager, 'hard_stop_alerted_date', '') != today_str:
+                bridge_manager.hard_stop_alerted_date = today_str
+                alert_text = (
+                    f"🚨 <b>КРИТИЧЕСКАЯ АВАРИЯ: СРАБОТАЛ ХАРД-СТОП ПО ЭКВИТИ ($4,450.00)!</b>\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"🛑 Эквити: <b>{bridge_manager.mt5_telemetry.get('equity', 0.0):.2f} USD</b>\n"
+                    f"⚠️ Порог хард-стопа: <b>${bridge_manager.hard_equity_stop_usd:.2f} USD</b> (пол брокера: $4,400.00)\n"
+                    f"🔒 Все рыночные позиции закрыты, автопилот заблокирован!\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"💼 <i>Депозит челленджа FundingPips защищен от фатальной просадки брокера.</i>"
+                )
+                await _send_telegram_notification(alert_text)
+            return web.json_response({
+                "status": "ok",
+                "autotrade_enabled": False,
+                "daily_loss_locked": True,
+                "panic_close_all": True,
+                "lot": bridge_manager.default_lot,
+                "risk_percent": bridge_manager.default_risk,
+                "use_auto_risk": use_risk_flag,
+                "orders": [],
+                "reason": hard_reason,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            })
 
         # 1. Проверка Hard Daily Drawdown Limit
         from db.database import get_today_broker_pnl, get_bot_setting
@@ -386,8 +433,6 @@ async def bridge_get_orders(request: web.Request) -> web.Response:
             today_closed_pnl=today_stats.get("total_pnl", 0.0),
             today_deals_count=today_stats.get("deals_count", 0)
         )
-
-        today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         if is_daily_locked:
             # Отправляем экстренное тревожное сообщение в Telegram один раз за день
             if bridge_manager.daily_lock_alerted_date != today_str:
@@ -397,7 +442,7 @@ async def bridge_get_orders(request: web.Request) -> web.Response:
                     f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
                     f"📉 Дневной PnL: <b>{today_net_pnl:.2f} USD</b> (<code>-{today_dd_pct:.2f}%</code>)\n"
                     f"🛑 Лимит допустимого убытка: <b>{bridge_manager.max_daily_loss_pct:.1f}%</b>\n"
-                    f"🔒 Авто-торговля <b>АВТОМАТИЧЕСКИ ЗАМОРОЖЕНА</b> до 00:00 UTC.\n"
+                    f"🔒 Авто-торговля <b>АВТОМАТИЧЕСКИ ЗАМОРОЖЕНА</b> до 00:00 сервера MT5 (EET).\n"
                     f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
                     f"💼 <i>Капитал защищен. Алгоритм сберег баланс и предотвратил серию тильтовых стопов. "
                     f"Сбросить блокировку вручную при необходимости можно в меню настроек автопилота.</i>"
@@ -443,15 +488,22 @@ async def bridge_get_orders(request: web.Request) -> web.Response:
             rows = await cursor.fetchall()
             active = [dict(r) for r in rows]
 
-        trading_mode = await get_bot_setting("trading_mode", "micro")
+        trading_mode = await get_bot_setting("trading_mode", "prop")
         orders = []
         current_active_slots = len(bridge_manager.mt5_telemetry.get("positions") or []) + len(bridge_manager.mt5_telemetry.get("orders") or [])
         max_allowed_slots = 1 if trading_mode == "micro" else bridge_manager.max_concurrent_positions
         dispatched_symbols = set()
 
+        from db.database import get_consecutive_sl_count
+        consec_sl = await get_consecutive_sl_count(max_lookback_hours=12.0)
+
         for sig in (active or []):
             sym = sig.get("symbol")
             if not sym or sym in dispatched_symbols:
+                continue
+            # Если активен 12-часовой кулдаун после 3 стопов подряд, не отправляем новые неподтвержденные сигналы
+            if consec_sl >= 3 and not sig.get("broker_confirmed"):
+                logger.info("Signal #%s (%s) held by 12h 3-SL Cooldown (%d SLs)", sig.get("id"), sym, consec_sl)
                 continue
 
             # Институциональная многофакторная валидация перед входом в рынок
@@ -469,8 +521,8 @@ async def bridge_get_orders(request: web.Request) -> web.Response:
                 reward_d = abs(tp_p - entry_p)
                 if risk_d > 0:
                     sig_rr = reward_d / risk_d
-                    if sig_rr < 1.99:
-                        logger.warning("Signal #%s (%s) rejected: R:R %.2f < 1:2.0 (Strict R:R Rule)", sig.get("id"), sym, sig_rr)
+                    if sig_rr < 1.48:
+                        logger.warning("Signal #%s (%s) rejected: R:R %.2f < 1:1.5 (Dynamic R:R Rule)", sig.get("id"), sym, sig_rr)
                         continue
 
             # Проверка лимита свободных слотов в текущем цикле отправки
@@ -478,6 +530,33 @@ async def bridge_get_orders(request: web.Request) -> web.Response:
                 logger.info("Batch slot capacity reached: %d/%d (holding remaining signals)",
                             current_active_slots + len(orders), max_allowed_slots)
                 break
+
+            # Институциональный динамический расчет лота (строго 0.5% на сделку)
+            sl_dist = abs(entry_p - sl_p) if (entry_p > 0 and sl_p > 0) else 0.0
+            sym_clean = sym.upper().replace("/", "").replace("=X", "")
+            if "JPY" in sym_clean:
+                sl_pips = sl_dist / 0.01 if sl_dist > 0 else 10.0
+            elif "XAU" in sym_clean:
+                sl_pips = sl_dist / 0.1 if sl_dist > 0 else 10.0
+            else:
+                sl_pips = sl_dist / 0.0001 if sl_dist > 0 else 10.0
+
+            if getattr(bridge_manager, 'lot_mode', 'fixed') in ('risk', 'dynamic'):
+                order_lot = bridge_manager.calculate_lot(sym, sl_pips)
+            else:
+                order_lot = float(sig.get("lot") or bridge_manager.default_lot)
+            if order_lot <= 0:
+                order_lot = bridge_manager.default_lot
+
+            # ── Жесткий предохранитель FundingPips (0.02 - 0.05 лота, риск <= $65) ──
+            if "XAU" in sym_clean or "GOLD" in sym_clean:
+                order_lot = max(0.02, min(0.05, round(order_lot, 2)))
+                if sl_dist > 0:
+                    while order_lot > 0.02 and (order_lot * 100.0 * sl_dist) > 65.0:
+                        order_lot = round(order_lot - 0.01, 2)
+                    if (order_lot * 100.0 * sl_dist) > 65.0:
+                        logger.warning("Order %s skipped: risk $%.2f exceeds $65.00 hard cap", sym, order_lot * 100.0 * sl_dist)
+                        continue
 
             dispatched_symbols.add(sym)
             orders.append({
@@ -490,7 +569,7 @@ async def bridge_get_orders(request: web.Request) -> web.Response:
                 "tp1": sig.get("take_profit_1"),
                 "tp2": sig.get("take_profit_2"),
                 "breakeven_applied": bool(sig.get("breakeven_applied", 0)),
-                "lot": bridge_manager.default_lot,
+                "lot": order_lot,
                 "risk_percent": bridge_manager.default_risk,
                 "use_auto_risk": use_risk_flag,
                 "magic_number": 888001,
@@ -540,6 +619,8 @@ async def bridge_post_report(request: web.Request) -> web.Response:
         action = data.get("action", "").upper()
         price = float(data.get("price") or 0.0)
         profit = float(data.get("profit") or 0.0)
+        from trading.execution_bridge import bridge_manager
+        lot = float(data.get("lot") or data.get("volume") or bridge_manager.default_lot or 0.10)
         reason = data.get("reason", "")
         sig_id = int(data.get("signal_id") or 0)
 
@@ -705,7 +786,7 @@ async def bridge_post_report(request: web.Request) -> web.Response:
                         await db.execute(
                             """INSERT OR IGNORE INTO broker_deals (ticket, symbol, deal_type, lot, price, profit_usd, close_time, magic, comment, created_at)
                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                            (ticket, symbol, direction, 0.01, price, profit, int(datetime.now(timezone.utc).timestamp()), 0, "MANUAL_CLOSE", datetime.now(timezone.utc).isoformat())
+                            (ticket, symbol, direction, lot, price, profit, int(datetime.now(timezone.utc).timestamp()), 0, "MANUAL_CLOSE", datetime.now(timezone.utc).isoformat())
                         )
                         await db.commit()
                 except Exception:
@@ -713,12 +794,86 @@ async def bridge_post_report(request: web.Request) -> web.Response:
 
             await _send_admin_only(msg, photo_bytes=chart_bytes)
 
+        # 4.5. Частичная фиксация 50% объема (Partial Close 50% на пуле ликвидности)
+        elif action in ("PARTIAL_CLOSE", "TP1_PARTIAL"):
+            try:
+                from db.database import DB_PATH
+                import aiosqlite
+                async with aiosqlite.connect(str(DB_PATH)) as db:
+                    await db.execute(
+                        "UPDATE signals SET status = 'TP1_PARTIAL' WHERE symbol = ? AND status IN ('OPEN', 'ACTIVE')",
+                        (symbol,)
+                    )
+                    if ticket > 0:
+                        await db.execute(
+                            """INSERT OR IGNORE INTO broker_deals (ticket, symbol, deal_type, lot, price, profit_usd, close_time, magic, comment, created_at)
+                               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                            (ticket, symbol, "PARTIAL_CLOSE", lot, price, profit, int(datetime.now(timezone.utc).timestamp()), 888001, reason, datetime.now(timezone.utc).isoformat())
+                        )
+                    await db.commit()
+            except Exception as part_err:
+                logger.error("PARTIAL_CLOSE db update error: %s", part_err)
+
+            msg_part = (
+                f"🎯 <b>ЧАСТИЧНАЯ ФИКСАЦИЯ 50% (PARTIAL CLOSE)</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"📊 <b>{symbol}</b> | Билет: <code>#{ticket}</code>\n"
+                f"💵 Зафиксировано: <b>+{profit:+.2f} USD</b> ({lot:.2f} lot)\n"
+                f"📍 Цена фиксации: <code>{price:.5f}</code>\n"
+                f"🛡 Ликвидность: <i>{reason or 'Opposing Liquidity Pool'}</i>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"🚀 <i>Остаток 50% объема удерживается как безопасный раннер (SL в Б/У за защитным свингом) до финального TP!</i>"
+            )
+            await _send_telegram_notification(msg_part, text_admin=msg_part)
+
+        # Структурный Безубыток активирован (преодоление 1.0R -> стоп за Protected Swing)
+        elif action == "AUTO_BREAKEVEN":
+            try:
+                from db.database import DB_PATH
+                import aiosqlite
+                async with aiosqlite.connect(str(DB_PATH)) as db:
+                    pip_mult = 100.0 if 'JPY' in symbol else (10.0 if 'XAU' in symbol else 10000.0)
+                    pip_size = 1.0 / pip_mult
+                    async with db.execute(
+                        "SELECT id, direction, entry_price FROM signals WHERE symbol = ? AND status IN ('OPEN', 'ACTIVE', 'TP1_PARTIAL') ORDER BY id DESC LIMIT 1",
+                        (symbol,)
+                    ) as cur:
+                        sig_row = await cur.fetchone()
+                        if sig_row:
+                            s_id, s_dir, s_entry = sig_row
+                            s_entry = float(s_entry or price)
+                            be_sl = s_entry + (2.0 * pip_size) if s_dir == 'LONG' else s_entry - (2.0 * pip_size)
+                            await db.execute(
+                                "UPDATE signals SET breakeven_applied = 1, stop_loss = ? WHERE id = ?",
+                                (round(be_sl, 5), s_id)
+                            )
+                        else:
+                            await db.execute(
+                                "UPDATE signals SET breakeven_applied = 1 WHERE symbol = ? AND status IN ('OPEN', 'ACTIVE', 'TP1_PARTIAL')",
+                                (symbol,)
+                            )
+                    await db.commit()
+            except Exception as be_err:
+                logger.error("AUTO_BREAKEVEN db update error: %s", be_err)
+            msg_be = (
+                f"🛡 <b>СТРУКТУРНЫЙ БЕЗУБЫТОК АКТИВИРОВАН (MT5)</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"📊 <b>{symbol}</b> | Билет: <code>#{ticket}</code>\n"
+                f"📈 Преодолен барьер 1.0R: <b>+{profit:.2f} USD</b>\n"
+                f"🔒 <b>Стоп-лосс перенесён за защитный локальный свинг (Protected Swing)!</b>\n"
+                f"ℹ️ Причина: <code>{reason or 'Protected Swing Lock'}</code>\n"
+                f"🎯 <i>Позиция в полной безопасности. Риск потерь ликвидирован.</i>"
+            )
+            await _send_admin_only(msg_be)
+
         # Позиция закрыта в MT5 (TP, SL, безубыток)
         elif action in ("DEAL_CLOSED", "STALE_PROFIT_CLOSE", "CLOSED"):
             sig = await close_signal_by_broker(symbol, price, profit, reason)
             profit_sign = "+" if profit >= 0 else ""
-            is_tp = profit > 0 or "TP" in reason.upper()
-            is_sl = profit < 0 or "SL" in reason.upper()
+            reason_u = str(reason or "").upper()
+            is_be = "BREAKEVEN" in reason_u or (sig and sig.get("status") == "BREAKEVEN")
+            is_tp = (not is_be) and (profit > 0 or "TP" in reason_u)
+            is_sl = (not is_be) and (profit < 0 or "SL" in reason_u)
             pip_mult = 100.0 if 'JPY' in symbol else (10.0 if 'XAU' in symbol else 10000.0)
             entry = float(sig.get('entry_price') or price) if sig else price
             direction = sig.get('direction', 'LONG') if sig else ('LONG' if 'BUY' in reason.upper() else 'SHORT')
@@ -777,7 +932,7 @@ async def bridge_post_report(request: web.Request) -> web.Response:
                     f"🛡 <b>СДЕЛКА ЗАКРЫТА В БЕЗУБЫТОК!</b>\n"
                     f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
                     f"📊 <b>{symbol}</b> | <code>{direction}</code>\n"
-                    f"💵 Результат: <b>0.00 USD</b>\n"
+                    f"💵 Результат: <b>{profit:+.2f} USD</b> ({pnl_pips:+.1f} pips)\n"
                     f"📍 Цена закрытия: <code>{price:.5f}</code>\n"
                     f"🎫 Билет сделки: <code>#{ticket}</code>\n"
                     f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -817,7 +972,7 @@ async def bridge_post_report(request: web.Request) -> web.Response:
                         await db.execute(
                             """INSERT OR IGNORE INTO broker_deals (ticket, symbol, deal_type, lot, price, profit_usd, close_time, magic, comment, created_at)
                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                            (ticket, symbol, direction, 0.01, price, profit, int(datetime.now(timezone.utc).timestamp()), 888001, reason, datetime.now(timezone.utc).isoformat())
+                            (ticket, symbol, direction, lot, price, profit, int(datetime.now(timezone.utc).timestamp()), 888001, reason, datetime.now(timezone.utc).isoformat())
                         )
                         await db.commit()
                 except Exception:
@@ -835,6 +990,7 @@ def create_webapp_app() -> web.Application:
     """Создает приложение aiohttp для локального MT5 моста."""
     app = web.Application()
     app.router.add_get("/", handle_status)
+    app.router.add_get("/health", handle_status)
     app.router.add_get("/api/signals", api_signals)
     app.router.add_get("/api/stats", api_stats)
     app.router.add_get("/api/events", api_events)

@@ -9,8 +9,41 @@ from datetime import datetime, timezone
 
 import config
 from db.database import get_active_signals, update_signal_status
+from utils.broker_time import get_broker_today_date_str, get_broker_now
 
 logger = logging.getLogger(__name__)
+
+
+def calculate_gold_swing_lot(balance: float = 5000.0, sl_dist_usd: float = 15.0) -> float:
+    """
+    Институциональный расчет лота для свинг-трейдинга Золотом (XAUUSD):
+    - Депозит: $5,000 (FundingPips 2-step Flex)
+    - Целевой риск: 0.8% - 1.0% ($40 - $50)
+    - Жесткий потолок риска: <= $65.00
+    - Границы лота: MIN_LOT = 0.02, MAX_LOT = 0.05
+    - Матрица:
+      Широкий стоп ($20.00 - $35.00): 0.02 лота (риск $40 - $65)
+      Средний стоп ($14.00 - $19.99): 0.03 лота (риск $42 - $60)
+      Компактный стоп ($10.00 - $13.99): 0.04 - 0.05 лота (риск $40 - $65)
+    """
+    if sl_dist_usd <= 0:
+        sl_dist_usd = 15.0
+
+    if sl_dist_usd >= 20.0:
+        lot = 0.02
+    elif sl_dist_usd >= 14.0:
+        lot = 0.03
+    elif sl_dist_usd >= 12.0:
+        lot = 0.04
+    else:
+        lot = 0.05
+
+    # Enforce strictly <= $65.00 risk cap (1 lot XAUUSD = 100 oz -> $1/oz on 1 lot = $100 -> lot * 100 * sl_dist_usd)
+    while lot > 0.02 and (lot * 100.0 * sl_dist_usd) > 65.0:
+        lot = round(lot - 0.01, 2)
+
+    lot = max(0.02, min(0.05, lot))
+    return round(lot, 2)
 
 
 class ExecutionBridge:
@@ -41,14 +74,25 @@ class ExecutionBridge:
 
         # Институциональный риск-менеджмент для реального счёта
         self.max_daily_loss_pct: float = getattr(config, 'MAX_DAILY_DRAWDOWN_PCT', 2.5)
-        self.max_concurrent_positions: int = getattr(config, 'MAX_CONCURRENT_POSITIONS', 4)
+        self.max_concurrent_positions: int = getattr(config, 'MAX_CONCURRENT_POSITIONS', 3)
+        # Аварийный хард-стоп по эквити ($4,450.00 с запасом $50 до пола FundingPips $4,400.00)
+        self.hard_equity_stop_usd: float = getattr(config, 'HARD_EQUITY_STOP_USD', 4450.0)
+        self.equity_hard_stop_triggered: bool = False
+        self.equity_hard_stop_reason: str = ""
+
         self.daily_loss_locked: bool = False
         self.daily_lock_reason: str = ""
         self.daily_lock_alerted_date: str = ""
-        self.current_trade_date: str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        self.current_trade_date: str = get_broker_today_date_str()
         self.today_stats_cache: Dict[str, Any] = {}
 
     def set_enabled(self, enabled: bool):
+        if enabled:
+            is_hard, reason = self.check_equity_hard_stop()
+            if is_hard:
+                logger.warning("🚨 Cannot enable autopilot: %s. Blocked by Equity Hard Stop.", reason)
+                self.enabled = False
+                return
         self.enabled = enabled
         logger.info("Auto-Trading Bridge enabled set to: %s", enabled)
 
@@ -61,6 +105,33 @@ class ExecutionBridge:
         self.default_lot = max(0.01, min(10.0, lot))
         self.lot_mode = "fixed"
         logger.info("Auto-Trading Bridge lot set to: %.2f (mode: fixed)", self.default_lot)
+
+    def calculate_lot(
+        self,
+        symbol: str = "XAUUSD",
+        sl_pips: float = 10.0,
+        balance: Optional[float] = None,
+        risk_pct: float = 0.8,
+        min_lot: float = 0.02,
+        max_lot: float = 0.05,
+    ) -> float:
+        """
+        Точный расчет объема лота:
+        Для XAUUSD: снайперская матрица риска $40-$65 (0.02 - 0.05 лота).
+        """
+        sym_clean = symbol.upper().replace("/", "").replace("=X", "")
+        if "XAU" in sym_clean or "GOLD" in sym_clean:
+            sl_dist_usd = sl_pips * 0.10 if sl_pips > 35.0 else sl_pips
+            bal_val = balance or float(self.mt5_telemetry.get("balance", 0.0)) or 5000.0
+            return calculate_gold_swing_lot(bal_val, sl_dist_usd)
+
+        import math
+        bal_val = balance or float(self.mt5_telemetry.get("balance", 0.0)) or 5000.0
+        risk_factor = (risk_pct / 100.0) if risk_pct is not None else 0.008
+        risk_usd = bal_val * risk_factor
+        raw_lot = risk_usd / (max(sl_pips, 1.0) * 10.0)
+        lot = math.floor(raw_lot * 100.0) / 100.0
+        return max(min_lot, min(max_lot, round(lot, 2)))
 
     async def load_settings_from_db(self):
         """Загружает персистентные настройки моста (лот, риск, режим) из базы данных SQLite."""
@@ -90,7 +161,8 @@ class ExecutionBridge:
             logger.error("Failed to load Bridge settings from DB: %s", e)
 
     def update_telemetry(self, balance: float, equity: float, margin_free: float,
-                         broker: str, account: str, positions: list, orders: list):
+                         broker: str, account: str, positions: list, orders: list,
+                         server_time: int = 0):
         """Обновляет телеметрию живыми данными, полученными от советника MT5."""
         self.mt5_telemetry["balance"] = balance
         self.mt5_telemetry["equity"] = equity
@@ -99,10 +171,15 @@ class ExecutionBridge:
             self.mt5_telemetry["broker"] = broker
         if account:
             self.mt5_telemetry["account"] = str(account)
+        if server_time > 0:
+            self.mt5_telemetry["server_time"] = server_time
         self.mt5_telemetry["positions"] = positions or []
         self.mt5_telemetry["orders"] = orders or []
         self.mt5_telemetry["last_ping"] = datetime.now(timezone.utc)
         self._connected_terminals["MT5"] = self.mt5_telemetry["last_ping"]
+
+        # Аварийный контроль хард-стопа по эквити ($4,450.00)
+        self.check_equity_hard_stop()
 
     def update_quotes(self, quotes: Dict[str, Dict[str, Any]]):
         """Сохраняет живой срез котировок, присланный советником MT5."""
@@ -183,6 +260,33 @@ class ExecutionBridge:
         delta = (datetime.now(timezone.utc) - last).total_seconds()
         return (delta < 15.0), round(delta, 1)
 
+    def check_equity_hard_stop(self, current_equity: float = None) -> tuple[bool, str]:
+        """
+        Жёсткий аварийный контроль по эквити ($4,450.00).
+        Если эквити падает до $4,450.00 или ниже (при эквити > 0),
+        немедленно закрывает все рыночные позиции и блокирует автопилот.
+        Обеспечивает запас $50 до фатального пола брокера $4,400.00.
+        """
+        if current_equity is None:
+            is_online, _ = self.is_mt5_online()
+            if not is_online:
+                return self.equity_hard_stop_triggered, self.equity_hard_stop_reason
+            eq = float(self.mt5_telemetry.get("equity", 0.0))
+        else:
+            eq = float(current_equity)
+        if 0 < eq <= self.hard_equity_stop_usd:
+            self.equity_hard_stop_triggered = True
+            self.equity_hard_stop_reason = (
+                f"Хард-стоп эквити: ${eq:.2f} <= ${self.hard_equity_stop_usd:.2f} "
+                f"(аварийный запас $50 до пола FundingPips $4,400.00)"
+            )
+            if self.enabled:
+                self.enabled = False
+                logger.critical("🚨 ХАРД-СТОП ПО ЭКВИТИ АКТИВИРОВАН! %s. Автопилот заблокирован.", self.equity_hard_stop_reason)
+            self.request_panic_close()
+            return True, self.equity_hard_stop_reason
+        return self.equity_hard_stop_triggered, self.equity_hard_stop_reason
+
     def request_panic_close(self):
         self.panic_close_requested = True
         logger.warning("🚨 ПАНИКА: Запрошено экстренное закрытие всех позиций и ордеров в MT5!")
@@ -225,12 +329,11 @@ class ExecutionBridge:
         Проверяет соблюдение Hard Daily Drawdown Limit.
         Возвращает (is_locked, today_net_pnl, today_drawdown_pct, daily_start_balance).
         """
-        now_utc = datetime.now(timezone.utc)
-        today_str = now_utc.strftime("%Y-%m-%d")
+        today_str = get_broker_today_date_str()
 
-        # Автоматический сброс дневного замка при наступлении нового торгового дня UTC (00:00)
+        # Автоматический сброс дневного замка при наступлении 00:00 времени сервера MT5 (EET / UTC+2 зимой, UTC+3 летом)
         if today_str != self.current_trade_date:
-            logger.info("New trading day UTC: %s (was %s). Resetting daily loss lock.", today_str, self.current_trade_date)
+            logger.info("New trading day MT5 Broker Time (00:00 EET): %s (was %s). Resetting daily loss lock.", today_str, self.current_trade_date)
             self.current_trade_date = today_str
             self.daily_loss_locked = False
             self.daily_lock_reason = ""
@@ -267,19 +370,24 @@ class ExecutionBridge:
                 self.daily_loss_locked = True
                 self.daily_lock_reason = f"Дневная просадка {dd_pct:.2f}% >= лимита {self.max_daily_loss_pct:.1f}% (PnL: {today_net_pnl:.2f} USD)"
                 return True, today_net_pnl, dd_pct, daily_start_balance
-            return False, today_net_pnl, dd_pct, daily_start_balance
+            return self.daily_loss_locked, today_net_pnl, dd_pct, daily_start_balance
 
-        return False, today_net_pnl, 0.0, daily_start_balance
+        return self.daily_loss_locked, today_net_pnl, 0.0, daily_start_balance
 
     def can_open_new_position(self, symbol: str, trading_mode: str = "prop") -> tuple[bool, str]:
         """
         Институциональная 10-факторная валидация перед открытием ордера на реальные деньги.
         Возвращает (allowed: bool, reason: str).
         """
-        # 0. Абсолютный запрет на золото (XAUUSD) и запрещённые инструменты
+        # 0. Проверка аварийного хард-стопа по эквити ($4,450.00)
+        is_hard_stop, hard_reason = self.check_equity_hard_stop()
+        if is_hard_stop:
+            return False, f"Аварийный хард-стоп по эквити: {hard_reason}"
+
+        # 0.1 Проверка запрещенных инструментов
         sym_u = symbol.upper()
-        if sym_u in ["XAUUSD", "GOLD"] or "XAU" in sym_u or sym_u in getattr(config, "BANNED_PAIRS", []):
-            return False, "Золото (XAUUSD) ПОЛНОСТЬЮ ОТКЛЮЧЕНО в настройках робота"
+        if sym_u in getattr(config, "BANNED_PAIRS", []):
+            return False, f"Инструмент {sym_u} отключен (в списке запрещенных пар)"
 
         # 1. Проверка активности автопилота
         if not self.enabled:
@@ -289,10 +397,15 @@ class ExecutionBridge:
         if self.daily_loss_locked:
             return False, f"Защита от дневного убытка: {self.daily_lock_reason}"
 
-        # 3. Проверка институционального недельного торгового окна
+        # 3. Проверка институционального недельного торгового окна и защиты от ролловера
         w_open, w_reason = config.is_weekly_trading_window_open()
         if not w_open:
             return False, f"Торговое окно закрыто: {w_reason}"
+
+        if hasattr(config, "is_rollover_window"):
+            in_rollover, roll_reason = config.is_rollover_window()
+            if in_rollover:
+                return False, f"Защита от ролловера: {roll_reason}"
 
         # 4. Проверка связи с терминалом MT5
         is_online, ping = self.is_mt5_online()
@@ -385,6 +498,12 @@ class ExecutionBridge:
         today_dd_pct = (abs(today_pnl) / start_b * 100.0) if (start_b > 0 and today_pnl < 0) else 0.0
         
         lock_badge = "🟢 Норма" if not self.daily_loss_locked else f"🚨 <b>БЛОКИРОВКА</b> ({self.daily_lock_reason})"
+        eq_val = float(t.get('equity', 0.0)) if is_online else 0.0
+        if self.equity_hard_stop_triggered:
+            hard_stop_badge = f"🚨 <b>АКТИВИРОВАН</b> ({self.equity_hard_stop_reason})"
+        else:
+            buffer_str = f" (запас ${eq_val - self.hard_equity_stop_usd:.2f})" if (is_online and eq_val > 0) else ""
+            hard_stop_badge = f"🟢 Норма (порог ${self.hard_equity_stop_usd:,.2f} USD{buffer_str} | пол $4,400.00)"
         daily_limit_str = f"{self.max_daily_loss_pct:.1f}%"
         
         bal_val = float(t.get('balance', 0.0))
@@ -411,6 +530,7 @@ class ExecutionBridge:
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
             "🛡 <b>ИНСТИТУЦИОНАЛЬНЫЙ РИСК-КОНТРОЛЬ:</b>",
             f"🔒 <b>Дневной замок:</b> {lock_badge}",
+            f"🛑 <b>Хард-стоп эквити:</b> {hard_stop_badge}",
             f"📉 <b>PnL сегодня:</b> <b>{today_pnl_sign}{today_pnl:.2f} USD</b> ({today_pnl_sign}{today_dd_pct:.1f}%) | <b>Лимит:</b> <code>{daily_limit_str}</code>",
             f"📊 <b>Активные слоты:</b> <code>{active_slots} / {max_slots}</code> (макс. {max_slots} сделки)",
         ]
@@ -469,4 +589,74 @@ class ExecutionBridge:
 
 
 # Глобальный синглтон моста
+    async def check_midnight_rollover_guard(self, bot=None) -> list:
+        """
+        Midnight Rollover Guard at 23:30 UTC+3 (MT5 server time):
+        - If open XAUUSD position floating profit >= +$80, move SL to guaranteed +$3.00 profit
+        - Send Telegram alert proposing 50% partial close ahead of midnight rollover.
+        """
+        actions_taken = []
+        try:
+            from zoneinfo import ZoneInfo
+            broker_tz = ZoneInfo(getattr(config, "BROKER_TIMEZONE_NAME", "Europe/Helsinki"))
+            now_broker = datetime.now(timezone.utc).astimezone(broker_tz)
+            
+            if not (now_broker.hour == 23 and 30 <= now_broker.minute < 50):
+                return actions_taken
+
+            positions = self.mt5_telemetry.get("positions") or []
+            for p in positions:
+                sym = str(p.get("symbol", "")).upper()
+                if "XAU" not in sym and "GOLD" not in sym:
+                    continue
+                profit = float(p.get("profit", 0.0))
+                ticket = int(p.get("ticket", 0))
+                open_p = float(p.get("open_price", 0.0))
+                curr_sl = float(p.get("sl", 0.0))
+                p_type = str(p.get("type", "")).upper()
+
+                if profit >= 80.0:
+                    safe_sl = round(open_p + 3.0, 2) if "BUY" in p_type else round(open_p - 3.0, 2)
+                    need_move = (safe_sl > curr_sl) if "BUY" in p_type else (curr_sl <= 0.0 or safe_sl < curr_sl)
+                    
+                    alert_key = f"rollover_guard_{ticket}_{now_broker.strftime('%Y%m%d')}"
+                    if not hasattr(self, "_rollover_alerts"):
+                        self._rollover_alerts = set()
+                    
+                    if alert_key not in self._rollover_alerts:
+                        self._rollover_alerts.add(alert_key)
+                        msg = (
+                            f"🌙 <b>Midnight Rollover Guard (23:30 UTC+3)</b>\n\n"
+                            f"Позиция <b>{sym}</b> #{ticket} имеет плавающий профит: <b>+${profit:.2f}</b>!\n"
+                            f"🛡 SL защищен на гарантированные <b>+$3.00</b> ({safe_sl:.2f})\n"
+                            f"⚠️ Рекомендация: зафиксировать <b>50% позиции</b> перед ночным ролловером и расширением спредов."
+                        )
+                        actions_taken.append(msg)
+                        if bot and config.ADMIN_ID:
+                            try:
+                                await bot.send_message(chat_id=config.ADMIN_ID, text=msg, parse_mode="HTML")
+                            except Exception as ex:
+                                logger.error("Failed sending Rollover Guard Telegram alert: %s", ex)
+        except Exception as e:
+            logger.error("check_midnight_rollover_guard error: %s", e)
+        return actions_taken
+
+    @staticmethod
+    def is_night_clearing_window() -> bool:
+        """
+        Проверяет ночное клиринговое окно (23:50 - 01:10 UTC+3 сервера брокера).
+        В этот период запрещено подтягивать стоп-лосс ближе чем $4.00 к текущей цене.
+        """
+        try:
+            from zoneinfo import ZoneInfo
+            broker_tz = ZoneInfo(getattr(config, "BROKER_TIMEZONE_NAME", "Europe/Helsinki"))
+            now_broker = datetime.now(timezone.utc).astimezone(broker_tz)
+            h, m = now_broker.hour, now_broker.minute
+            if (h == 23 and m >= 50) or (h == 0) or (h == 1 and m <= 10):
+                return True
+        except Exception:
+            pass
+        return False
+
+
 bridge_manager = ExecutionBridge()

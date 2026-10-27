@@ -52,6 +52,11 @@ class AutoSignalScanner:
                 await self.check_news()
             except Exception as e:
                 logger.error("Continuous news check error: %s", e)
+            try:
+                from trading.execution_bridge import bridge_manager
+                await bridge_manager.check_midnight_rollover_guard(bot=self.bot)
+            except Exception as e:
+                logger.error("Midnight rollover guard check error: %s", e)
             await asyncio.sleep(60)
 
     async def start(self):
@@ -166,8 +171,8 @@ class AutoSignalScanner:
         try:
             from db.database import get_bot_setting
             from trading.execution_bridge import bridge_manager
-            trading_mode = await get_bot_setting("trading_mode", "micro")
-            max_orders = config.MICRO_MAX_CONCURRENT_ORDERS if trading_mode == "micro" else getattr(config, 'MAX_CONCURRENT_POSITIONS', 5)
+            trading_mode = await get_bot_setting("trading_mode", "prop")
+            max_orders = config.MICRO_MAX_CONCURRENT_ORDERS if trading_mode == "micro" else getattr(config, 'MAX_CONCURRENT_POSITIONS', 3)
 
             # Проверяем живую телеметрию MT5, если терминал в сети
             is_mt5_online, _ = bridge_manager.is_mt5_online()
@@ -225,14 +230,34 @@ class AutoSignalScanner:
             logger.info("Smart Weekly Window active: %s. New signals paused.", window_reason)
             return
 
-        # ── Проверка замка дневного риска (Daily Drawdown Lock) ──
+        # ── Временные запреты IPDA (15 мин до закрытия Лондона 15:45–16:00 UTC и мертвая зона 17:00–00:00 UTC) ──
+        if hasattr(config, "is_ipda_time_banned"):
+            is_ipda_banned, ipda_reason = config.is_ipda_time_banned()
+            if is_ipda_banned:
+                logger.info("IPDA timing ban active: %s. Scanner paused.", ipda_reason)
+                return
+
+        # ── Защита от банковского ролловера (20:30–21:45 UTC) ──
+        if hasattr(config, "is_rollover_window"):
+            in_rollover, roll_reason = config.is_rollover_window()
+            if in_rollover:
+                logger.info("Rollover Guard active: %s. Scanner paused.", roll_reason)
+                return
+
+        # ── Аварийная проверка хард-стопа по эквити ($4,450.00) ──
         from trading.execution_bridge import bridge_manager
+        is_hard_stop, hard_reason = bridge_manager.check_equity_hard_stop()
+        if is_hard_stop:
+            logger.warning("🚨 Emergency Equity Hard Stop active: %s. Scanner paused.", hard_reason)
+            return
+
+        # ── Проверка замка дневного риска (Daily Drawdown Lock) ──
         if bridge_manager.daily_loss_locked:
             logger.info("Daily loss lock active: %s. Scanner paused.", bridge_manager.daily_lock_reason)
             return
 
         # Текущий профиль торговли (micro vs prop)
-        trading_mode = await get_bot_setting("trading_mode", "micro")
+        trading_mode = await get_bot_setting("trading_mode", "prop")
 
         # Kill Zone check
         kz = config.get_current_kill_zone()
@@ -251,12 +276,13 @@ class AutoSignalScanner:
                         daily_count, config.MAX_SIGNALS_PER_DAY)
             return
 
-        # Drawdown Protection: полностью автоматический режим (без остановки сканера!)
+        # Drawdown Protection: пауза 12 часов ТОЛЬКО после 3 стоп-лоссов подряд!
         from db.database import get_consecutive_sl_count
         consecutive_sl = await get_consecutive_sl_count(max_lookback_hours=12.0)
         drawdown_mode = consecutive_sl >= 3
         if drawdown_mode:
-            logger.info("Auto Drawdown Filter Active (%d SL). Strict 5-star filter engaged automatically.", consecutive_sl)
+            logger.warning("🛑 12h SL Cooldown Active (%d consecutive SLs). Scanner paused for 12h after 3rd SL.", consecutive_sl)
+            return
 
         news_blocked = await self._get_news_blocked_pairs()
         scan_list = self.symbols
@@ -266,7 +292,7 @@ class AutoSignalScanner:
         for symbol in scan_list:
             try:
                 # ── ФИЛЬТР: Полный запрет золота и запрещенных пар ──
-                if symbol in getattr(config, "BANNED_PAIRS", ["XAUUSD", "GOLD"]) or "XAU" in symbol:
+                if symbol in getattr(config, "BANNED_PAIRS", []):
                     continue
 
                 # ── ФИЛЬТР 0: Исключение пар для режима Микро ($12) ──
@@ -320,18 +346,37 @@ class AutoSignalScanner:
                     min_stars = 5
                 # Kill Zone НЕ снижает планку ниже 4★ (строгий режим)
 
-                if result.overall_stars >= min_stars and (result.risk_reward_1 or 0) >= 2.0:
+                if result.overall_stars >= min_stars and round(result.risk_reward_1 or 0.0, 2) >= 1.5:
+
+                    sym_clean = symbol.upper().replace("/", "").replace("=X", "")
+                    is_gold = ("XAU" in sym_clean or "GOLD" in sym_clean)
+
+                    # ── ФИЛЬТР МИНИМАЛЬНОГО СТОП-ЛОССА ДЛЯ ЗОЛОТА ($10.00) ──
+                    if is_gold:
+                        if result.entry is None or result.stop_loss is None or abs(result.entry - result.stop_loss) < 10.0:
+                            logger.info(
+                                "Prop Guard: %s Gold SL is missing or too tight (< min $10.00). Setup skipped to avoid noise stop-out.",
+                                symbol
+                            )
+                            continue
 
                     # ── ФИЛЬТР МИКРО-СЧЁТА: Ограничение размера стоп-лосса (Max SL <= 18 pips) ──
                     if result.entry is not None and result.stop_loss is not None:
                         sl_dist = abs(result.entry - result.stop_loss)
-                        sym_clean = symbol.upper().replace("/", "").replace("=X", "")
                         if "JPY" in sym_clean:
                             sl_pips = sl_dist / 0.01
-                        elif sym_clean.startswith("XAU"):
-                            sl_pips = sl_dist / 0.1
+                        elif is_gold:
+                            sl_pips = sl_dist / 1.0  # 1 pip = $1.00 for Gold swing so 10 pips = $10.00
                         else:
                             sl_pips = sl_dist / 0.0001
+
+                        min_sl_req = config.get_min_sl_pips(symbol) if hasattr(config, "get_min_sl_pips") else 15.0
+                        if trading_mode != "micro" and round(sl_pips, 1) < min_sl_req:
+                            logger.info(
+                                "Prop Guard: %s SL is too tight (%.1f pips < min %.1f pips). Setup skipped to avoid spread/noise stop-out.",
+                                symbol, sl_pips, min_sl_req
+                            )
+                            continue
 
                         if trading_mode == "micro" and sl_pips > config.MICRO_MAX_SL_PIPS:
                             logger.info(
@@ -354,6 +399,20 @@ class AutoSignalScanner:
                         self.signals_skipped_by_spread = getattr(self, "signals_skipped_by_spread", 0) + 1
                         continue
 
+                    # ── Институциональный динамический лот (0.5% риск) ──
+                    from trading.execution_bridge import bridge_manager
+                    sl_pips_for_lot = 10.0
+                    if result.entry is not None and result.stop_loss is not None:
+                        dist_val = abs(result.entry - result.stop_loss)
+                        s_clean = symbol.upper().replace("/", "").replace("=X", "")
+                        if "JPY" in s_clean:
+                            sl_pips_for_lot = dist_val / 0.01
+                        elif "XAU" in s_clean or "GOLD" in s_clean:
+                            sl_pips_for_lot = dist_val
+                        else:
+                            sl_pips_for_lot = dist_val / 0.0001
+                    calculated_lot = bridge_manager.calculate_lot(symbol, sl_pips_for_lot)
+
                     strategies_str = ", ".join(
                         [f"{e} {n}: {v}" for e, n, v in result.strategy_verdicts]
                     )
@@ -375,11 +434,12 @@ class AutoSignalScanner:
                         risk_reward=result.risk_reward_1,
                         strategies_agreed=strategies_str,
                         timeframes_agreed=timeframes_str,
+                        lot=calculated_lot,
                     )
 
                     # Счётчик ведётся персистентно в БД через save_signal()
                     daily_count = await get_today_signal_count()
-                    logger.info("Signal saved. Daily count: %d/%d", daily_count, config.MAX_SIGNALS_PER_DAY)
+                    logger.info("Signal saved (Lot: %.2f). Daily count: %d/%d", calculated_lot, daily_count, config.MAX_SIGNALS_PER_DAY)
 
                     # ── Генерируем график ──
                     chart_bytes = await self._generate_chart(
@@ -394,8 +454,18 @@ class AutoSignalScanner:
                     msg_admin = format_notification(result, is_admin=True)
                     msg_client = format_notification(result, is_admin=False)
 
-                    # Добавляем Kill Zone метку
-                    if in_kill_zone:
+                    # Добавляем институциональную плашку точного объема (0.5% риск)
+                    lot_badge = f"\n💼 <b>Динамический объем (0.5% риск):</b> <code>{calculated_lot:.2f} lot</code> (SL: {sl_pips_for_lot:.1f} п.)"
+                    msg_admin += lot_badge
+                    msg_client += lot_badge
+
+                    # Добавляем Kill Zone и Macro Window метки
+                    if hasattr(config, "is_in_macro_window"):
+                        in_macro, macro_name = config.is_in_macro_window()
+                        if in_macro:
+                            msg_admin = f"⚡ <b>ICT MACRO WINDOW: {macro_name}</b>\n\n" + msg_admin
+                            msg_client = f"⚡ <b>ICT MACRO WINDOW: {macro_name}</b>\n\n" + msg_client
+                    elif in_kill_zone:
                         msg_admin = f"⚡ <b>KILL ZONE: {kz}</b>\n\n" + msg_admin
                         msg_client = f"⚡ <b>KILL ZONE: {kz}</b>\n\n" + msg_client
 
@@ -408,10 +478,10 @@ class AutoSignalScanner:
                         await self._send_to_all(msg_client, reply_markup=kb, text_admin=msg_admin)
 
                     self.last_signals[symbol] = (result.overall_direction, result.overall_stars)
-                    logger.info("Signal #%d/%d sent: %s %s [%s] ⭐%d | KZ=%s | chart=%s",
+                    logger.info("Signal #%d/%d sent: %s %s [%s] lot=%.2f ⭐%d | KZ=%s | chart=%s",
                                 daily_count, config.MAX_SIGNALS_PER_DAY,
                                 symbol, result.order_type, result.overall_direction,
-                                result.overall_stars, kz or "NO",
+                                calculated_lot, result.overall_stars, kz or "NO",
                                 "YES" if chart_bytes else "NO")
 
             except Exception as e:

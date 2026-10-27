@@ -110,7 +110,7 @@ async def main():
                     BotCommand(command="account", description="💼 Баланс и позиции MT5"),
                     BotCommand(command="broadcast", description="📢 Рассылка клиентам"),
                     BotCommand(command="autotrade", description="⚙️ Автопилот советника"),
-                    BotCommand(command="lot", description="🔹 Задать лот: /lot 0.01"),
+                    BotCommand(command="lot", description="🔹 Задать лот: /lot 0.10"),
                     BotCommand(command="risk", description="⚖️ Задать риск: /risk 1.0"),
                     BotCommand(command="stats", description="📊 Статистика сигналов"),
                     BotCommand(command="history", description="📜 Журнал сделок"),
@@ -124,17 +124,16 @@ async def main():
                 await bot.set_my_commands(admin_commands, scope=BotCommandScopeChat(chat_id=config.ADMIN_ID))
 
             await bot.set_my_short_description(
-                "Автономный торговый комплекс: SMC/ICT анализ 16 Forex пар и авто-торговля в MetaTrader 5 со строгим риск-менеджментом."
+                "Торговый комплекс FundingPips 5K: ICT/SMC 7 Мажоров (лот 0.10, макс 3 сделки, R:R от 1:1.5+)."
             )
 
             await bot.set_my_description(
-                "Автономный торговый комплекс Smart Trader с интеграцией в MetaTrader 5:\n\n"
-                "• 16 торговых инструментов (Forex мажоры и кроссы, Золото исключено)\n"
-                "• Институциональная стратегия Smart Money / ICT (BOS, OB, FVG, OTE)\n"
-                "• Авто-выставление лимитных ордеров со Stop Loss и Take Profit (R:R 1:2.5 – 1:4.0)\n"
-                "• Режим Pure Swing: сделки дышат без копеечных выбиваний по безубытку\n"
-                "• Режимы счёта: «Микро-депозит» (лот 0.01 от $12) и «Институционал»\n"
-                "• Онлайн-пульт MT5: баланс, эквити, открытые позиции и кнопка «Паника»."
+                "Автономный торговый комплекс Smart Trader (FundingPips 5K):\n\n"
+                "• Только 7 Мажоров Forex (EURUSD, GBPUSD, USDJPY, USDCHF, AUDUSD, NZDUSD, USDCAD)\n"
+                "• Фиксированный лот 0.10 | Макс. 3 сделки (1 пара = 1 ордер)\n"
+                "• Защита стопов: SL от 20 п. | Динамический R:R от 1:1.5+\n"
+                "• Умный Авто-Б/У (+25 п. → +2 п.) | Анти-тильт: пауза 12ч\n"
+                "• Пульт MT5: баланс, эквити, открытые сделки и кнопка «Паника»."
             )
 
             logging.info("Bot commands and descriptions registered successfully in Telegram.")
