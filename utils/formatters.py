@@ -560,24 +560,30 @@ def format_history(signals: list[dict]) -> str:
         symbol = s.get("symbol", "???")
         direction = s.get("direction", "BUY").replace("LONG", "BUY").replace("SHORT", "SELL")
         lot = s.get("lot", 0.01)
-        ticket = s.get("ticket") or ""
+        ticket = s.get("ticket") or s.get("position_id") or ""
         ticket_str = f"#{ticket} " if ticket else ""
-        entry_p = s.get("entry_price", 0.0)
-        pnl = s.get("profit_usd", 0.0)
-        pnl_sign = "+" if pnl > 0 else ""
+        entry_p = s.get("entry_price")
+        close_p = s.get("close_price")
+        pnl = s.get("profit_usd")
+        if pnl is None:
+            pnl = s.get("net_pnl", 0.0)
+        pnl_val = float(pnl) if pnl is not None else 0.0
+        pnl_sign = "+" if pnl_val > 0 else ""
+        actual_r = s.get("actual_r")
+        r_part = f" ({actual_r:+.2f}R)" if actual_r is not None else ""
 
-        if status in ("TP1_HIT", "TP2_HIT") or (pnl > 0 and status not in ("ACTIVE", "PENDING")):
+        if status in ("TP1_HIT", "TP2_HIT") or (pnl_val > 0 and status not in ("ACTIVE", "PENDING")):
             st_icon = "✅"
-            res_text = f"<b>{pnl_sign}{pnl:.2f} USD</b> (TP)"
-        elif status == "SL_HIT" or (pnl < 0 and status not in ("ACTIVE", "PENDING")):
+            res_text = f"<b>{pnl_sign}{pnl_val:.2f} USD</b>{r_part} (TP)"
+        elif status == "SL_HIT" or (pnl_val < 0 and status not in ("ACTIVE", "PENDING")):
             st_icon = "🛑"
-            res_text = f"<b>{pnl:.2f} USD</b> (SL)"
-        elif status == "BREAKEVEN" or (pnl == 0 and status not in ("ACTIVE", "PENDING")):
+            res_text = f"<b>{pnl_val:.2f} USD</b>{r_part} (SL)"
+        elif status == "BREAKEVEN" or (pnl_val == 0 and status not in ("ACTIVE", "PENDING")):
             st_icon = "🛡"
-            res_text = "<b>0.00 USD</b> (BE)"
+            res_text = f"<b>0.00 USD</b>{r_part} (BE)"
         elif status == "ACTIVE":
             st_icon = "🚀"
-            res_text = f"<b>{pnl_sign}{pnl:.2f} USD</b> (В РЫНКЕ)" if pnl != 0 else "<b>В РЫНКЕ</b>"
+            res_text = f"<b>{pnl_sign}{pnl_val:.2f} USD</b> (В РЫНКЕ)" if pnl_val != 0 else "<b>В РЫНКЕ</b>"
         elif status == "PENDING":
             st_icon = "⏳"
             res_text = "<i>ОЖИДАЕТ ВХОДА</i>"
@@ -586,11 +592,143 @@ def format_history(signals: list[dict]) -> str:
             res_text = "<i>ИСТЁК</i>"
 
         d_em = "🟢" if "BUY" in direction else "🔴"
-        text += f"{st_icon} <code>{ticket_str}</code><b>{symbol}</b> {d_em} <code>{direction} {lot} @ {entry_p:.5f}</code> ── {res_text}\n"
+        
+        # Раздельное отображение цен входа и выхода
+        entry_s = f"{entry_p:.5f}" if entry_p is not None else "N/A"
+        if close_p is not None and close_p != entry_p:
+            price_flow = f"{entry_s} → {close_p:.5f}"
+        else:
+            price_flow = f"@{entry_s}"
+
+        text += f"{st_icon} <code>{ticket_str}</code><b>{symbol}</b> {d_em} <code>{direction} {lot} {price_flow}</code> ── {res_text}\n"
 
     text += (
         f"\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         f"💼 <i>Официальный журнал брокерских сделок MetaTrader 5.</i>"
+    )
+    return text
+
+
+def format_trade_card(trade: dict) -> str:
+    """Форматирует детальное досье закрытой/активной сделки для Telegram."""
+    if not trade:
+        return "❌ Сделка не найдена."
+
+    ticket = trade.get("ticket") or trade.get("position_id") or trade.get("id") or "—"
+    symbol = trade.get("symbol", "???")
+    direction = str(trade.get("direction", "BUY")).replace("LONG", "BUY").replace("SHORT", "SELL")
+    dir_em = "🟢" if "BUY" in direction else "🔴"
+    rec_type = trade.get("record_type", "LIVE")
+    type_badge = f"[{rec_type}]" if rec_type != "LIVE" else "🏛 [LIVE]"
+
+    entry_p = trade.get("entry_price")
+    close_p = trade.get("close_price")
+    entry_str = f"{entry_p:.5f}" if entry_p is not None else "N/A"
+    close_str = f"{close_p:.5f}" if close_p is not None else "N/A"
+
+    init_sl = trade.get("initial_sl")
+    final_sl = trade.get("final_sl")
+    init_tp = trade.get("initial_tp")
+    final_tp = trade.get("final_tp")
+    sl_str = f"{init_sl:.5f}" if init_sl is not None else "—"
+    if final_sl is not None and final_sl != init_sl:
+        sl_str += f" → {final_sl:.5f} (Б/У)"
+    tp_str = f"{init_tp:.5f}" if init_tp is not None else "—"
+    if final_tp is not None and final_tp != init_tp:
+        tp_str += f" → {final_tp:.5f}"
+
+    net_pnl = trade.get("net_pnl")
+    gross_pnl = trade.get("gross_profit")
+    commission = trade.get("commission")
+    swap = trade.get("swap")
+    slippage = trade.get("slippage")
+    pnl_pips = trade.get("pnl_pips")
+
+    pnl_str = f"{net_pnl:+.2f} USD" if net_pnl is not None else "N/A"
+    pips_str = f"{pnl_pips:+.1f} pips" if pnl_pips is not None else "N/A"
+    gross_str = f"{gross_pnl:+.2f} USD" if gross_pnl is not None else "N/A"
+    comm_str = f"{commission:+.2f} USD" if commission is not None else "N/A"
+    swap_str = f"{swap:+.2f} USD" if swap is not None else "N/A"
+    slip_str = f"{slippage:.1f} pips" if slippage is not None else "N/A"
+
+    planned_rr = trade.get("planned_rr")
+    actual_r = trade.get("actual_r")
+    rr_str = f"1:{planned_rr:.2f}" if planned_rr is not None else "N/A"
+    r_str = f"{actual_r:+.2f}R" if actual_r is not None else "N/A"
+
+    strategy = trade.get("strategy") or "Institutional SMC/ICT"
+    version = trade.get("setup_version") or "v2.4"
+    entry_method = trade.get("entry_method") or trade.get("entry_type") or trade.get("order_type") or "MARKET"
+    session = trade.get("trading_session") or "Unknown"
+    duration = trade.get("duration_str") or "N/A"
+
+    sig_time = trade.get("signal_time") or "—"
+    open_time = trade.get("open_time") or "—"
+    close_time = trade.get("close_time") or "—"
+
+    mae = trade.get("mae_pips")
+    mfe = trade.get("mfe_pips")
+    mae_status = trade.get("mae_mfe_status")
+    if mae is not None and mfe is not None:
+        mae_mfe_str = f"MAE: -{abs(mae):.1f} pips | MFE: +{mfe:.1f} pips"
+    elif mae_status:
+        mae_mfe_str = f"<i>{mae_status}</i>"
+    else:
+        mae_mfe_str = "<i>N/A (требуются тиковые/баровые данные)</i>"
+
+    bal_before = trade.get("balance_before")
+    eq_before = trade.get("equity_before")
+    risk_usd = trade.get("risk_usd")
+    risk_pct = trade.get("risk_pct")
+
+    risk_info = ""
+    if risk_usd is not None or risk_pct is not None:
+        r_usd_s = f"${risk_usd:.2f}" if risk_usd is not None else "N/A"
+        r_pct_s = f"{risk_pct:.2f}%" if risk_pct is not None else "N/A"
+        risk_info = f"• Риск на сделку: <b>{r_usd_s} ({r_pct_s})</b>\n"
+
+    bal_info = ""
+    if bal_before is not None:
+        bal_info = f"• Баланс до входа: <b>${bal_before:.2f}</b> | Эквити: <b>${eq_before or bal_before:.2f}</b>\n"
+
+    res = trade.get("result") or "CLOSED"
+    outcome_icon = "✅" if (net_pnl is not None and net_pnl > 0) else ("🛑" if (net_pnl is not None and net_pnl < 0) else "🛡")
+
+    text = (
+        f"📋 <b>ДОСЬЕ СДЕЛКИ #{ticket}</b> {type_badge}\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"📊 <b>{symbol}</b> | {dir_em} <b>{direction}</b> | Лот: <b>{trade.get('lot', 0.01)}</b>\n"
+        f"🎯 Исход: {outcome_icon} <b>{res}</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"💵 <b>ФИНАНСОВЫЙ ИТОГ (ТЕЛЕМЕТРИЯ):</b>\n"
+        f"• Чистый PnL: <b>{pnl_str}</b> ({pips_str})\n"
+        f"• Валовая прибыль: <code>{gross_str}</code>\n"
+        f"• Комиссия брокера: <code>{comm_str}</code>\n"
+        f"• Своп (перенос): <code>{swap_str}</code>\n"
+        f"• Проскальзывание: <code>{slip_str}</code>\n"
+        f"• Фактический R: <b>{r_str}</b> (План R:R {rr_str})\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"📍 <b>ЦЕНОВЫЕ УРОВНИ:</b>\n"
+        f"• Вход: <code>{entry_str}</code>\n"
+        f"• Выход: <code>{close_str}</code>\n"
+        f"• Стоп-Лосс: <code>{sl_str}</code>\n"
+        f"• Тейк-Профит: <code>{tp_str}</code>\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"⚙️ <b>СТРАТЕГИЯ И СЕССИЯ:</b>\n"
+        f"• Стратегия: <b>{strategy} ({version})</b>\n"
+        f"• Метод входа: <code>{entry_method}</code>\n"
+        f"• Торговая сессия: <b>{session}</b>\n"
+        f"• Длительность сделки: <b>{duration}</b>\n"
+        f"{risk_info}"
+        f"{bal_info}"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"📈 <b>ЭКСКУРСИЯ ЦЕНЫ (MAE / MFE):</b>\n"
+        f"{mae_mfe_str}\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🕒 <b>ВРЕМЕННЫЕ ОТМЕТКИ (UTC):</b>\n"
+        f"• Сигнал: <code>{sig_time}</code>\n"
+        f"• Открытие: <code>{open_time}</code>\n"
+        f"• Закрытие: <code>{close_time}</code>\n"
     )
     return text
 

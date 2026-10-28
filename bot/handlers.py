@@ -17,13 +17,14 @@ from bot.keyboards import (
     back_keyboard, guide_keyboard, admin_approve_keyboard,
     analysis_result_keyboard, terminal_dashboard_keyboard, panic_confirm_keyboard,
     autotrade_keyboard, cancel_custom_lot_keyboard, admin_users_crm_keyboard, admin_user_card_keyboard,
-    client_subscription_keyboard, client_support_keyboard
+    client_subscription_keyboard, client_support_keyboard,
+    history_keyboard, trade_card_keyboard
 )
 from utils.formatters import (
     format_indicators, format_strategy, format_multi_tf_analysis,
     format_notification, format_signals_summary, format_news_alert,
     format_welcome, format_help,
-    format_stats, format_history,
+    format_stats, format_history, format_trade_card,
     format_crm_user_card, format_my_subscription
 )
 from strategies.base import (
@@ -536,10 +537,17 @@ async def cmd_stats(message: Message):
 
 @router.message(Command("history"))
 async def cmd_history(message: Message):
-    from db.database import get_recent_signals
-    signals = await get_recent_signals(limit=15)
-    text = format_history(signals)
-    await message.answer(text, reply_markup=back_keyboard(), parse_mode="HTML")
+    from db.database import get_trade_history, get_recent_signals
+    trades, total = await get_trade_history(record_type="LIVE", limit=10, offset=0)
+    if not trades:
+        signals = await get_recent_signals(limit=10)
+        text = format_history(signals)
+        kb = history_keyboard(signals, filter_type="LIVE", filter_res="ALL", page=0, total_pages=1)
+    else:
+        text = format_history(trades)
+        total_pages = max(1, (total + 9) // 10)
+        kb = history_keyboard(trades, filter_type="LIVE", filter_res="ALL", page=0, total_pages=total_pages)
+    await message.answer(text, reply_markup=kb, parse_mode="HTML")
 
 
 @router.message(Command("reset_stats"))
@@ -791,10 +799,17 @@ async def cb_menu_actions(callback: CallbackQuery):
         text = format_stats(stats)
         await safe_edit(callback, text, reply_markup=back_keyboard(), parse_mode="HTML")
     elif action == "history":
-        from db.database import get_recent_signals
-        signals = await get_recent_signals(limit=15)
-        text = format_history(signals)
-        await safe_edit(callback, text, reply_markup=back_keyboard(), parse_mode="HTML")
+        from db.database import get_trade_history, get_recent_signals
+        trades, total = await get_trade_history(record_type="LIVE", limit=10, offset=0)
+        if not trades:
+            signals = await get_recent_signals(limit=10)
+            text = format_history(signals)
+            kb = history_keyboard(signals, filter_type="LIVE", filter_res="ALL", page=0, total_pages=1)
+        else:
+            text = format_history(trades)
+            total_pages = max(1, (total + 9) // 10)
+            kb = history_keyboard(trades, filter_type="LIVE", filter_res="ALL", page=0, total_pages=total_pages)
+        await safe_edit(callback, text, reply_markup=kb, parse_mode="HTML")
     elif action == "terminal":
         if callback.from_user.id != config.ADMIN_ID:
             await callback.answer("❌ Доступно только администратору!", show_alert=True)
@@ -2358,3 +2373,184 @@ async def cmd_reset_drawdown(message: Message):
     except Exception as e:
         logger.error("cmd_reset_drawdown error: %s", e)
         await message.answer(f"❌ Ошибка: {e}", parse_mode=None)
+
+
+@router.callback_query(F.data.startswith("hist:"))
+async def cb_history_navigation(callback: CallbackQuery):
+    """Интерактивная обработка пагинации, фильтрации, досье сделок и защищенного экспорта."""
+    data = callback.data.split(":")
+    action = data[1]
+
+    if action == "noop":
+        await callback.answer()
+        return
+
+    from db.database import get_trade_history, get_trade_by_id, get_recent_signals
+    from bot.keyboards import history_keyboard, trade_card_keyboard
+    from utils.formatters import format_history, format_trade_card
+    from utils.trade_export import export_trades_to_csv, export_trades_to_json
+    from aiogram.types import BufferedInputFile
+
+    if action == "card":
+        trade_id = int(data[2])
+        trade = await get_trade_by_id(trade_id)
+        if not trade:
+            await callback.answer("❌ Сделка не найдена", show_alert=True)
+            return
+        text = format_trade_card(trade)
+        await safe_edit(callback, text, reply_markup=trade_card_keyboard(trade_id), parse_mode="HTML")
+        return
+
+    if action == "export_one":
+        trade_id = int(data[2])
+        trade = await get_trade_by_id(trade_id)
+        if not trade:
+            await callback.answer("❌ Сделка не найдена", show_alert=True)
+            return
+        json_data = export_trades_to_json([trade])
+        doc = BufferedInputFile(json_data.encode("utf-8"), filename=f"trade_{trade_id}.json")
+        await callback.message.answer_document(doc, caption=f"📄 Досье сделки #{trade_id} (JSON)")
+        await callback.answer("✅ Досье экспортировано")
+        return
+
+    if action == "export":
+        fmt = data[2]
+        rec_type = data[3] if len(data) > 3 else "LIVE"
+        filter_type = None if rec_type == "ALL" else rec_type
+        trades, _ = await get_trade_history(record_type=filter_type, limit=5000)
+        if not trades:
+            await callback.answer("ℹ️ Нет сделок для экспорта", show_alert=True)
+            return
+        dt_str = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        if fmt == "csv":
+            content = export_trades_to_csv(trades)
+            doc = BufferedInputFile(content.encode("utf-8"), filename=f"smart_trader_journal_{rec_type}_{dt_str}.csv")
+            await callback.message.answer_document(doc, caption=f"📊 Журнал сделок [{rec_type}] — {len(trades)} записей (CSV)")
+        else:
+            content = export_trades_to_json(trades)
+            doc = BufferedInputFile(content.encode("utf-8"), filename=f"smart_trader_journal_{rec_type}_{dt_str}.json")
+            await callback.message.answer_document(doc, caption=f"📊 Журнал сделок [{rec_type}] — {len(trades)} записей (JSON)")
+        await callback.answer("✅ Экспорт готов")
+        return
+
+    # Filter toggles and pagination with compact state representation
+    from datetime import timedelta
+
+    TYPE_MAP = {"L": "LIVE", "D": "DEMO", "T": "TEST_SIGNAL", "B": "BACKTEST", "A": "ALL"}
+    TYPE_CYCLE = ["L", "D", "T", "B", "A"]
+
+    RES_MAP = {"A": "ALL", "W": "WIN", "L": "LOSS", "BE": "BREAKEVEN"}
+    RES_CYCLE = ["A", "W", "L", "BE"]
+
+    DIR_MAP = {"A": "ALL", "B": "BUY", "S": "SELL"}
+    DIR_CYCLE = ["A", "B", "S"]
+
+    SESS_MAP = {"A": "ALL", "LD": "London", "OV": "London-NY Overlap", "NY": "New York", "AS": "Asian"}
+    SESS_CYCLE = ["A", "LD", "OV", "NY", "AS"]
+
+    DATE_MAP = {"A": "ALL", "1D": "1D", "7D": "7D", "30D": "30D"}
+    DATE_CYCLE = ["A", "1D", "7D", "30D"]
+
+    if action == "tog":
+        tog_field = data[2]
+        state_tokens = data[3].split("_")
+        page = 0
+        tc = state_tokens[0] if len(state_tokens) > 0 and state_tokens[0] in TYPE_MAP else "L"
+        rc = state_tokens[1] if len(state_tokens) > 1 and state_tokens[1] in RES_MAP else "A"
+        dc = state_tokens[2] if len(state_tokens) > 2 and state_tokens[2] in DIR_MAP else "A"
+        sc = state_tokens[3] if len(state_tokens) > 3 and state_tokens[3] in SESS_MAP else "A"
+        dtc = state_tokens[4] if len(state_tokens) > 4 and state_tokens[4] in DATE_MAP else "A"
+
+        if tog_field == "t":
+            tc = TYPE_CYCLE[(TYPE_CYCLE.index(tc) + 1) % len(TYPE_CYCLE)]
+        elif tog_field == "r":
+            rc = RES_CYCLE[(RES_CYCLE.index(rc) + 1) % len(RES_CYCLE)]
+        elif tog_field == "d":
+            dc = DIR_CYCLE[(DIR_CYCLE.index(dc) + 1) % len(DIR_CYCLE)]
+        elif tog_field == "s":
+            sc = SESS_CYCLE[(SESS_CYCLE.index(sc) + 1) % len(SESS_CYCLE)]
+        elif tog_field == "dt":
+            dtc = DATE_CYCLE[(DATE_CYCLE.index(dtc) + 1) % len(DATE_CYCLE)]
+    elif action == "page":
+        state_tokens = data[2].split("_")
+        page = int(data[3]) if len(data) > 3 else 0
+        tc = state_tokens[0] if len(state_tokens) > 0 and state_tokens[0] in TYPE_MAP else "L"
+        rc = state_tokens[1] if len(state_tokens) > 1 and state_tokens[1] in RES_MAP else "A"
+        dc = state_tokens[2] if len(state_tokens) > 2 and state_tokens[2] in DIR_MAP else "A"
+        sc = state_tokens[3] if len(state_tokens) > 3 and state_tokens[3] in SESS_MAP else "A"
+        dtc = state_tokens[4] if len(state_tokens) > 4 and state_tokens[4] in DATE_MAP else "A"
+    elif action in ("toggle_type", "toggle_res"):
+        # Backward compatibility for legacy callbacks
+        tc = "L"
+        rc = "A"
+        dc = "A"
+        sc = "A"
+        dtc = "A"
+        page = 0
+    else:
+        tc = "L"
+        rc = "A"
+        dc = "A"
+        sc = "A"
+        dtc = "A"
+        page = 0
+
+    date_from = None
+    if dtc == "1D":
+        date_from = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%d")
+    elif dtc == "7D":
+        date_from = (datetime.now(timezone.utc) - timedelta(days=7)).strftime("%Y-%m-%d")
+    elif dtc == "30D":
+        date_from = (datetime.now(timezone.utc) - timedelta(days=30)).strftime("%Y-%m-%d")
+
+    q_type = None if TYPE_MAP.get(tc) == "ALL" else TYPE_MAP.get(tc, "LIVE")
+    q_res = None if RES_MAP.get(rc) == "ALL" else RES_MAP.get(rc)
+    q_dir = None if DIR_MAP.get(dc) == "ALL" else DIR_MAP.get(dc)
+    q_sess = None if SESS_MAP.get(sc) == "ALL" else SESS_MAP.get(sc)
+    limit = 10
+    offset = page * limit
+
+    trades, total = await get_trade_history(
+        record_type=q_type,
+        result=q_res,
+        direction=q_dir,
+        trading_session=q_sess,
+        date_from=date_from,
+        limit=limit,
+        offset=offset
+    )
+
+    cur_type_name = TYPE_MAP.get(tc, "LIVE")
+    cur_res_name = RES_MAP.get(rc, "ALL")
+    cur_dir_name = DIR_MAP.get(dc, "ALL")
+    cur_sess_name = SESS_MAP.get(sc, "ALL")
+    cur_date_name = DATE_MAP.get(dtc, "ALL")
+
+    if not trades and page == 0 and tc == "L" and rc == "A" and dc == "A" and sc == "A" and dtc == "A":
+        signals = await get_recent_signals(limit=limit)
+        text = format_history(signals)
+        kb = history_keyboard(
+            signals,
+            filter_type=cur_type_name,
+            filter_res=cur_res_name,
+            filter_dir=cur_dir_name,
+            filter_sess=cur_sess_name,
+            filter_date=cur_date_name,
+            page=0,
+            total_pages=1
+        )
+    else:
+        text = format_history(trades)
+        total_pages = max(1, (total + limit - 1) // limit)
+        kb = history_keyboard(
+            trades,
+            filter_type=cur_type_name,
+            filter_res=cur_res_name,
+            filter_dir=cur_dir_name,
+            filter_sess=cur_sess_name,
+            filter_date=cur_date_name,
+            page=page,
+            total_pages=total_pages
+        )
+
+    await safe_edit(callback, text, reply_markup=kb, parse_mode="HTML")

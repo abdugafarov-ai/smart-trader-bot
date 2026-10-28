@@ -362,25 +362,56 @@ string GetDealsHistorySummary()
          ENUM_DEAL_ENTRY entry = (ENUM_DEAL_ENTRY)HistoryDealGetInteger(ticket, DEAL_ENTRY);
          if(entry == DEAL_ENTRY_OUT || entry == DEAL_ENTRY_INOUT)
          {
-            double profit = HistoryDealGetDouble(ticket, DEAL_PROFIT)
-                          + HistoryDealGetDouble(ticket, DEAL_SWAP)
-                          + HistoryDealGetDouble(ticket, DEAL_COMMISSION);
-            double price = HistoryDealGetDouble(ticket, DEAL_PRICE);
+            ulong pos_id = HistoryDealGetInteger(ticket, DEAL_POSITION_ID);
+            ulong close_order_id = HistoryDealGetInteger(ticket, DEAL_ORDER);
+            ulong open_order_id = 0;
+            ulong in_ticket = 0;
+            double gross_profit = HistoryDealGetDouble(ticket, DEAL_PROFIT);
+            double swap = HistoryDealGetDouble(ticket, DEAL_SWAP);
+            double commission = HistoryDealGetDouble(ticket, DEAL_COMMISSION);
+            double net_profit = gross_profit + swap + commission;
+            double close_price = HistoryDealGetDouble(ticket, DEAL_PRICE);
+            double entry_price = 0.0;
+            long time_open = 0;
             double volume = HistoryDealGetDouble(ticket, DEAL_VOLUME);
             long time_close = HistoryDealGetInteger(ticket, DEAL_TIME);
             long magic = HistoryDealGetInteger(ticket, DEAL_MAGIC);
             string sym = HistoryDealGetString(ticket, DEAL_SYMBOL);
             string comment = HistoryDealGetString(ticket, DEAL_COMMENT);
-            ENUM_DEAL_TYPE type = (ENUM_DEAL_TYPE)HistoryDealGetInteger(ticket, DEAL_TYPE);
-            string type_str = (type == DEAL_TYPE_BUY) ? "BUY" : "SELL";
+            ENUM_DEAL_TYPE out_type = (ENUM_DEAL_TYPE)HistoryDealGetInteger(ticket, DEAL_TYPE);
+            string type_str = (out_type == DEAL_TYPE_BUY) ? "SELL" : "BUY";
+
+            // Поиск парной сделки входа (DEAL_ENTRY_IN) для точной фиксации цен, времени, ордеров и направления
+            if(pos_id > 0)
+            {
+               for(int j = 0; j < total; j++)
+               {
+                  ulong t_in = HistoryDealGetTicket(j);
+                  if(t_in > 0 && HistoryDealGetInteger(t_in, DEAL_POSITION_ID) == pos_id)
+                  {
+                     ENUM_DEAL_ENTRY in_entry = (ENUM_DEAL_ENTRY)HistoryDealGetInteger(t_in, DEAL_ENTRY);
+                     if(in_entry == DEAL_ENTRY_IN)
+                     {
+                        in_ticket = t_in;
+                        entry_price = HistoryDealGetDouble(t_in, DEAL_PRICE);
+                        time_open = HistoryDealGetInteger(t_in, DEAL_TIME);
+                        open_order_id = HistoryDealGetInteger(t_in, DEAL_ORDER);
+                        commission += HistoryDealGetDouble(t_in, DEAL_COMMISSION);
+                        ENUM_DEAL_TYPE in_type = (ENUM_DEAL_TYPE)HistoryDealGetInteger(t_in, DEAL_TYPE);
+                        type_str = (in_type == DEAL_TYPE_BUY) ? "BUY" : "SELL";
+                        break;
+                     }
+                  }
+               }
+            }
             
             StringReplace(comment, "\"", "'");
             StringReplace(comment, "\r", " ");
             StringReplace(comment, "\n", " ");
 
             if(count > 0) json += ",";
-            json += StringFormat("{\"ticket\":%I64u,\"symbol\":\"%s\",\"type\":\"%s\",\"lot\":%.2f,\"price\":%.5f,\"profit\":%.2f,\"time\":%I64d,\"magic\":%I64d,\"comment\":\"%s\"}",
-                                 ticket, sym, type_str, volume, price, profit, time_close, magic, comment);
+            json += StringFormat("{\"ticket\":%I64u,\"position_id\":%I64u,\"order_id\":%I64u,\"close_order_id\":%I64u,\"deal_in_ticket\":%I64u,\"symbol\":\"%s\",\"type\":\"%s\",\"lot\":%.2f,\"price\":%.5f,\"close_price\":%.5f,\"entry_price\":%.5f,\"profit\":%.2f,\"gross_profit\":%.2f,\"commission\":%.2f,\"swap\":%.2f,\"time\":%I64d,\"open_time\":%I64d,\"magic\":%I64d,\"comment\":\"%s\"}",
+                                 ticket, pos_id, open_order_id, close_order_id, in_ticket, sym, type_str, volume, close_price, close_price, entry_price, net_profit, gross_profit, commission, swap, time_close, time_open, magic, comment);
             count++;
          }
       }

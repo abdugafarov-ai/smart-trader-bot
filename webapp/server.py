@@ -267,18 +267,42 @@ async def bridge_get_orders(request: web.Request) -> web.Response:
 
                             pip_mult = 100.0 if 'JPY' in sym else (10.0 if 'XAU' in sym else 10000.0)
 
-                            # Поиск параметров исходного сигнала
+                            pos_id = int(nd.get("position_id") or nd.get("pos_id") or 0)
+
+                            # Поиск параметров исходного сигнала по надежному идентификатору (position_id / ticket)
+                            sig_dict = {}
                             async with aiosqlite.connect(str(DB_PATH)) as db:
                                 db.row_factory = aiosqlite.Row
-                                async with db.execute("SELECT * FROM signals WHERE symbol = ? ORDER BY id DESC LIMIT 1", (sym,)) as c:
-                                    sig_row = await c.fetchone()
-                                    sig_dict = dict(sig_row) if sig_row else {}
-
-                            entry_p = float(sig_dict.get('entry_price') or close_p)
+                                if pos_id > 0:
+                                    async with db.execute(
+                                        "SELECT * FROM signals WHERE position_id = ? OR broker_ticket = ? OR mt5_ticket = ? OR mt5_order_id = ? ORDER BY id DESC LIMIT 1",
+                                        (pos_id, pos_id, pos_id, pos_id)
+                                    ) as c:
+                                        sig_row = await c.fetchone()
+                                        if sig_row:
+                                            sig_dict = dict(sig_row)
+                                if not sig_dict and ticket_no > 0:
+                                    async with db.execute(
+                                        "SELECT * FROM signals WHERE broker_ticket = ? OR mt5_ticket = ? OR mt5_order_id = ? ORDER BY id DESC LIMIT 1",
+                                        (ticket_no, ticket_no, ticket_no)
+                                    ) as c:
+                                        sig_row = await c.fetchone()
+                                        if sig_row:
+                                            sig_dict = dict(sig_row)
+                                if not sig_dict:
+                                    # Fallback: поиск по символу с приоритетом открытых/ожидающих сигналов
+                                    async with db.execute(
+                                        "SELECT * FROM signals WHERE symbol = ? AND status IN ('OPEN', 'ACTIVE', 'PENDING') ORDER BY id DESC LIMIT 1",
+                                        (sym,)
+                                    ) as c:
+                                        sig_row = await c.fetchone()
+                                        if sig_row:
+                                            sig_dict = dict(sig_row)
+                            entry_p = float(nd['entry_price']) if nd.get('entry_price') else (float(sig_dict['entry_price']) if sig_dict.get('entry_price') else None)
                             direction = sig_dict.get('direction', 'LONG') if sig_dict else ('LONG' if 'BUY' in deal_type else 'SHORT')
                             sl_p = float(sig_dict.get('stop_loss') or 0.0)
                             tp_p = float(sig_dict.get('take_profit_1') or 0.0)
-                            pnl_pips = (close_p - entry_p if direction == 'LONG' else entry_p - close_p) * pip_mult if entry_p else 0.0
+                            pnl_pips = (close_p - entry_p if direction == 'LONG' else entry_p - close_p) * pip_mult if (entry_p and close_p) else 0.0
 
                             if is_manual:
                                 msg = format_manual_close(sym, profit_val, pnl_pips, close_p)
@@ -1075,14 +1099,458 @@ async def bridge_post_report(request: web.Request) -> web.Response:
         return web.json_response({"status": "error", "message": str(e)}, status=400)
 
 
+async def api_history(request: web.Request) -> web.Response:
+    """Возвращает журнал закрытых сделок с фильтрацией."""
+    _check_public_api_auth(request)
+    try:
+        from db.database import get_trade_history
+        from utils.trade_export import sanitize_trade_record
+
+        params = request.query
+        record_type = params.get("record_type", "LIVE")
+        if record_type and record_type.upper() == "ALL":
+            record_type = None
+        start_time = int(params["start_time"]) if "start_time" in params else None
+        end_time = int(params["end_time"]) if "end_time" in params else None
+        direction = params.get("direction")
+        strategy = params.get("strategy")
+        session = params.get("session") or params.get("trading_session")
+        result = params.get("result")
+        symbol = params.get("symbol")
+        limit = min(int(params.get("limit", 100)), 1000)
+        offset = int(params.get("offset", 0))
+
+        trades, total_count = await get_trade_history(
+            record_type=record_type,
+            start_time=start_time,
+            end_time=end_time,
+            direction=direction,
+            strategy=strategy,
+            trading_session=session,
+            result=result,
+            symbol=symbol,
+            limit=limit,
+            offset=offset,
+        )
+
+        sanitized = [sanitize_trade_record(t) for t in trades]
+        return web.json_response({
+            "status": "ok",
+            "trades": sanitized,
+            "total_count": total_count,
+            "limit": limit,
+            "offset": offset,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        })
+    except Exception as e:
+        logger.error("api_history error: %s", e)
+        return web.json_response({"status": "error", "message": str(e)}, status=500)
+
+
+async def api_history_detail(request: web.Request) -> web.Response:
+    """Возвращает детальную карточку сделки по id."""
+    _check_public_api_auth(request)
+    try:
+        from db.database import get_trade_by_id
+        from utils.trade_export import sanitize_trade_record
+
+        trade_id = int(request.match_info["id"])
+        trade = await get_trade_by_id(trade_id)
+        if not trade:
+            return web.json_response({"status": "error", "message": "Trade not found"}, status=404)
+        return web.json_response({
+            "status": "ok",
+            "trade": sanitize_trade_record(trade),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        })
+    except Exception as e:
+        logger.error("api_history_detail error: %s", e)
+        return web.json_response({"status": "error", "message": str(e)}, status=500)
+
+
+async def api_export_csv(request: web.Request) -> web.Response:
+    """Экспорт журнала сделок в безопасный CSV."""
+    _check_public_api_auth(request)
+    try:
+        from db.database import get_trade_history
+        from utils.trade_export import export_trades_to_csv
+
+        params = request.query
+        record_type = params.get("record_type", "LIVE")
+        if record_type and record_type.upper() == "ALL":
+            record_type = None
+
+        date_from = params.get("date_from") or params.get("start_time")
+        date_to = params.get("date_to") or params.get("end_time")
+
+        trades, _ = await get_trade_history(
+            record_type=record_type,
+            date_from=str(date_from) if date_from else None,
+            date_to=str(date_to) if date_to else None,
+            direction=params.get("direction"),
+            strategy=params.get("strategy"),
+            trading_session=params.get("session") or params.get("trading_session"),
+            result=params.get("result"),
+            symbol=params.get("symbol"),
+            limit=5000,
+            offset=0,
+        )
+        csv_data = export_trades_to_csv(trades)
+        filename = f"smart_trader_journal_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.csv"
+        return web.Response(
+            body=csv_data.encode("utf-8"),
+            content_type="text/csv",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+        )
+    except Exception as e:
+        logger.error("api_export_csv error: %s", e)
+        return web.json_response({"status": "error", "message": str(e)}, status=500)
+
+
+async def api_export_json(request: web.Request) -> web.Response:
+    """Экспорт журнала сделок в безопасный JSON."""
+    _check_public_api_auth(request)
+    try:
+        from db.database import get_trade_history
+        from utils.trade_export import export_trades_to_json
+
+        params = request.query
+        record_type = params.get("record_type", "LIVE")
+        if record_type and record_type.upper() == "ALL":
+            record_type = None
+
+        date_from = params.get("date_from") or params.get("start_time")
+        date_to = params.get("date_to") or params.get("end_time")
+
+        trades, _ = await get_trade_history(
+            record_type=record_type,
+            date_from=str(date_from) if date_from else None,
+            date_to=str(date_to) if date_to else None,
+            direction=params.get("direction"),
+            strategy=params.get("strategy"),
+            trading_session=params.get("session") or params.get("trading_session"),
+            result=params.get("result"),
+            symbol=params.get("symbol"),
+            limit=5000,
+            offset=0,
+        )
+        json_data = export_trades_to_json(trades)
+        filename = f"smart_trader_journal_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.json"
+        return web.Response(
+            body=json_data.encode("utf-8"),
+            content_type="application/json",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+        )
+    except Exception as e:
+        logger.error("api_export_json error: %s", e)
+        return web.json_response({"status": "error", "message": str(e)}, status=500)
+
+
+async def handle_web_history(request: web.Request) -> web.Response:
+    """HTML веб-панель журнала аудита и истории сделок."""
+    _check_public_api_auth(request)
+    try:
+        from db.database import get_trade_history, get_stats
+        from utils.trade_export import sanitize_trade_record
+
+        params = request.query
+        rec_type = params.get("record_type", "LIVE")
+        q_rec_type = None if rec_type.upper() == "ALL" else rec_type
+        date_from = params.get("date_from")
+        date_to = params.get("date_to")
+        direction = params.get("direction")
+        strategy = params.get("strategy")
+        result = params.get("result")
+        session = params.get("session") or params.get("trading_session")
+        symbol = params.get("symbol")
+
+        from urllib.parse import urlencode
+        q_params = {}
+        if rec_type: q_params["record_type"] = rec_type
+        if date_from: q_params["date_from"] = date_from
+        if date_to: q_params["date_to"] = date_to
+        if direction: q_params["direction"] = direction
+        if strategy: q_params["strategy"] = strategy
+        if session: q_params["session"] = session
+        if result: q_params["result"] = result
+        if symbol: q_params["symbol"] = symbol
+        q_str = urlencode(q_params)
+
+        trades, total = await get_trade_history(
+            record_type=q_rec_type,
+            date_from=date_from,
+            date_to=date_to,
+            direction=direction,
+            strategy=strategy,
+            result=result,
+            trading_session=session,
+            symbol=symbol,
+            limit=100
+        )
+        stats = await get_stats(record_type=rec_type if rec_type.upper() != "ALL" else "LIVE")
+
+        rows_html = ""
+        for t in trades:
+            st = sanitize_trade_record(t)
+            pnl = st.get("net_pnl")
+            pnl_cls = "pnl-win" if pnl is not None and pnl > 0 else ("pnl-loss" if pnl is not None and pnl < 0 else "pnl-be")
+            pnl_str = f"{pnl:+.2f} USD" if pnl is not None else "N/A"
+            r_val = st.get("actual_r")
+            r_str = f"{r_val:+.2f}R" if r_val is not None else "N/A"
+            entry_p = f"{st.get('entry_price'):.5f}" if st.get('entry_price') is not None else "N/A"
+            close_p = f"{st.get('close_price'):.5f}" if st.get('close_price') is not None else "N/A"
+            comm = f"{st.get('commission'):.2f}" if st.get('commission') is not None else "N/A"
+            swap = f"{st.get('swap'):.2f}" if st.get('swap') is not None else "N/A"
+            slip = f"{st.get('slippage'):.1f}p" if st.get('slippage') is not None else "N/A"
+            rows_html += f"""
+            <tr>
+                <td>#{st.get('position_id') or st.get('id')}</td>
+                <td><span class="badge badge-type">{st.get('record_type')}</span></td>
+                <td><b>{st.get('symbol')}</b></td>
+                <td><span class="badge {'badge-buy' if 'BUY' in st.get('direction', '') else 'badge-sell'}">{st.get('direction')}</span></td>
+                <td>{st.get('lot')}</td>
+                <td>{entry_p}</td>
+                <td>{close_p}</td>
+                <td class="{pnl_cls}"><b>{pnl_str}</b></td>
+                <td class="{pnl_cls}">{r_str}</td>
+                <td>{comm} / {swap}</td>
+                <td>{slip}</td>
+                <td>{st.get('trading_session', 'N/A')}</td>
+                <td>{st.get('duration_str', 'N/A')}</td>
+                <td><span class="badge badge-res">{st.get('result', 'CLOSED')}</span></td>
+            </tr>
+            """
+
+        html = f"""<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Smart Trader Bot — Журнал Аудита Сделок</title>
+    <style>
+        :root {{
+            --bg-primary: #0a0e17;
+            --bg-secondary: #121826;
+            --bg-card: #1a2234;
+            --text-primary: #e6edf3;
+            --text-secondary: #8b949e;
+            --accent: #2f81f7;
+            --win: #238636;
+            --loss: #da3633;
+            --be: #d29922;
+            --border: #30363d;
+        }}
+        * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+        body {{
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace;
+            padding: 24px;
+        }}
+        .header {{ display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px; }}
+        .header h1 {{ font-size: 22px; font-weight: 700; color: #fff; }}
+        .header-actions a {{
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            color: var(--text-primary);
+            padding: 8px 14px;
+            border-radius: 6px;
+            text-decoration: none;
+            font-size: 13px;
+            margin-left: 8px;
+            display: inline-block;
+        }}
+        .header-actions a:hover {{ background: var(--accent); color: #fff; }}
+        .stats-grid {{
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 16px;
+            margin-bottom: 24px;
+        }}
+        .stat-card {{
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 16px;
+        }}
+        .stat-card .title {{ font-size: 12px; color: var(--text-secondary); text-transform: uppercase; }}
+        .stat-card .value {{ font-size: 20px; font-weight: 700; margin-top: 6px; }}
+        .filters {{
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 14px 16px;
+            margin-bottom: 24px;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 12px;
+            align-items: center;
+        }}
+        .filters select, .filters input {{
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            color: var(--text-primary);
+            padding: 6px 10px;
+            border-radius: 6px;
+            font-size: 13px;
+        }}
+        .filters button {{
+            background: var(--accent);
+            border: none;
+            color: #fff;
+            padding: 7px 16px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 13px;
+        }}
+        table {{
+            width: 100%;
+            border-collapse: collapse;
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            overflow: hidden;
+            font-size: 13px;
+        }}
+        th, td {{ padding: 10px 14px; text-align: left; border-bottom: 1px solid var(--border); }}
+        th {{ background: var(--bg-secondary); color: var(--text-secondary); font-weight: 600; text-transform: uppercase; font-size: 11px; }}
+        tr:hover {{ background: rgba(255,255,255,0.02); }}
+        .pnl-win {{ color: #3fb950; font-weight: 600; }}
+        .pnl-loss {{ color: #f85149; font-weight: 600; }}
+        .pnl-be {{ color: #d29922; font-weight: 600; }}
+        .badge {{ padding: 2px 6px; border-radius: 4px; font-size: 11px; font-weight: 600; text-transform: uppercase; }}
+        .badge-buy {{ background: rgba(35, 134, 54, 0.2); color: #3fb950; }}
+        .badge-sell {{ background: rgba(218, 54, 51, 0.2); color: #f85149; }}
+        .badge-type {{ background: rgba(47, 129, 247, 0.2); color: #58a6ff; }}
+        .badge-res {{ background: rgba(139, 148, 158, 0.2); color: #8b949e; }}
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div>
+            <h1>🏛 SMART TRADER | ЖУРНАЛ АУДИТА СДЕЛОК</h1>
+            <p style="font-size: 12px; color: var(--text-secondary); margin-top: 4px;">Институциональный аудит исполнения ордеров MetaTrader 5</p>
+        </div>
+        <div class="header-actions">
+            <a href="/api/v1/export/csv?{q_str}">📥 Скачать CSV</a>
+            <a href="/api/v1/export/json?{q_str}">📥 Скачать JSON</a>
+            <a href="/api/v1/history?{q_str}">⚡ JSON API</a>
+        </div>
+    </div>
+
+    <div class="stats-grid">
+        <div class="stat-card">
+            <div class="title">Всего Сделок ({rec_type})</div>
+            <div class="value">{stats.get('closed', len(trades))}</div>
+        </div>
+        <div class="stat-card">
+            <div class="title">Суммарный PnL</div>
+            <div class="value {'pnl-win' if stats.get('total_profit_usd', 0) >= 0 else 'pnl-loss'}">{stats.get('total_profit_usd', 0.0):+.2f} USD</div>
+        </div>
+        <div class="stat-card">
+            <div class="title">Win Rate</div>
+            <div class="value">{stats.get('win_rate', 0.0):.1f}%</div>
+        </div>
+        <div class="stat-card">
+            <div class="title">Profit Factor</div>
+            <div class="value">{stats.get('profit_factor', 0.0):.2f}</div>
+        </div>
+        <div class="stat-card">
+            <div class="title">Средний Actual R</div>
+            <div class="value">{f"{stats.get('avg_actual_r'):+.2f}R" if stats.get('avg_actual_r') is not None else 'N/A'}</div>
+        </div>
+    </div>
+
+    <form class="filters" method="GET" action="/history">
+        <label>Тип:
+            <select name="record_type">
+                <option value="LIVE" {'selected' if rec_type == 'LIVE' else ''}>LIVE (Реал)</option>
+                <option value="DEMO" {'selected' if rec_type == 'DEMO' else ''}>DEMO</option>
+                <option value="TEST_SIGNAL" {'selected' if rec_type == 'TEST_SIGNAL' else ''}>TEST_SIGNAL</option>
+                <option value="BACKTEST" {'selected' if rec_type == 'BACKTEST' else ''}>BACKTEST</option>
+                <option value="ALL" {'selected' if rec_type == 'ALL' else ''}>ВСЕ ТИПЫ</option>
+            </select>
+        </label>
+        <label>С даты:
+            <input type="date" name="date_from" value="{date_from or ''}">
+        </label>
+        <label>По дату:
+            <input type="date" name="date_to" value="{date_to or ''}">
+        </label>
+        <label>Направление:
+            <select name="direction">
+                <option value="">Все</option>
+                <option value="BUY" {'selected' if direction == 'BUY' else ''}>BUY</option>
+                <option value="SELL" {'selected' if direction == 'SELL' else ''}>SELL</option>
+            </select>
+        </label>
+        <label>Сессия:
+            <select name="session">
+                <option value="">Все</option>
+                <option value="London" {'selected' if session == 'London' else ''}>London</option>
+                <option value="London-NY Overlap" {'selected' if session == 'London-NY Overlap' else ''}>London-NY Overlap</option>
+                <option value="New York" {'selected' if session == 'New York' else ''}>New York</option>
+                <option value="Asian" {'selected' if session == 'Asian' else ''}>Asian</option>
+            </select>
+        </label>
+        <label>Стратегия:
+            <input type="text" name="strategy" placeholder="ICT_SMC..." value="{strategy or ''}" style="width: 110px;">
+        </label>
+        <label>Итог:
+            <select name="result">
+                <option value="">Все</option>
+                <option value="WIN" {'selected' if result == 'WIN' else ''}>WIN (Профит)</option>
+                <option value="LOSS" {'selected' if result == 'LOSS' else ''}>LOSS (Убыток)</option>
+                <option value="BREAKEVEN" {'selected' if result == 'BREAKEVEN' else ''}>BREAKEVEN (Б/У)</option>
+            </select>
+        </label>
+        <button type="submit">Применить Фильтры</button>
+    </form>
+
+    <table>
+        <thead>
+            <tr>
+                <th>Ticket / ID</th>
+                <th>Тип</th>
+                <th>Символ</th>
+                <th>Сделка</th>
+                <th>Лот</th>
+                <th>Вход</th>
+                <th>Выход</th>
+                <th>Чистый PnL</th>
+                <th>Факт R</th>
+                <th>Комис / Своп</th>
+                <th>Slip</th>
+                <th>Сессия</th>
+                <th>Длительность</th>
+                <th>Итог</th>
+            </tr>
+        </thead>
+        <tbody>
+            {rows_html if rows_html else '<tr><td colspan="14" style="text-align: center; color: var(--text-secondary); padding: 30px;">Сделок не найдено</td></tr>'}
+        </tbody>
+    </table>
+</body>
+</html>"""
+        return web.Response(text=html, content_type="text/html")
+    except Exception as e:
+        logger.error("handle_web_history error: %s", e)
+        return web.Response(text=f"<h1>Error loading history: {e}</h1>", content_type="text/html", status=500)
+
+
 def create_webapp_app() -> web.Application:
     """Создает приложение aiohttp для локального MT5 моста."""
     app = web.Application()
     app.router.add_get("/", handle_status)
     app.router.add_get("/health", handle_status)
+    app.router.add_get("/history", handle_web_history)
     app.router.add_get("/api/signals", api_signals)
     app.router.add_get("/api/stats", api_stats)
     app.router.add_get("/api/events", api_events)
+    app.router.add_get("/api/v1/history", api_history)
+    app.router.add_get("/api/v1/history/{id}", api_history_detail)
+    app.router.add_get("/api/v1/export/csv", api_export_csv)
+    app.router.add_get("/api/v1/export/json", api_export_json)
     app.router.add_get("/api/v1/bridge/orders", bridge_get_orders)
     app.router.add_post("/api/v1/bridge/orders", bridge_get_orders)
     app.router.add_post("/api/v1/bridge/report", bridge_post_report)

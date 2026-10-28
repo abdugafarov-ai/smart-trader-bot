@@ -585,3 +585,97 @@ def server_cleaned_keyboard() -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
+def history_keyboard(
+    trades: list[dict] = None,
+    filter_type: str = "LIVE",
+    filter_res: str = "ALL",
+    filter_dir: str = "ALL",
+    filter_sess: str = "ALL",
+    filter_date: str = "ALL",
+    page: int = 0,
+    total_pages: int = 1,
+) -> InlineKeyboardMarkup:
+    """Интерактивная клавиатура журнала сделок с фильтрами по типу, исходу, направлению, сессии, дате, пагинацией и экспортом."""
+    builder = InlineKeyboardBuilder()
+
+    # Компактное кодирование состояния фильтра для укладывания в лимит 64 байт callback_data
+    t_c = {"LIVE": "L", "DEMO": "D", "TEST_SIGNAL": "T", "BACKTEST": "B", "ALL": "A"}.get(filter_type, "L")
+    r_c = {"ALL": "A", "WIN": "W", "LOSS": "L", "BREAKEVEN": "BE"}.get(filter_res, "A")
+    d_c = {"ALL": "A", "BUY": "B", "SELL": "S"}.get(filter_dir, "A")
+    s_c = {"ALL": "A", "London": "LD", "Overlap": "OV", "London-NY Overlap": "OV", "New York": "NY", "Asian": "AS"}.get(filter_sess, "A")
+    dt_c = {"ALL": "A", "1D": "1D", "7D": "7D", "30D": "30D"}.get(filter_date, "A")
+    state = f"{t_c}_{r_c}_{d_c}_{s_c}_{dt_c}"
+
+    # Строка 1: Тип записи и Результат
+    builder.row(
+        InlineKeyboardButton(text=f"📁 {filter_type}", callback_data=f"hist:tog:t:{state}:{page}"),
+        InlineKeyboardButton(text=f"🎯 {filter_res}", callback_data=f"hist:tog:r:{state}:{page}")
+    )
+
+    # Строка 2: Направление и Торговая сессия
+    builder.row(
+        InlineKeyboardButton(text=f"🧭 {filter_dir}", callback_data=f"hist:tog:d:{state}:{page}"),
+        InlineKeyboardButton(text=f"🌐 {filter_sess}", callback_data=f"hist:tog:s:{state}:{page}")
+    )
+
+    # Строка 3: Период дат
+    builder.row(
+        InlineKeyboardButton(text=f"📅 Период: {filter_date}", callback_data=f"hist:tog:dt:{state}:{page}")
+    )
+
+    # 4. Кнопки быстрого открытия досье сделок текущей страницы (до 5 сделок)
+    if trades:
+        for t in trades[:5]:
+            tid = t.get("id") or t.get("ticket") or 0
+            sym = t.get("symbol", "")
+            direction = "B" if "BUY" in str(t.get("direction", "")).upper() else "S"
+            pnl = t.get("net_pnl")
+            if pnl is None:
+                pnl = t.get("profit_usd", 0.0)
+            pnl_val = float(pnl) if pnl is not None else 0.0
+            pnl_s = f"{pnl_val:+.1f}$"
+            builder.row(
+                InlineKeyboardButton(
+                    text=f"🔍 #{t.get('position_id') or tid} {sym} ({direction}) {pnl_s}",
+                    callback_data=f"hist:card:{tid}"
+                )
+            )
+
+    # 5. Пагинация (если страниц больше одной)
+    if total_pages > 1:
+        prev_p = max(0, page - 1)
+        next_p = min(total_pages - 1, page + 1)
+        nav_buttons = []
+        if page > 0:
+            nav_buttons.append(InlineKeyboardButton(text="◀️ Назад", callback_data=f"hist:page:{state}:{prev_p}"))
+        nav_buttons.append(InlineKeyboardButton(text=f"Стр {page + 1}/{total_pages}", callback_data="hist:noop"))
+        if page < total_pages - 1:
+            nav_buttons.append(InlineKeyboardButton(text="Вперед ▶️", callback_data=f"hist:page:{state}:{next_p}"))
+        builder.row(*nav_buttons)
+
+    # 6. Кнопки защищенного экспорта
+    builder.row(
+        InlineKeyboardButton(text="📥 Экспорт в CSV", callback_data=f"hist:export:csv:{filter_type}"),
+        InlineKeyboardButton(text="📥 Экспорт в JSON", callback_data=f"hist:export:json:{filter_type}")
+    )
+
+    # 7. Возврат в главное меню
+    builder.row(
+        InlineKeyboardButton(text="◀️ В Главное Меню", callback_data="menu")
+    )
+    return builder.as_markup()
+
+
+def trade_card_keyboard(trade_id: int) -> InlineKeyboardMarkup:
+    """Клавиатура для детальной карточки сделки (досье)."""
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="📥 Скачать JSON сделки", callback_data=f"hist:export_one:{trade_id}")
+    )
+    builder.row(
+        InlineKeyboardButton(text="📜 К Журналу Сделок", callback_data="menu:history"),
+        InlineKeyboardButton(text="◀️ Меню", callback_data="menu")
+    )
+    return builder.as_markup()
+
+
