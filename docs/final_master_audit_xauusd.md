@@ -2,9 +2,9 @@
 
 **Целевой инструмент:** Золото (`XAUUSD`)  
 **Активный профиль:** `XAUUSD_INTRADAY` (`config.ACTIVE_TRADING_PROFILE`)  
-**Целевой счет:** FundingPips $5,000 1-Step Challenge (`***7982`, маскируется из `data/challenge_config.json`), MT5 «FundingPips Corp»  
+**Целевой счет:** FundingPips $5,000 2-Step Flex Challenge (Biggest Max Loss) (Phase 1 10%, Phase 2 8%, Daily DD 4%, Max DD 12%, static floor $4,400.00, hard equity stop $4,450.00), MT5 «FundingPips Corp»  
 **Параметры проп-защиты:** Начальный баланс `$5,000.00` | Фатальный пол `$4,400.00` (Max Loss `12%`) | Хард-стоп бота `$4,450.00` (`+$50` буфер) | Дневной лимит потерь `4%` (`$200.00`, внутренний стоп бота `3.0%` = `$150.00`)  
-**Инфраструктура:** VPS Ubuntu Linux `[VPS_PROTECTED_IP]`, MetaTrader 5 (Wine, portable build 6254), советник `SmartTraderBridge.mq5` (`SmartTraderBridge.ex5`), веб-сервис Python (async FastAPI / long-polling)  
+**Инфраструктура:** VPS Linux Environment, MetaTrader 5 (Wine, portable build 6254), советник `SmartTraderBridge.mq5` (`SmartTraderBridge.ex5`), веб-сервис Python (async FastAPI / long-polling)  
 **Репозиторий:** `https://github.com/abdugafarov-ai/smart-trader-bot` (ветка `feat-xauusd-ict-audit`)  
 **Дата аудита:** Октябрь 2026 г.  
 
@@ -12,7 +12,7 @@
 
 ## РАЗДЕЛ A. ЧТО БЫЛО НАЙДЕНО В РЕПОЗИТОРИИ И НА СЕРВЕРЕ
 
-В ходе сквозного аудита репозитория `smart-trader-bot`, боевого сервера VPS (`[VPS_PROTECTED_IP]:/root/smart-trader-bot`) и терминала MetaTrader 5 были обнаружены критические дефекты архитектуры, риск-менеджмента, целостности рыночных данных и алгоритмов ICT/SMC:
+В ходе сквозного аудита репозитория `smart-trader-bot`, боевого сервера VPS и терминала MetaTrader 5 были обнаружены критические дефекты архитектуры, риск-менеджмента, целостности рыночных данных и алгоритмов ICT/SMC:
 
 ### 1. Критические уязвимости безопасности и конфигурации
 1. **Опасное состояние автоторговли по умолчанию:** В старой конфигурации автопилот мог самопроизвольно активироваться при перезапуске контейнера/сервиса из-за чтения устаревшего флага `enabled=1` из SQLite (`bot_settings`), даже когда в `.env` стоял `AUTOTRADE_ENABLED=false`.
@@ -89,7 +89,7 @@
 ## РАЗДЕЛ D. ЧТО БЫЛО ИЗМЕНЕНО / ПЕРЕПИСАНО И ПОЧЕМУ
 
 1. **[`config.py`](file:///C:/Users/user/.gemini/antigravity/scratch/smart_trader_bot/config.py) и [`main.py`](file:///C:/Users/user/.gemini/antigravity/scratch/smart_trader_bot/main.py):**
-   - Добавлена динамическая загрузка `data/challenge_config.json` с маскированием номера счета (`CHALLENGE_ACCOUNT_MASKED = "***7982"`).
+   - Добавлена динамическая загрузка `challenge_config.json` с маскированием номера счета (`CHALLENGE_ACCOUNT_MASKED = "[MASKED_ACCOUNT]"`).
    - Добавлен словарь профилей `TRADING_PROFILES` с активным профилем `XAUUSD_INTRADAY` (`symbols=["XAUUSD"]`, `htf_timeframe="H1"`, `itf_timeframe="M15"`, `ltf_timeframe="M5"`, `default_risk_pct=0.25`, `max_risk_pct=0.50`, `min_lot=0.01`, `min_rr=2.0`, `autotrade_enabled_default=False`).
    - Добавлена функция `validate_config(raise_on_error=True)`, вызываемая при старте `main.py`.
 2. **[`market/data_fetcher.py`](file:///C:/Users/user/.gemini/antigravity/scratch/smart_trader_bot/market/data_fetcher.py):**
@@ -386,4 +386,4 @@ flowchart TD
 | :--- | :---: | :--- |
 | **1. Режим `Signals Only` и мониторинг телеметрии MT5** | **ГОТОВО (`ACTIVE`)** | Сервис на VPS запущен с `AUTOTRADE_ENABLED=false`, пинг до `FundingPips-MT5` ~6.35 мс, экспорт закрытых баров и 33 unit-теста работают без ошибок. |
 | **2. 14-дневный Форвард-тест на демо-счете (`Demo Forward Test`)** | **ГОТОВО К ЗАПУСКУ** | Код Python-бэкенда и скомпилированный советник `SmartTraderBridge.ex5` полностью синхронизированы и защищены 10-факторным риск-фильтром. |
-| **3. Автоматическая торговля на реальном челлендже (`Live Challenge Auto-Trading`)** | **СТРОГО ЗАБЛОКИРОВАНО ДО ИТОГОВ ФОРВАРД-ТЕСТА** | Включение `AUTOTRADE_ENABLED=true` на счете `***7982` допускается **только после завершения 14-дневного форвард-теста** (минимум 30–50 сделок с `PF >= 1.10`, `Max Daily DD <= 1.5%` и `0` технических сбоев исполнения). |
+| **3. Автоматическая торговля на реальном челлендже (`Live Challenge Auto-Trading`)** | **СТРОГО ЗАБЛОКИРОВАНО ДО ИТОГОВ ФОРВАРД-ТЕСТА** | Включение `AUTOTRADE_ENABLED=true` на счете проп-челленджа допускается **только после завершения 14-дневного форвард-теста** (минимум 30–50 сделок с `PF >= 1.10`, `Max Daily DD <= 1.5%` и `0` технических сбоев исполнения). |

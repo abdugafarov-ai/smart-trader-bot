@@ -16,32 +16,34 @@ logger = logging.getLogger(__name__)
 
 
 def calculate_gold_swing_lot(
-    balance: float = 5000.0,
-    sl_dist_usd: float = 15.0,
+    balance: float = 0.0,
+    sl_dist_usd: float = 0.0,
     risk_pct: float = 0.25,
-    commission_per_lot: float = 0.0,
-    spread_buffer_usd: float = 0.0,
-    contract_size: float = 100.0,
-    tick_size: float = 0.01,
+    commission_per_lot: Optional[float] = None,
+    spread_buffer_usd: Optional[float] = None,
+    contract_size: Optional[float] = None,
+    tick_size: Optional[float] = None,
     tick_value: Optional[float] = None,
-    min_lot: float = 0.01,
-    max_lot: float = 0.50,
-    volume_step: float = 0.01,
-    slippage_buffer_usd: float = 0.0,
+    min_lot: Optional[float] = None,
+    max_lot: Optional[float] = None,
+    volume_step: Optional[float] = None,
+    slippage_buffer_usd: Optional[float] = None,
     account_currency: str = "USD",
+    require_confirmed_specs: bool = False,
 ) -> float:
     """
     Институциональный расчет риска для XAUUSD с учетом параметров брокера:
     - Валидирует параметры MT5: contract size, tick size, tick value, volume min/max/step.
-    - Учитывает комиссию, спред и консервативный резерв на проскальзывание.
-    - Бюджет риска: базовый risk_pct (обычно 0.25%), capped AUTOTRADE_MAX_RISK (0.50%).
+    - Для реального исполнения (require_confirmed_specs=True) запрещены предполагаемые параметры.
+    - Учитывает комиссию ($3.00/лот), спред и консервативный резерв на проскальзывание ($0.20/oz).
+    - Бюджет риска: базовый risk_pct (0.25%), capped AUTOTRADE_MAX_RISK (0.50%).
     - Жесткое правило: если риск по минимальному лоту превышает бюджет -> return 0.0 (NO TRADE).
-    - Перепроверяет итоговый денежный риск перед возвратом объема.
+    - Повторно проверяет итоговый денежный риск в цикле, не допуская превышения бюджета после округления.
     """
     try:
-        b_val = float(balance)
-        sl_val = float(sl_dist_usd)
-        r_pct = float(risk_pct)
+        b_val = float(balance) if balance is not None else 0.0
+        sl_val = float(sl_dist_usd) if sl_dist_usd is not None else 0.0
+        r_pct = float(risk_pct) if risk_pct is not None else 0.25
     except (ValueError, TypeError):
         return 0.0
 
@@ -51,11 +53,27 @@ def calculate_gold_swing_lot(
         return 0.0
 
     # Валидация брокерских параметров
-    c_size = float(contract_size) if (contract_size and contract_size > 0) else 100.0
-    t_size = float(tick_size) if (tick_size and tick_size > 0) else 0.01
-    v_min = float(min_lot) if (min_lot and min_lot > 0) else 0.01
-    v_max = float(max_lot) if (max_lot and max_lot > 0) else 0.50
-    v_step = float(volume_step) if (volume_step and volume_step > 0) else 0.01
+    if require_confirmed_specs:
+        # Для реального исполнения строго запрещены предполагаемые характеристики символа
+        if (
+            contract_size is None or contract_size <= 0
+            or tick_size is None or tick_size <= 0
+            or min_lot is None or min_lot <= 0
+            or max_lot is None or max_lot <= 0
+            or volume_step is None or volume_step <= 0
+        ):
+            return 0.0
+        c_size = float(contract_size)
+        t_size = float(tick_size)
+        v_min = float(min_lot)
+        v_max = float(max_lot)
+        v_step = float(volume_step)
+    else:
+        c_size = float(contract_size) if (contract_size and contract_size > 0) else 100.0
+        t_size = float(tick_size) if (tick_size and tick_size > 0) else 0.01
+        v_min = float(min_lot) if (min_lot and min_lot > 0) else 0.01
+        v_max = float(max_lot) if (max_lot and max_lot > 0) else 0.50
+        v_step = float(volume_step) if (volume_step and volume_step > 0) else 0.01
 
     if not (math.isfinite(c_size) and math.isfinite(t_size) and math.isfinite(v_min) and math.isfinite(v_max) and math.isfinite(v_step)):
         return 0.0
@@ -78,10 +96,10 @@ def calculate_gold_swing_lot(
     if risk_budget_usd <= 0:
         return 0.0
 
-    # Учет спреда, комиссии и резерва на проскальзывание
-    comm_lot = max(0.0, float(commission_per_lot or 0.0))
-    spread_usd = max(0.0, float(spread_buffer_usd or 0.0))
-    slip_usd = max(0.0, float(slippage_buffer_usd or 0.0))
+    # Учет спреда, комиссии и резерва на проскальзывание (единый источник истины)
+    comm_lot = max(0.0, float(commission_per_lot)) if commission_per_lot is not None else 0.0
+    spread_usd = max(0.0, float(spread_buffer_usd)) if spread_buffer_usd is not None else 0.0
+    slip_usd = max(0.0, float(slippage_buffer_usd)) if slippage_buffer_usd is not None else 0.0
 
     effective_sl_usd = sl_val + spread_usd + slip_usd
     ticks_per_sl = effective_sl_usd / t_size
@@ -105,12 +123,13 @@ def calculate_gold_swing_lot(
         return 0.0
     lot = max(v_min, min(v_max, lot))
 
-    # Финальная строгая верификация: фактический риск не должен превышать бюджет
+    # Финальная строгая верификация: фактический риск не должен превышать бюджет после округления
     actual_risk_usd = (lot * price_loss_per_std_lot) + (lot * comm_lot)
-    if actual_risk_usd > risk_budget_usd + 1e-9:
+    while actual_risk_usd > risk_budget_usd + 1e-9 and lot >= v_min:
         lot = round(lot - v_step, step_dec)
         if lot < v_min:
             return 0.0
+        actual_risk_usd = (lot * price_loss_per_std_lot) + (lot * comm_lot)
 
     return round(lot, step_dec)
 
@@ -143,6 +162,8 @@ class ExecutionBridge:
         self.live_quotes: Dict[str, Dict[str, Any]] = {}
 
         # Спецификации инструментов брокера (contract size, tick size, tick value, min/max/step lot)
+        # ВНИМАНИЕ: для реальных ордеров предполагаемые спецификации запрещены!
+        # Спецификации должны быть явно подтверждены советником MT5 (broker_confirmed: True).
         self.symbol_specs: Dict[str, Dict[str, Any]] = {
             "XAUUSD": {
                 "contract_size": 100.0,
@@ -152,6 +173,7 @@ class ExecutionBridge:
                 "max_lot": 0.50,
                 "lot_step": 0.01,
                 "currency": "USD",
+                "broker_confirmed": False,
             }
         }
 
@@ -171,6 +193,32 @@ class ExecutionBridge:
         self.daily_lock_alerted_date: str = ""
         self.current_trade_date: str = get_broker_today_date_str()
         self.today_stats_cache: Dict[str, Any] = {}
+
+    def has_confirmed_symbol_specs(self, symbol: str) -> bool:
+        """Проверяет, подтверждены ли спецификации инструмента брокером MT5."""
+        sym_clean = symbol.upper().replace("/", "").replace("=X", "")
+        spec = self.symbol_specs.get(sym_clean, {})
+        if not spec:
+            return False
+        c_size = spec.get("contract_size", 0.0)
+        t_size = spec.get("tick_size", 0.0)
+        min_l = spec.get("min_lot", 0.0)
+        max_l = spec.get("max_lot", 0.0)
+        step_l = spec.get("lot_step", spec.get("volume_step", 0.0))
+        has_all_specs = bool(c_size > 0 and t_size > 0 and min_l > 0 and max_l > 0 and step_l > 0)
+        if not has_all_specs:
+            return False
+
+        if spec.get("broker_confirmed", False):
+            return True
+
+        # Если терминал MT5 в сети и поставляет живые котировки для данного инструмента,
+        # спецификации подтверждены брокерской сессией
+        is_online, _ = self.is_mt5_online()
+        if is_online and sym_clean in self.live_quotes:
+            return True
+
+        return False
 
     @property
     def account_balance(self) -> float:
@@ -239,11 +287,16 @@ class ExecutionBridge:
         commission_per_lot: Optional[float] = None,
         spread_buffer_usd: Optional[float] = None,
         slippage_buffer_usd: Optional[float] = None,
+        is_real_order: bool = False,
+        require_confirmed_specs: bool = False,
     ) -> float:
         """
         Единый источник истины для расчета лота:
         - Для XAUUSD: обязательными являются фактические Entry и SL или достоверно рассчитанная дистанция.
           Расчет по условной дистанции стопа (sl_pips) строго ЗАПРЕЩЕН.
+        - Для реального исполнения (is_real_order=True или require_confirmed_specs=True):
+          требует достоверный капитал, фактические Entry и SL, подтвержденные брокером характеристики
+          символа MT5 и проверяемые расходы (живой спред, комиссия, резерв проскальзывания).
         - При отсутствии, некорректности или противоречивости данных -> return 0.0 (NO TRADE).
         - Бюджет риска: default 0.25% ($12.50 при балансе $5000), max 0.50% ($25.00).
         - Если минимальный лот брокера превышает бюджет -> return 0.0 (NO TRADE).
@@ -261,6 +314,30 @@ class ExecutionBridge:
             logger.warning("calculate_lot: No valid account capital (bal=%.2f). Rejecting order (0.0).", bal_val)
             return 0.0
 
+        # Для реального исполнения требуются подтверждённые характеристики брокера
+        if is_real_order or require_confirmed_specs:
+            has_explicit = (
+                contract_size is not None and contract_size > 0 and
+                tick_size is not None and tick_size > 0 and
+                min_lot is not None and min_lot > 0 and
+                max_lot is not None and max_lot > 0 and
+                volume_step is not None and volume_step > 0
+            )
+            if not has_explicit and not self.has_confirmed_symbol_specs(sym_clean):
+                logger.warning(
+                    "calculate_lot: MT5 broker specifications for %s are not confirmed. "
+                    "Rejecting real order (0.0 / NO TRADE).", sym_clean
+                )
+                return 0.0
+
+            if "XAU" in sym_clean or "GOLD" in sym_clean:
+                if entry is None or sl is None:
+                    logger.warning(
+                        "calculate_lot: Real execution on %s requires factual entry and sl. "
+                        "Rejecting real order (0.0 / NO TRADE).", sym_clean
+                    )
+                    return 0.0
+
         # Получение спецификаций брокера из кэша телеметрии
         spec = getattr(self, "symbol_specs", {}).get(sym_clean, {})
         c_size = contract_size or spec.get("contract_size")
@@ -269,18 +346,25 @@ class ExecutionBridge:
         v_min = min_lot if min_lot is not None else spec.get("min_lot", 0.01)
         v_max = max_lot if max_lot is not None else spec.get("max_lot", 0.50)
         v_step = volume_step if volume_step is not None else spec.get("lot_step", spec.get("volume_step", 0.01))
-        comm_val = commission_per_lot if commission_per_lot is not None else spec.get("commission_per_lot", getattr(config, "COMMISSION_PER_LOT_USD", 0.0))
-
-        if spread_buffer_usd is not None:
-            spr_val = float(spread_buffer_usd)
-        else:
-            live_spr = self.get_live_spread_pips(sym_clean)
-            if live_spr is not None and live_spr > 0:
-                spr_val = live_spr * 0.10 if ("XAU" in sym_clean or "GOLD" in sym_clean) else 0.0
+        if is_real_order or require_confirmed_specs:
+            comm_val = commission_per_lot if commission_per_lot is not None else spec.get("commission_per_lot", getattr(config, "COMMISSION_PER_LOT_USD", 3.00))
+            slip_val = slippage_buffer_usd if slippage_buffer_usd is not None else getattr(config, "SLIPPAGE_BUFFER_USD", 0.20)
+            if spread_buffer_usd is not None:
+                spr_val = float(spread_buffer_usd)
             else:
-                spr_val = spec.get("spread_buffer_usd", 0.0)
-
-        slip_val = slippage_buffer_usd if slippage_buffer_usd is not None else getattr(config, "SLIPPAGE_BUFFER_USD", 0.0)
+                live_spr = self.get_live_spread_pips(sym_clean)
+                if live_spr is not None and live_spr > 0:
+                    spr_val = live_spr * 0.10 if ("XAU" in sym_clean or "GOLD" in sym_clean) else 0.0
+                else:
+                    logger.warning(
+                        "calculate_lot: Live spread unavailable for real order on %s. "
+                        "Rejecting real order (0.0 / NO TRADE).", sym_clean
+                    )
+                    return 0.0
+        else:
+            comm_val = commission_per_lot if commission_per_lot is not None else spec.get("commission_per_lot", 0.0)
+            slip_val = slippage_buffer_usd if slippage_buffer_usd is not None else spec.get("slippage_buffer_usd", 0.0)
+            spr_val = float(spread_buffer_usd) if spread_buffer_usd is not None else spec.get("spread_buffer_usd", 0.0)
 
         if "XAU" in sym_clean or "GOLD" in sym_clean:
             actual_sl_usd = None
@@ -333,13 +417,14 @@ class ExecutionBridge:
                 risk_pct=effective_risk,
                 commission_per_lot=comm_val,
                 spread_buffer_usd=spr_val,
-                contract_size=c_size or 100.0,
-                tick_size=t_size or 0.01,
+                contract_size=c_size if (is_real_order or require_confirmed_specs) else (c_size or 100.0),
+                tick_size=t_size if (is_real_order or require_confirmed_specs) else (t_size or 0.01),
                 tick_value=t_val,
                 min_lot=v_min,
                 max_lot=v_max,
                 volume_step=v_step,
                 slippage_buffer_usd=slip_val,
+                require_confirmed_specs=(is_real_order or require_confirmed_specs),
             )
             if max_safe_lot <= 0.0:
                 return 0.0
@@ -535,6 +620,8 @@ class ExecutionBridge:
                     self.symbol_specs[sym_u]["point"] = point_val
                 if digits_val > 0:
                     self.symbol_specs[sym_u]["digits"] = digits_val
+                if c_size > 0 and t_size > 0 and min_l > 0 and max_l > 0 and step_l > 0:
+                    self.symbol_specs[sym_u]["broker_confirmed"] = True
             except (ValueError, TypeError):
                 continue
 
@@ -855,6 +942,10 @@ class ExecutionBridge:
         eq = self.account_equity
         if bal <= 0 or eq <= 0:
             return False, f"Невозможно достоверно установить состояние счёта MT5 (баланс ${bal:.2f}, эквити ${eq:.2f} <= 0)"
+
+        # 4.1 Проверка достоверности характеристик инструмента брокера
+        if not self.has_confirmed_symbol_specs(sym_u):
+            return False, f"Характеристики символа MT5 для {sym_u} недоступны или не подтверждены брокером"
 
         # 6. Лимит одновременно активных слотов (позиции + отложенные ордера)
         positions = self.mt5_telemetry.get("positions") or []

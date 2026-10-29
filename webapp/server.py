@@ -616,7 +616,8 @@ async def bridge_get_orders(request: web.Request) -> web.Response:
                 sl_pips = sl_dist / 0.0001
 
             max_safe_lot = bridge_manager.calculate_lot(
-                sym, sl_pips, sl_dist_usd=sl_dist, entry=entry_p, sl=sl_p
+                sym, sl_pips, sl_dist_usd=sl_dist, entry=entry_p, sl=sl_p,
+                is_real_order=True, require_confirmed_specs=True
             )
             if max_safe_lot <= 0.0:
                 logger.warning(

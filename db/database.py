@@ -1364,8 +1364,8 @@ async def sync_broker_deals(deals: list[dict], df_bars: Optional[pd.DataFrame] =
                     bd_row = await c_bd.fetchone()
                     if bd_row:
                         entry_p = float(bd_row[1] or bd_row[0] or 0.0) or None
-                        if not open_time_val:
-                            open_time_val = bd_row[3] or bd_row[2]
+                        if not open_time_val and bd_row[3]:
+                            open_time_val = bd_row[3]
 
                 # 3. Если сигнала нет, ищем в trade_history по position_id
                 if (entry_p is None or entry_p <= 0.0) and pos_id > 0:
@@ -1531,7 +1531,7 @@ async def sync_broker_deals(deals: list[dict], df_bars: Optional[pd.DataFrame] =
                         ticket, sym, deal_type, lot, close_p, net_profit, close_time_int, magic, comment, now_iso,
                         entry_p, close_p, pos_id, open_order_id, costs["gross_profit"], costs["commission"], costs["swap"], costs["slippage"],
                         rec_type, sig_match.get("id") if sig_match else None,
-                        int(datetime.fromisoformat(open_time_iso.replace("Z", "+00:00")).timestamp()) if open_time_iso else 0
+                        int(datetime.fromisoformat(open_time_iso.replace("Z", "+00:00")).timestamp()) if open_time_iso else None
                     ),
                 )
 

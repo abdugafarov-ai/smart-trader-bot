@@ -516,6 +516,11 @@ HARD_EQUITY_STOP_USD: float = float(
 # FundingPips сбрасывает дневной лимит в 00:00 сервера MT5 (EET: UTC+2 зима, UTC+3 лето)
 BROKER_TIMEZONE_NAME: str = os.getenv("BROKER_TIMEZONE_NAME", "Europe/Helsinki")
 
+# ── Институциональные издержки и резервы (Python & MQL5 Alignment) ───
+COMMISSION_PER_LOT_USD: float = float(os.getenv("COMMISSION_PER_LOT_USD", "3.00"))     # FundingPips $3.00/lot ($1.50 per side)
+SLIPPAGE_BUFFER_USD: float = float(os.getenv("SLIPPAGE_BUFFER_USD", "0.20"))           # Conservative reserve ($0.20 on Gold = 20 broker points)
+DEFAULT_SPREAD_BUFFER_USD: float = float(os.getenv("DEFAULT_SPREAD_BUFFER_USD", "0.30")) # Default spread buffer when live ticks unavailable
+
 # ── Явные торговые профили (Explicit Trading Profiles) ─────────────────
 TRADING_PROFILES: dict[str, dict] = {
     "XAUUSD_INTRADAY": {

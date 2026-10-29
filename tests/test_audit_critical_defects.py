@@ -96,6 +96,31 @@ class TestLotCalculationAndFactualSL(unittest.TestCase):
         self.assertFalse(is_ok)
         self.assertEqual(cur_spread, -1.0)
 
+    def test_unconfirmed_broker_specs_rejects_real_order(self):
+        # When broker specs are unconfirmed and no live quotes exist, real orders must strictly return 0.0 (NO TRADE)
+        bridge = ExecutionBridge()
+        bridge.live_quotes.clear()
+        bridge.symbol_specs["XAUUSD"]["broker_confirmed"] = False
+        lot = bridge.calculate_lot(
+            "XAUUSD", balance=5000.0, entry=2650.0, sl=2645.0,
+            is_real_order=True, require_confirmed_specs=True
+        )
+        self.assertEqual(lot, 0.0, "Real orders must strictly return 0.0 if broker specs are unconfirmed")
+
+    def test_can_open_new_position_blocked_by_unconfirmed_specs(self):
+        bridge = ExecutionBridge()
+        bridge.enabled = True
+        bridge.live_quotes.clear()
+        bridge.symbol_specs["XAUUSD"]["broker_confirmed"] = False
+        bridge.mt5_telemetry["balance"] = 5000.0
+        bridge.mt5_telemetry["equity"] = 5000.0
+        bridge.mt5_telemetry["last_ping"] = datetime.now(timezone.utc)
+        test_now = datetime(2026, 10, 27, 12, 0, tzinfo=timezone.utc)
+        can_open, reason = bridge.can_open_new_position("XAUUSD", now_dt=test_now)
+        self.assertFalse(can_open)
+        self.assertIn("XAUUSD", reason)
+        self.assertIn("MT5", reason)
+
 
 class TestDynamicBrokerParametersAndRiskBudget(unittest.TestCase):
     """Test risk budget safety across different broker contract sizes and specs."""
@@ -182,6 +207,45 @@ class TestDynamicBrokerParametersAndRiskBudget(unittest.TestCase):
         # 5-digit Forex (EURUSD): 1 pip = 10 * 0.00001 = 0.0001
         pips_5digit = calculate_pips("EURUSD", 1.08000, 1.08050, "BUY", point=0.00001, digits=5)
         self.assertEqual(pips_5digit, 5.0)
+
+    def test_institutional_costs_strictly_enforce_risk_budget_never_exceeded(self):
+        # Balance $5,000, risk 0.25% = $12.50 budget.
+        # SL $4.00 without costs: $12.50 / $400 = 0.03125 -> 0.03 lot ($12.00 <= $12.50).
+        # With institutional costs: comm $3.00, slip $0.20, spread $0.35:
+        # Total per lot = $400 + $55 = $455.
+        # 0.03 lot * $455 = $13.65 > $12.50 (budget overshoot!).
+        # The while-loop must round down to 0.02 lot (0.02 * $455 = $9.10 <= $12.50).
+        lot = calculate_gold_swing_lot(
+            balance=5000.0,
+            risk_pct=0.25,
+            sl_dist_usd=4.0,
+            contract_size=100.0,
+            tick_size=0.01,
+            tick_value=1.0,
+            min_lot=0.01,
+            max_lot=50.0,
+            volume_step=0.01,
+            commission_per_lot=3.0,
+            spread_buffer_usd=0.35,
+            slippage_buffer_usd=0.20,
+        )
+        self.assertEqual(lot, 0.02)
+        total_risk = (4.0 * 100.0 + (0.35 + 0.20) * 100.0 + 3.0) * lot
+        self.assertLessEqual(total_risk, 12.50)
+
+        # Boundary test: If 0.01 min lot risk exceeds budget even by $0.01 -> strictly 0.0 (NO TRADE)
+        lot_reject = calculate_gold_swing_lot(
+            balance=1000.0,
+            risk_pct=0.25, # $2.50 budget
+            sl_dist_usd=2.50, # min lot loss alone is $2.50, adding comm $3.00 makes it $2.53 > $2.50
+            contract_size=100.0,
+            tick_size=0.01,
+            tick_value=1.0,
+            min_lot=0.01,
+            volume_step=0.01,
+            commission_per_lot=3.0,
+        )
+        self.assertEqual(lot_reject, 0.0, "Must reject trade when min lot exceeds budget due to costs")
 
 
 class TestTradeJournalAccuracy(unittest.IsolatedAsyncioTestCase):
@@ -292,6 +356,21 @@ class TestTradeJournalAccuracy(unittest.IsolatedAsyncioTestCase):
         }]
         new_deals = await database.sync_broker_deals(deals)
         self.assertEqual(new_deals[0]["duration_str"], "N/A")
+        # Verify open_time is NOT substituted with close_time in broker_deals and trade_history tables
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute("SELECT open_time, close_time FROM broker_deals WHERE ticket = 9004")
+            row = await cursor.fetchone()
+            self.assertIsNotNone(row)
+            self.assertIsNone(row["open_time"], "open_time must remain NULL/None when missing, never substituted with close_time")
+            self.assertIsNotNone(row["close_time"])
+
+            cursor2 = await db.execute("SELECT duration_seconds, duration_str, open_time FROM trade_history WHERE broker_ticket = 9004")
+            row2 = await cursor2.fetchone()
+            self.assertIsNotNone(row2)
+            self.assertIsNone(row2["duration_seconds"])
+            self.assertEqual(row2["duration_str"], "N/A")
+            self.assertIsNone(row2["open_time"])
 
     async def test_close_signal_by_broker_missing_open_time_yields_na_duration(self):
         # When closing an unlinked signal without open time, duration must be N/A (never fabricated 0s)

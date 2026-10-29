@@ -426,6 +426,8 @@ class AutoSignalScanner:
                         sl_dist_usd=dist_val if is_gold else None,
                         entry=result.entry,
                         sl=result.stop_loss,
+                        is_real_order=True,
+                        require_confirmed_specs=True,
                     )
                     if calculated_lot <= 0.0:
                         logger.warning(

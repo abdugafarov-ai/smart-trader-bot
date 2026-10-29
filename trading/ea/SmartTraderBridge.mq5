@@ -24,6 +24,7 @@ input bool     InpUseAutoRisk  = true;                     // Использов
 input double   InpRiskPercent  = 0.25;                     // Процент риска на сделку (%) (0.25% базовый, 0.50% макс)
 input double   InpFixedLot     = 0.01;                     // Фиксированный лот (строго <= риск-бюджета)
 input int      InpSlippage     = 20;                       // Проскальзывание в пунктах
+input double   InpCommissionPerLot = 3.0;                  // Комиссия брокера на 1.0 лот ($3.00 round turn)
 input bool     InpUseAutoBE    = true;                    // Структурный Авто-Б/У (перенос SL после 1.0R)
 input int      InpBETriggerPips = 500;                    // Минимальный профит для Б/У (используется если initial_sl не задан)
 input int      InpBEBufferPips  = 35;                     // Защитное смещение стопа в плюс от входа (+35 п. по 0.01 = +$0.35 покрытие спреда/комиссии)
@@ -1441,8 +1442,8 @@ double CalculateRiskLot(string symbol, double entry_price, double sl_price, doub
       loss_per_std_lot = (effective_diff / tick_size) * tick_val;
    }
 
-   // Фиксированная комиссия FundingPips ~$3/лот (резерв $3.00 на лот)
-   loss_per_std_lot += 3.0;
+   // Фиксированная комиссия FundingPips ~$3/лот (InpCommissionPerLot)
+   loss_per_std_lot += InpCommissionPerLot;
 
    if(loss_per_std_lot <= 0.0) return 0.0;
 
@@ -1463,18 +1464,27 @@ double CalculateRiskLot(string symbol, double entry_price, double sl_price, doub
    double expected_loss = 0.0;
    if(OrderCalcProfit(ord_type, symbol, lot, entry_price, sl_price, check_profit) && check_profit < 0.0)
    {
-      expected_loss = MathAbs(check_profit) + (lot * (spread_cost + slip_cost) * (tick_val / tick_size)) + (lot * 3.0);
+      expected_loss = MathAbs(check_profit) + (lot * (spread_cost + slip_cost) * (tick_val / tick_size)) + (lot * InpCommissionPerLot);
    }
    else
    {
       expected_loss = lot * loss_per_std_lot;
    }
 
-   if(expected_loss > risk_amt + 1e-6)
+   while(expected_loss > risk_amt + 1e-6 && lot >= min_lot)
    {
       lot = MathFloor((lot - step + 1e-9) / step) * step;
       if(lot < min_lot) return 0.0;
+      if(OrderCalcProfit(ord_type, symbol, lot, entry_price, sl_price, check_profit) && check_profit < 0.0)
+      {
+         expected_loss = MathAbs(check_profit) + (lot * (spread_cost + slip_cost) * (tick_val / tick_size)) + (lot * InpCommissionPerLot);
+      }
+      else
+      {
+         expected_loss = lot * loss_per_std_lot;
+      }
    }
+   if(lot < min_lot) return 0.0;
 
    return lot;
 }
