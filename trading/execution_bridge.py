@@ -97,9 +97,14 @@ def calculate_gold_swing_lot(
         return 0.0
 
     # Учет спреда, комиссии и резерва на проскальзывание (единый источник истины)
-    comm_lot = max(0.0, float(commission_per_lot)) if commission_per_lot is not None else 0.0
-    spread_usd = max(0.0, float(spread_buffer_usd)) if spread_buffer_usd is not None else 0.0
-    slip_usd = max(0.0, float(slippage_buffer_usd)) if slippage_buffer_usd is not None else 0.0
+    if require_confirmed_specs:
+        comm_lot = max(0.0, float(commission_per_lot)) if commission_per_lot is not None else getattr(config, "COMMISSION_PER_LOT_USD", 3.00)
+        spread_usd = max(0.0, float(spread_buffer_usd)) if spread_buffer_usd is not None else getattr(config, "DEFAULT_SPREAD_BUFFER_USD", 0.30)
+        slip_usd = max(0.0, float(slippage_buffer_usd)) if slippage_buffer_usd is not None else getattr(config, "SLIPPAGE_BUFFER_USD", 0.20)
+    else:
+        comm_lot = max(0.0, float(commission_per_lot)) if commission_per_lot is not None else 0.0
+        spread_usd = max(0.0, float(spread_buffer_usd)) if spread_buffer_usd is not None else 0.0
+        slip_usd = max(0.0, float(slippage_buffer_usd)) if slippage_buffer_usd is not None else 0.0
 
     effective_sl_usd = sl_val + spread_usd + slip_usd
     ticks_per_sl = effective_sl_usd / t_size
@@ -163,16 +168,9 @@ class ExecutionBridge:
 
         # Спецификации инструментов брокера (contract size, tick size, tick value, min/max/step lot)
         # ВНИМАНИЕ: для реальных ордеров предполагаемые спецификации запрещены!
-        # Спецификации должны быть явно подтверждены советником MT5 (broker_confirmed: True).
+        # Спецификации подтверждаются исключительно советником MT5 при онлайн-сессии (broker_confirmed: True).
         self.symbol_specs: Dict[str, Dict[str, Any]] = {
             "XAUUSD": {
-                "contract_size": 100.0,
-                "tick_size": 0.01,
-                "tick_val": 1.0,
-                "min_lot": 0.01,
-                "max_lot": 0.50,
-                "lot_step": 0.01,
-                "currency": "USD",
                 "broker_confirmed": False,
             }
         }
@@ -200,25 +198,14 @@ class ExecutionBridge:
         spec = self.symbol_specs.get(sym_clean, {})
         if not spec:
             return False
+        if not spec.get("broker_confirmed", False):
+            return False
         c_size = spec.get("contract_size", 0.0)
         t_size = spec.get("tick_size", 0.0)
         min_l = spec.get("min_lot", 0.0)
         max_l = spec.get("max_lot", 0.0)
         step_l = spec.get("lot_step", spec.get("volume_step", 0.0))
-        has_all_specs = bool(c_size > 0 and t_size > 0 and min_l > 0 and max_l > 0 and step_l > 0)
-        if not has_all_specs:
-            return False
-
-        if spec.get("broker_confirmed", False):
-            return True
-
-        # Если терминал MT5 в сети и поставляет живые котировки для данного инструмента,
-        # спецификации подтверждены брокерской сессией
-        is_online, _ = self.is_mt5_online()
-        if is_online and sym_clean in self.live_quotes:
-            return True
-
-        return False
+        return bool(c_size > 0 and t_size > 0 and min_l > 0 and max_l > 0 and step_l > 0)
 
     @property
     def account_balance(self) -> float:
@@ -343,10 +330,23 @@ class ExecutionBridge:
         c_size = contract_size or spec.get("contract_size")
         t_size = tick_size or spec.get("tick_size")
         t_val = tick_value or spec.get("tick_val") or spec.get("tick_value")
-        v_min = min_lot if min_lot is not None else spec.get("min_lot", 0.01)
-        v_max = max_lot if max_lot is not None else spec.get("max_lot", 0.50)
-        v_step = volume_step if volume_step is not None else spec.get("lot_step", spec.get("volume_step", 0.01))
+        v_min = min_lot if min_lot is not None else spec.get("min_lot")
+        v_max = max_lot if max_lot is not None else spec.get("max_lot")
+        v_step = volume_step if volume_step is not None else spec.get("lot_step", spec.get("volume_step"))
+
         if is_real_order or require_confirmed_specs:
+            if (
+                c_size is None or c_size <= 0
+                or t_size is None or t_size <= 0
+                or v_min is None or v_min <= 0
+                or v_max is None or v_max <= 0
+                or v_step is None or v_step <= 0
+            ):
+                logger.warning(
+                    "calculate_lot: MT5 broker specifications for %s are incomplete or non-positive. "
+                    "Rejecting real order (0.0 / NO TRADE).", sym_clean
+                )
+                return 0.0
             comm_val = commission_per_lot if commission_per_lot is not None else spec.get("commission_per_lot", getattr(config, "COMMISSION_PER_LOT_USD", 3.00))
             slip_val = slippage_buffer_usd if slippage_buffer_usd is not None else getattr(config, "SLIPPAGE_BUFFER_USD", 0.20)
             if spread_buffer_usd is not None:
@@ -362,6 +362,11 @@ class ExecutionBridge:
                     )
                     return 0.0
         else:
+            c_size = c_size or 100.0
+            t_size = t_size or 0.01
+            v_min = v_min if v_min is not None else 0.01
+            v_max = v_max if v_max is not None else 0.50
+            v_step = v_step if v_step is not None else 0.01
             comm_val = commission_per_lot if commission_per_lot is not None else spec.get("commission_per_lot", 0.0)
             slip_val = slippage_buffer_usd if slippage_buffer_usd is not None else spec.get("slippage_buffer_usd", 0.0)
             spr_val = float(spread_buffer_usd) if spread_buffer_usd is not None else spec.get("spread_buffer_usd", 0.0)

@@ -650,7 +650,9 @@ async def bridge_get_orders(request: web.Request) -> web.Response:
 
             spec = getattr(bridge_manager, "symbol_specs", {}).get(sym_clean, {})
             contract_mult = float(spec.get("contract_size") or (100.0 if ("XAU" in sym_clean or "GOLD" in sym_clean) else (1000.0 if "JPY" in sym_clean else 100000.0)))
-            expected_risk_usd = round(order_lot * sl_dist * contract_mult, 2) if not sig.get("broker_confirmed") else 0.0
+            comm_per_lot = float(getattr(config, "COMMISSION_PER_LOT_USD", 3.00))
+            slip_buf = float(getattr(config, "SLIPPAGE_BUFFER_USD", 0.20))
+            expected_risk_usd = round(order_lot * (sl_dist + slip_buf) * contract_mult + (order_lot * comm_per_lot), 2)
 
             # Повторная проверка ожидаемого риска перед отправкой ордера
             eff_bal = bridge_manager.get_effective_balance(0.0)
@@ -690,6 +692,7 @@ async def bridge_get_orders(request: web.Request) -> web.Response:
                 "lot": order_lot,
                 "risk_percent": bridge_manager.default_risk,
                 "use_auto_risk": use_risk_flag,
+                "commission_per_lot": comm_per_lot,
                 "magic_number": 888001,
             })
 

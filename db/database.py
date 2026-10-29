@@ -669,7 +669,7 @@ async def close_signal_by_broker(
                 )
                 row = await cursor.fetchone()
 
-            if not row:
+            if not row and not pos_ticket and not signal_id and symbol:
                 cursor = await db.execute(
                     """SELECT * FROM signals
                        WHERE symbol = ? AND status IN ('OPEN', 'ACTIVE', 'TP1_PARTIAL')
@@ -1017,9 +1017,15 @@ async def save_trade_record(t: dict) -> int:
         direction = str(t.get("direction") or t.get("type") or "BUY").upper()
         dir_clean = "BUY" if "BUY" in direction or "LONG" in direction else "SELL"
         symbol = str(t.get("symbol") or t.get("broker_symbol") or "XAUUSD").upper()
+        close_p = float(t.get("close_price") or t.get("price") or 0.0)
+        close_val = close_p if close_p > 0 else None
         broker_symbol = str(t.get("broker_symbol") or symbol).upper()
         rec_type = str(t.get("record_type") or "LIVE").upper()
-        net_profit = float(t.get("net_pnl") if t.get("net_pnl") is not None else (t.get("profit_usd") or t.get("profit") or 0.0))
+        net_profit = (
+            float(t["net_pnl"]) if t.get("net_pnl") is not None
+            else (float(t["profit_usd"]) if t.get("profit_usd") is not None
+            else (float(t["profit"]) if t.get("profit") is not None else None))
+        )
 
         # Нормализация времени, длительности и торговой сессии
         open_time = t.get("open_time")
@@ -1027,17 +1033,17 @@ async def save_trade_record(t: dict) -> int:
             open_time_iso = datetime.fromtimestamp(open_time, tz=timezone.utc).isoformat()
         elif isinstance(open_time, datetime):
             open_time_iso = open_time.isoformat()
-        elif isinstance(open_time, str):
+        elif isinstance(open_time, str) and open_time.strip():
             open_time_iso = open_time
         else:
             open_time_iso = None
 
-        close_time = t.get("close_time") or now_iso
+        close_time = t.get("close_time")
         if isinstance(close_time, (int, float)) and close_time > 0:
             close_time_iso = datetime.fromtimestamp(close_time, tz=timezone.utc).isoformat()
         elif isinstance(close_time, datetime):
             close_time_iso = close_time.isoformat()
-        elif isinstance(close_time, str):
+        elif isinstance(close_time, str) and close_time.strip():
             close_time_iso = close_time
         else:
             close_time_iso = now_iso
@@ -1053,9 +1059,16 @@ async def save_trade_record(t: dict) -> int:
         mae_mfe_status = t.get("mae_mfe_status") or ("AVAILABLE" if mae is not None else "UNAVAILABLE: requires historical tick/bar data")
 
         pnl_pips_val = t.get("pnl_pips")
-        if pnl_pips_val is None and entry_val is not None and close_p > 0:
-            pnl_pips_val = calculate_pips(symbol, entry_val, close_p, dir_clean)
+        if pnl_pips_val is None and entry_val is not None and close_val is not None:
+            pnl_pips_val = calculate_pips(symbol, entry_val, close_val, dir_clean)
         cost_status = t.get("cost_status") or ("COMPLETE" if (t.get("commission") is not None and t.get("swap") is not None) else "INCOMPLETE_FEES_MISSING")
+
+        pos_id_val = pos_id if (pos_id and pos_id > 0) else None
+        open_order_id_val = int(t["order_id"]) if (t.get("order_id") and int(t["order_id"]) > 0) else None
+        close_order_id_val = int(t["close_order_id"]) if (t.get("close_order_id") and int(t["close_order_id"]) > 0) else None
+        deal_in_ticket_val = int(t["deal_in_ticket"]) if (t.get("deal_in_ticket") and int(t["deal_in_ticket"]) > 0) else None
+        deal_out_ticket_val = int(t["deal_out_ticket"]) if (t.get("deal_out_ticket") and int(t["deal_out_ticket"]) > 0) else pos_id_val
+        broker_ticket_val = int(t["broker_ticket"]) if (t.get("broker_ticket") and int(t["broker_ticket"]) > 0) else pos_id_val
 
         async with aiosqlite.connect(str(DB_PATH), timeout=30.0) as db:
             cursor = await db.execute(
@@ -1073,8 +1086,8 @@ async def save_trade_record(t: dict) -> int:
                     comment, account, raw_telemetry, created_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
-                    rec_type, pos_id, t.get("order_id"), t.get("close_order_id"),
-                    t.get("deal_in_ticket"), t.get("deal_out_ticket") or pos_id, t.get("broker_ticket") or pos_id, t.get("signal_id"),
+                    rec_type, pos_id_val, open_order_id_val, close_order_id_val,
+                    deal_in_ticket_val, deal_out_ticket_val, broker_ticket_val, t.get("signal_id"),
                     broker_symbol, symbol, dir_clean, trade_lot,
                     entry_val, close_p, t.get("initial_sl"), t.get("final_sl"), t.get("initial_tp"), t.get("final_tp"),
                     t.get("signal_time"), open_time_iso, close_time_iso, dur_sec, dur_str,
@@ -1090,9 +1103,10 @@ async def save_trade_record(t: dict) -> int:
 
             # Синхронизируем broker_deals
             try:
-                close_time_int = int(datetime.fromisoformat(close_time_iso.replace("Z", "+00:00")).timestamp())
+                close_time_int = int(datetime.fromisoformat(close_time_iso.replace("Z", "+00:00")).timestamp()) if close_time_iso else int(datetime.now(timezone.utc).timestamp())
             except Exception:
                 close_time_int = int(datetime.now(timezone.utc).timestamp())
+            deal_ticket = pos_id if (pos_id and pos_id > 0) else (int(t.get("ticket") or 0) or inserted_id)
             await db.execute(
                 """INSERT INTO broker_deals (
                     ticket, symbol, deal_type, lot, price, profit_usd, close_time, magic, comment, created_at,
@@ -1109,9 +1123,9 @@ async def save_trade_record(t: dict) -> int:
                     record_type = excluded.record_type,
                     comment = excluded.comment""",
                 (
-                    pos_id, symbol, dir_clean, trade_lot, close_p, net_profit, close_time_int,
+                    deal_ticket, symbol, dir_clean, trade_lot, close_p, net_profit if net_profit is not None else 0.0, close_time_int,
                     t.get("magic") or 888001, t.get("comment") or "", now_iso,
-                    entry_val, close_p, pos_id, t.get("order_id"),
+                    entry_val, close_p, pos_id_val, open_order_id_val,
                     t.get("gross_profit"), t.get("commission"), t.get("swap"), t.get("slippage"),
                     rec_type, t.get("signal_id")
                 )
@@ -1299,18 +1313,19 @@ async def sync_broker_deals(deals: list[dict], df_bars: Optional[pd.DataFrame] =
                 cursor = await db.execute("SELECT ticket FROM broker_deals WHERE ticket = ?", (ticket,))
                 already_exists = await cursor.fetchone()
 
-                pos_id = int(d.get("position_id") or d.get("pos_id") or ticket)
+                pos_id = int(d.get("position_id") or d.get("pos_id") or 0)
                 order_id = int(d.get("order_id") or 0)
-                close_order_id = int(d.get("close_order_id") or order_id)
-                open_order_id = int(d.get("open_order_id") or order_id)
+                close_order_id = int(d.get("close_order_id") or order_id or 0)
+                open_order_id = int(d.get("open_order_id") or order_id or 0)
                 deal_in_ticket = int(d.get("deal_in_ticket") or d.get("in_ticket") or 0)
                 sym = str(d.get("symbol", "")).upper()
                 broker_sym = str(d.get("broker_symbol") or sym)
                 deal_type = str(d.get("type", "BUY")).upper()
                 dir_clean = "BUY" if "BUY" in deal_type or "LONG" in deal_type else "SELL"
                 lot = float(d.get("lot") or d.get("volume") or 0.01)
-                close_p = float(d.get("close_price") or d.get("price") or 0.0)
-                profit = float(d.get("profit") or 0.0)
+                raw_close = d.get("close_price") if d.get("close_price") is not None else d.get("price")
+                close_p = float(raw_close) if (raw_close is not None and float(raw_close) > 0) else None
+                profit = float(d["profit"]) if d.get("profit") is not None else None
                 gross_profit = d.get("gross_profit")
                 commission = d.get("commission")
                 swap = d.get("swap")
@@ -1368,14 +1383,17 @@ async def sync_broker_deals(deals: list[dict], df_bars: Optional[pd.DataFrame] =
                             open_time_val = bd_row[3]
 
                 # 3. Если сигнала нет, ищем в trade_history по position_id
-                if (entry_p is None or entry_p <= 0.0) and pos_id > 0:
+                if pos_id > 0 and ((entry_p is None or entry_p <= 0.0) or not open_time_val):
                     c_th = await db.execute(
-                        "SELECT entry_price FROM trade_history WHERE position_id = ? AND entry_price IS NOT NULL LIMIT 1",
+                        "SELECT entry_price, open_time FROM trade_history WHERE position_id = ? AND (entry_price IS NOT NULL OR open_time IS NOT NULL) ORDER BY id ASC LIMIT 1",
                         (pos_id,)
                     )
                     th_row = await c_th.fetchone()
-                    if th_row and th_row[0]:
-                        entry_p = float(th_row[0])
+                    if th_row:
+                        if (entry_p is None or entry_p <= 0.0) and th_row[0]:
+                            entry_p = float(th_row[0])
+                        if not open_time_val and th_row[1]:
+                            open_time_val = th_row[1]
 
                 # Важное правило: если точная цена входа неизвестна, НЕ подменяем entry_price = close_price!
                 # entry_p остается None, чтобы в отчетах честно отображалось N/A
@@ -1416,7 +1434,7 @@ async def sync_broker_deals(deals: list[dict], df_bars: Optional[pd.DataFrame] =
                     else:
                         pip_mult = 10000.0
 
-                if entry_p and entry_p > 0 and close_p > 0:
+                if entry_p and entry_p > 0 and close_p and close_p > 0:
                     raw_pips = (close_p - entry_p) * pip_mult if dir_clean == "BUY" else (entry_p - close_p) * pip_mult
                     pnl_pips = round(raw_pips, 1)
                 else:
@@ -1425,7 +1443,7 @@ async def sync_broker_deals(deals: list[dict], df_bars: Optional[pd.DataFrame] =
                 # Время и длительность
                 close_time_iso = (
                     datetime.fromtimestamp(close_time_int, tz=timezone.utc).isoformat()
-                    if close_time_int > 0 else now_iso
+                    if close_time_int > 0 else None
                 )
                 if open_time_val and isinstance(open_time_val, (int, float)) and open_time_val > 0:
                     open_time_iso = datetime.fromtimestamp(open_time_val, tz=timezone.utc).isoformat()
@@ -1445,14 +1463,17 @@ async def sync_broker_deals(deals: list[dict], df_bars: Optional[pd.DataFrame] =
                     res_status = reason_u if ("TP" in reason_u or "SL" in reason_u) else "PARTIAL_CLOSE"
                 elif "MANUAL" in reason_u:
                     res_status = "MANUAL_CLOSE"
-                elif "BREAKEVEN" in reason_u or (net_profit >= -0.50 and pnl_pips is not None and abs(pnl_pips) <= 3.5 and "TP" not in reason_u):
-                    res_status = "BREAKEVEN"
-                elif net_profit > 0:
-                    res_status = "TP1_HIT"
-                elif net_profit < 0:
-                    res_status = "SL_HIT"
+                elif net_profit is not None:
+                    if "BREAKEVEN" in reason_u or (net_profit >= -0.50 and pnl_pips is not None and abs(pnl_pips) <= 3.5 and "TP" not in reason_u):
+                        res_status = "BREAKEVEN"
+                    elif net_profit > 0:
+                        res_status = "TP1_HIT"
+                    elif net_profit < 0:
+                        res_status = "SL_HIT"
+                    else:
+                        res_status = "BREAKEVEN"
                 else:
-                    res_status = "BREAKEVEN"
+                    res_status = reason_u if reason_u else "CLOSED"
 
                 # R-Multiple
                 init_sl = float(sig_match.get("initial_sl") or sig_match.get("stop_loss") or 0.0) if sig_match else None
@@ -1508,6 +1529,19 @@ async def sync_broker_deals(deals: list[dict], df_bars: Optional[pd.DataFrame] =
                 strat = (sig_match.get("strategy") or sig_match.get("strategies_agreed")) if sig_match else "ICT_SMC"
                 s_ver = sig_match.get("setup_version") if sig_match else "v1.0"
 
+                # Преобразование неизвестных идентификаторов и времени в None (SQL NULL)
+                pos_id_val = pos_id if pos_id > 0 else None
+                open_order_id_val = open_order_id if open_order_id > 0 else None
+                close_order_id_val = close_order_id if close_order_id > 0 else None
+                deal_in_ticket_val = deal_in_ticket if deal_in_ticket > 0 else None
+                deal_out_ticket_val = ticket if ticket > 0 else None
+                broker_ticket_val = pos_id_val or deal_out_ticket_val
+                close_time_val_int = close_time_int if close_time_int > 0 else None
+                open_time_val_int = (
+                    int(datetime.fromisoformat(open_time_iso.replace("Z", "+00:00")).timestamp())
+                    if open_time_iso else None
+                )
+
                 # 1. Запись в broker_deals (с сохранением реальных entry_price и close_price)
                 await db.execute(
                     """INSERT INTO broker_deals (
@@ -1528,10 +1562,12 @@ async def sync_broker_deals(deals: list[dict], df_bars: Optional[pd.DataFrame] =
                         price = excluded.price,
                         comment = excluded.comment""",
                     (
-                        ticket, sym, deal_type, lot, close_p, net_profit, close_time_int, magic, comment, now_iso,
-                        entry_p, close_p, pos_id, open_order_id, costs["gross_profit"], costs["commission"], costs["swap"], costs["slippage"],
+                        ticket, sym, deal_type, lot, close_p if close_p is not None else 0.0, net_profit if net_profit is not None else 0.0,
+                        close_time_val_int if close_time_val_int is not None else int(datetime.now(timezone.utc).timestamp()),
+                        magic, comment, now_iso,
+                        entry_p, close_p, pos_id_val, open_order_id_val, costs["gross_profit"], costs["commission"], costs["swap"], costs["slippage"],
                         rec_type, sig_match.get("id") if sig_match else None,
-                        int(datetime.fromisoformat(open_time_iso.replace("Z", "+00:00")).timestamp()) if open_time_iso else None
+                        open_time_val_int
                     ),
                 )
 
@@ -1551,10 +1587,10 @@ async def sync_broker_deals(deals: list[dict], df_bars: Optional[pd.DataFrame] =
                         comment, account, raw_telemetry, created_at
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
-                        rec_type, pos_id, open_order_id, close_order_id,
-                        deal_in_ticket, ticket, pos_id, sig_match.get("id") if sig_match else None,
+                        rec_type, pos_id_val, open_order_id_val, close_order_id_val,
+                        deal_in_ticket_val, deal_out_ticket_val, broker_ticket_val, sig_match.get("id") if sig_match else None,
                         broker_sym, sym, dir_clean, lot,
-                        entry_p, close_p, init_sl, final_sl, init_tp, final_tp,
+                        entry_p, close_p if close_p is not None else 0.0, init_sl, final_sl, init_tp, final_tp,
                         sig_match.get("created_at") if sig_match else None, open_time_iso, close_time_iso, dur_sec, dur_str,
                         sig_match.get("order_type") if sig_match else "AUTO", strat, s_ver, t_session,
                         sig_match.get("balance_before") if sig_match else None, sig_match.get("equity_before") if sig_match else None,

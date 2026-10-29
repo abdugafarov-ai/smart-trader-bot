@@ -271,6 +271,16 @@ class TestCriticalFixes(unittest.TestCase):
                 "ask": 2650.3,
                 "time": datetime.now(timezone.utc),
             }
+            bridge.symbol_specs["XAUUSD"] = {
+                "contract_size": 100.0,
+                "tick_size": 0.01,
+                "tick_val": 1.0,
+                "min_lot": 0.01,
+                "max_lot": 0.50,
+                "lot_step": 0.01,
+                "currency": "USD",
+                "broker_confirmed": True,
+            }
 
             with patch.object(config, "BRIDGE_API_KEY", "test_secret_key"), \
                  patch("trading.execution_bridge.bridge_manager.check_equity_hard_stop", return_value=(False, "")), \

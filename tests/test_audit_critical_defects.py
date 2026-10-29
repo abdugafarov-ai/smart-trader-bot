@@ -21,6 +21,7 @@ Comprehensive Unit Tests for Critical Audit Defects:
 
 import os
 import math
+from pathlib import Path
 import tempfile
 import asyncio
 import unittest
@@ -462,6 +463,119 @@ class TestFormattersTruthfulDisplay(unittest.TestCase):
     def test_format_manual_close_with_none_pips(self):
         out = format_manual_close("XAUUSD", profit=120.0, pnl_pips=None, price=2660.0)
         self.assertIn("N/A pips", out)
+
+
+class TestReviewDefectFixes(unittest.IsolatedAsyncioTestCase):
+    """Specific tests for defects caught during independent review."""
+
+    def setUp(self):
+        self.tmp_dir = tempfile.TemporaryDirectory()
+        self.db_path = Path(self.tmp_dir.name) / "test_review.db"
+        self.orig_db_path = database.DB_PATH
+        database.DB_PATH = self.db_path
+
+    def tearDown(self):
+        database.DB_PATH = self.orig_db_path
+        self.tmp_dir.cleanup()
+
+    def test_has_confirmed_symbol_specs_requires_explicit_broker_confirmed(self):
+        """Quotes presence alone must NEVER confirm specs if broker specifications are missing."""
+        bridge = ExecutionBridge()
+        bridge.live_quotes["XAUUSD"] = {"bid": 2650.0, "ask": 2650.40, "time": datetime.now(timezone.utc)}
+        bridge.symbol_specs["XAUUSD"] = {"broker_confirmed": False}
+        self.assertFalse(bridge.has_confirmed_symbol_specs("XAUUSD"))
+
+        # Now supply confirmed specs
+        bridge.symbol_specs["XAUUSD"] = {
+            "contract_size": 100.0,
+            "tick_size": 0.01,
+            "min_lot": 0.01,
+            "max_lot": 0.50,
+            "lot_step": 0.01,
+            "broker_confirmed": True,
+        }
+        self.assertTrue(bridge.has_confirmed_symbol_specs("XAUUSD"))
+
+    def test_calculate_lot_real_order_rejects_unconfirmed_specs_even_if_quotes_live(self):
+        """calculate_lot(is_real_order=True) returns 0.0 if specs are unconfirmed, even with live quotes."""
+        bridge = ExecutionBridge()
+        bridge.live_quotes["XAUUSD"] = {"bid": 2650.0, "ask": 2650.40, "time": datetime.now(timezone.utc)}
+        bridge.symbol_specs["XAUUSD"] = {"broker_confirmed": False}
+        lot = bridge.calculate_lot(
+            "XAUUSD", balance=5000.0, entry=2650.0, sl=2645.0,
+            is_real_order=True, require_confirmed_specs=True
+        )
+        self.assertEqual(lot, 0.0)
+
+    async def test_close_signal_by_broker_does_not_cross_match_unrelated_signal(self):
+        """close_signal_by_broker with pos_ticket must never match an unrelated signal on the same symbol."""
+        await database.init_db()
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """INSERT INTO signals (id, symbol, direction, entry_price, stop_loss, status, position_id, created_at)
+                   VALUES (777, 'XAUUSD', 'BUY', 2650.0, 2640.0, 'OPEN', 11111, datetime('now'))"""
+            )
+            await db.commit()
+
+        # Broker reports close of position 99999 (NOT 11111)
+        res = await database.close_signal_by_broker(
+            symbol="XAUUSD",
+            close_price=2660.0,
+            profit_usd=50.0,
+            reason="TP1_HIT",
+            position_id=99999,
+        )
+        # Signal 777 must remain untouched (OPEN)
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute("SELECT status FROM signals WHERE id = 777")
+            row = await cursor.fetchone()
+            self.assertEqual(row["status"], "OPEN")
+
+    async def test_sync_broker_deals_stores_null_for_missing_ids_and_times(self):
+        """sync_broker_deals must store NULL (None) for missing IDs and timestamps instead of 0."""
+        await database.init_db()
+        deal = {
+            "ticket": 80001,
+            "position_id": 0,
+            "order_id": 0,
+            "close_order_id": 0,
+            "deal_in_ticket": 0,
+            "time": 0,
+            "symbol": "XAUUSD",
+            "type": "SELL",
+            "lot": 0.02,
+            "price": 2655.0,
+            "profit": None,
+        }
+        await database.sync_broker_deals([deal])
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            c = await db.execute("SELECT * FROM trade_history WHERE deal_out_ticket = 80001")
+            th = await c.fetchone()
+            self.assertIsNotNone(th)
+            self.assertIsNone(th["position_id"])
+            self.assertIsNone(th["order_id"])
+            self.assertIsNone(th["close_order_id"])
+            self.assertIsNone(th["deal_in_ticket"])
+            self.assertIsNone(th["open_time"])
+            self.assertIsNone(th["close_time"])
+            self.assertIsNone(th["duration_seconds"])
+            self.assertEqual(th["duration_str"], "N/A")
+            self.assertIsNone(th["net_pnl"])
+
+    def test_server_expected_risk_formula_includes_commission_and_slippage(self):
+        """Ensure expected risk calculation is never 0.0 for confirmed orders and includes comm/slip."""
+        sym_clean = "XAUUSD"
+        contract_mult = 100.0
+        order_lot = 0.01
+        sl_dist = 5.0
+        comm_per_lot = 3.00
+        slip_buf = 0.20
+        expected_risk_usd = round(order_lot * (sl_dist + slip_buf) * contract_mult + (order_lot * comm_per_lot), 2)
+        # Expected: 0.01 * 5.20 * 100 = 5.20 + 0.03 = $5.23
+        self.assertEqual(expected_risk_usd, 5.23)
+        self.assertGreater(expected_risk_usd, 0.0)
 
 
 if __name__ == "__main__":

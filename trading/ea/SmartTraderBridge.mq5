@@ -144,7 +144,7 @@ string GetBrokerSymbol(string standard_pair);
 void   ReportExecution(string symbol, string action, double price, double profit=0.0, string reason="", int signal_id=0, ulong ticket=0, double volume=0.0);
 void   SetOptimalFillingMode(string symbol);
 void   CleanupStalePendingOrders();
-double CalculateRiskLot(string symbol, double entry_price, double sl_price, double custom_risk = 0.0);
+double CalculateRiskLot(string symbol, double entry_price, double sl_price, double custom_risk = 0.0, double custom_commission = 0.0);
 
 //+------------------------------------------------------------------+
 //| Получение JSON текущих живых цен и параметров для всех пар       |
@@ -678,8 +678,10 @@ void ParseAndExecuteOrders(string json)
       // Извлекаем параметры лота и риска из JSON блока ордера
       double json_lot   = ExtractDouble(block, "\"lot\":");
       double json_risk  = ExtractDouble(block, "\"risk_percent\":");
+      double json_comm  = ExtractDouble(block, "\"commission_per_lot\":");
       int json_use_risk = (int)ExtractDouble(block, "\"use_auto_risk\":");
       bool is_auto_risk = (json_use_risk == 1 || (json_use_risk < 0 && InpUseAutoRisk));
+      double eff_comm   = (json_comm > 0.0) ? json_comm : InpCommissionPerLot;
 
       // Рассчитываем итоговый объем ордера с обязательным контролем риск-бюджета (0.25% базовый, 0.50% макс)
       double entry_ref = is_limit ? entry : (is_long ? SymbolInfoDouble(broker_symbol, SYMBOL_ASK) : SymbolInfoDouble(broker_symbol, SYMBOL_BID));
@@ -691,7 +693,7 @@ void ParseAndExecuteOrders(string json)
          continue;
       }
       double eff_risk  = (json_risk > 0.0) ? MathMin(json_risk, 0.50) : MathMin(InpRiskPercent, 0.50);
-      double max_safe_lot = CalculateRiskLot(broker_symbol, entry_ref, sl, eff_risk);
+      double max_safe_lot = CalculateRiskLot(broker_symbol, entry_ref, sl, eff_risk, eff_comm);
       double lot = 0.0;
       if(is_auto_risk)
       {
@@ -762,7 +764,7 @@ void ParseAndExecuteOrders(string json)
       double p_slip = InpSlippage * ((p_pt > 0) ? p_pt : p_tsz);
       if(p_tsz > 0 && p_tvl > 0)
          check_loss += (lot * (p_spread + p_slip) * (p_tvl / p_tsz));
-      check_loss += (lot * 3.0); // комиссия ~$3.00/лот
+      check_loss += (lot * eff_comm); // комиссия (InpCommissionPerLot / eff_comm)
       double cur_bal = AccountInfoDouble(ACCOUNT_BALANCE);
       double cur_eq  = AccountInfoDouble(ACCOUNT_EQUITY);
       double max_allowed_loss = MathMin(cur_bal, cur_eq) * (eff_risk / 100.0);
@@ -1391,7 +1393,7 @@ void ManageOpenPositions()
 //+------------------------------------------------------------------+
 //| Расчет объема лота на основе % риска от баланса с учетом брокера |
 //+------------------------------------------------------------------+
-double CalculateRiskLot(string symbol, double entry_price, double sl_price, double custom_risk = 0.0)
+double CalculateRiskLot(string symbol, double entry_price, double sl_price, double custom_risk = 0.0, double custom_commission = 0.0)
 {
    if(entry_price <= 0.0 || sl_price <= 0.0) return 0.0;
    double diff = MathAbs(entry_price - sl_price);
@@ -1406,6 +1408,8 @@ double CalculateRiskLot(string symbol, double entry_price, double sl_price, doub
    double risk_pct = (custom_risk > 0.0) ? MathMin(custom_risk, 0.50) : MathMin(InpRiskPercent, 0.50);
    double risk_amt = effective_capital * (risk_pct / 100.0);
    if(risk_amt <= 0.0) return 0.0;
+
+   double comm_rate = (custom_commission > 0.0) ? custom_commission : InpCommissionPerLot;
 
    // Валидация параметров реального инструмента брокера
    double contract_size = SymbolInfoDouble(symbol, SYMBOL_TRADE_CONTRACT_SIZE);
@@ -1442,8 +1446,8 @@ double CalculateRiskLot(string symbol, double entry_price, double sl_price, doub
       loss_per_std_lot = (effective_diff / tick_size) * tick_val;
    }
 
-   // Фиксированная комиссия FundingPips ~$3/лот (InpCommissionPerLot)
-   loss_per_std_lot += InpCommissionPerLot;
+   // Фиксированная комиссия FundingPips ~$3/лот (InpCommissionPerLot / comm_rate)
+   loss_per_std_lot += comm_rate;
 
    if(loss_per_std_lot <= 0.0) return 0.0;
 
@@ -1464,7 +1468,7 @@ double CalculateRiskLot(string symbol, double entry_price, double sl_price, doub
    double expected_loss = 0.0;
    if(OrderCalcProfit(ord_type, symbol, lot, entry_price, sl_price, check_profit) && check_profit < 0.0)
    {
-      expected_loss = MathAbs(check_profit) + (lot * (spread_cost + slip_cost) * (tick_val / tick_size)) + (lot * InpCommissionPerLot);
+      expected_loss = MathAbs(check_profit) + (lot * (spread_cost + slip_cost) * (tick_val / tick_size)) + (lot * comm_rate);
    }
    else
    {
@@ -1477,7 +1481,7 @@ double CalculateRiskLot(string symbol, double entry_price, double sl_price, doub
       if(lot < min_lot) return 0.0;
       if(OrderCalcProfit(ord_type, symbol, lot, entry_price, sl_price, check_profit) && check_profit < 0.0)
       {
-         expected_loss = MathAbs(check_profit) + (lot * (spread_cost + slip_cost) * (tick_val / tick_size)) + (lot * InpCommissionPerLot);
+         expected_loss = MathAbs(check_profit) + (lot * (spread_cost + slip_cost) * (tick_val / tick_size)) + (lot * comm_rate);
       }
       else
       {
