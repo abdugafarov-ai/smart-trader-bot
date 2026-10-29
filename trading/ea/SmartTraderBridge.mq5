@@ -143,10 +143,10 @@ string GetBrokerSymbol(string standard_pair);
 void   ReportExecution(string symbol, string action, double price, double profit=0.0, string reason="", int signal_id=0, ulong ticket=0, double volume=0.0);
 void   SetOptimalFillingMode(string symbol);
 void   CleanupStalePendingOrders();
-double CalculateRiskLot(string symbol, double entry_price, double sl_price, double custom_risk = 0.0, double fallback_lot = 0.01);
+double CalculateRiskLot(string symbol, double entry_price, double sl_price, double custom_risk = 0.0);
 
 //+------------------------------------------------------------------+
-//| Получение JSON текущих живых цен (тиков) для всех пар           |
+//| Получение JSON текущих живых цен и параметров для всех пар       |
 //+------------------------------------------------------------------+
 string GetLiveQuotesSummary()
 {
@@ -160,7 +160,15 @@ string GetLiveQuotesSummary()
       if(SymbolInfoTick(sym, tick))
       {
          if(count > 0) json += ",";
-         json += StringFormat("\"%s\":{\"bid\":%.5f,\"ask\":%.5f}", pair, tick.bid, tick.ask);
+         double c_size = SymbolInfoDouble(sym, SYMBOL_TRADE_CONTRACT_SIZE);
+         double t_size = SymbolInfoDouble(sym, SYMBOL_TRADE_TICK_SIZE);
+         double t_val  = SymbolInfoDouble(sym, SYMBOL_TRADE_TICK_VALUE);
+         double min_l  = SymbolInfoDouble(sym, SYMBOL_VOLUME_MIN);
+         double max_l  = SymbolInfoDouble(sym, SYMBOL_VOLUME_MAX);
+         double step_l = SymbolInfoDouble(sym, SYMBOL_VOLUME_STEP);
+         string cur    = AccountInfoString(ACCOUNT_CURRENCY);
+         json += StringFormat("\"%s\":{\"bid\":%.5f,\"ask\":%.5f,\"contract_size\":%.2f,\"tick_size\":%.5f,\"tick_val\":%.5f,\"min_lot\":%.2f,\"max_lot\":%.2f,\"lot_step\":%.2f,\"currency\":\"%s\"}",
+                              pair, tick.bid, tick.ask, c_size, t_size, t_val, min_l, max_l, step_l, cur);
          count++;
       }
    }
@@ -680,7 +688,7 @@ void ParseAndExecuteOrders(string json)
          continue;
       }
       double eff_risk  = (json_risk > 0.0) ? MathMin(json_risk, 0.50) : MathMin(InpRiskPercent, 0.50);
-      double max_safe_lot = CalculateRiskLot(broker_symbol, entry_ref, sl, eff_risk, InpFixedLot);
+      double max_safe_lot = CalculateRiskLot(broker_symbol, entry_ref, sl, eff_risk);
       double lot = 0.0;
       if(is_auto_risk)
       {
@@ -721,6 +729,33 @@ void ParseAndExecuteOrders(string json)
          string err_margin = StringFormat("Недостаточно свободной маржи: %.2f USD (< 50.0)", free_margin);
          Print("⛔ [SmartTrader] ОТМЕНА: ", broker_symbol, ". ", err_margin);
          ReportExecution(pair, "REJECTED_MARGIN", 0.0, 0.0, err_margin, sig_id);
+         if(sig_id > 0) MarkSignalProcessed(sig_id);
+         continue;
+      }
+
+      // Повторная проверка фактического объема и ожидаемого денежного риска перед отправкой
+      double pre_check_profit = 0.0;
+      ENUM_ORDER_TYPE check_type = is_long ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
+      double check_loss = 0.0;
+      if(OrderCalcProfit(check_type, broker_symbol, lot, entry_ref, sl, pre_check_profit) && pre_check_profit < 0.0)
+      {
+         check_loss = MathAbs(pre_check_profit);
+      }
+      else
+      {
+         double p_diff = MathAbs(entry_ref - sl);
+         double t_sz = SymbolInfoDouble(broker_symbol, SYMBOL_TRADE_TICK_SIZE);
+         double t_vl = SymbolInfoDouble(broker_symbol, SYMBOL_TRADE_TICK_VALUE);
+         if(t_sz > 0 && t_vl > 0)
+            check_loss = (p_diff / t_sz) * t_vl * lot;
+      }
+      double cur_bal = AccountInfoDouble(ACCOUNT_BALANCE);
+      double cur_eq  = AccountInfoDouble(ACCOUNT_EQUITY);
+      double max_allowed_loss = MathMin(cur_bal, cur_eq) * (eff_risk / 100.0);
+      if(check_loss > max_allowed_loss + 0.10)
+      {
+         PrintFormat("⛔ [SmartTrader] ОТМЕНА: риск перед отправкой (%.2f USD) превышает лимит (%.2f USD)! Сделка заблокирована.", check_loss, max_allowed_loss);
+         ReportExecution(pair, "REJECTED_RISK", entry_ref, 0.0, "Risk budget exceeded on pre-order check", sig_id);
          if(sig_id > 0) MarkSignalProcessed(sig_id);
          continue;
       }
@@ -1340,43 +1375,94 @@ void ManageOpenPositions()
 }
 
 //+------------------------------------------------------------------+
-//| Расчет объема лота на основе % риска от баланса                 |
+//| Расчет объема лота на основе % риска от баланса с учетом брокера |
 //+------------------------------------------------------------------+
-double CalculateRiskLot(string symbol, double entry_price, double sl_price, double custom_risk = 0.0, double fallback_lot = 0.01)
+double CalculateRiskLot(string symbol, double entry_price, double sl_price, double custom_risk = 0.0)
 {
    double diff = MathAbs(entry_price - sl_price);
    if(diff <= 0.00001) return 0.0;
 
-   // Exact monetary risk calculation across all symbols including Gold
-   // Formula: lot = risk_amt / ((diff / tick_size) * tick_val)
-   // Python and MQL5 apply strictly aligned conservative capital base: min(balance, equity)
-
-   double balance   = AccountInfoDouble(ACCOUNT_BALANCE);
-   double equity    = AccountInfoDouble(ACCOUNT_EQUITY);
+   double balance = AccountInfoDouble(ACCOUNT_BALANCE);
+   double equity  = AccountInfoDouble(ACCOUNT_EQUITY);
    if(balance <= 0.0 || equity <= 0.0) return 0.0;
    double effective_capital = MathMin(balance, equity);
    if(effective_capital <= 0.0) return 0.0;
 
-   double risk_pct  = (custom_risk > 0.0) ? MathMin(custom_risk, 0.50) : MathMin(InpRiskPercent, 0.50);
-   double risk_amt  = effective_capital * (risk_pct / 100.0);
-   
-   double tick_size = SymbolInfoDouble(symbol, SYMBOL_TRADE_TICK_SIZE);
-   double tick_val  = SymbolInfoDouble(symbol, SYMBOL_TRADE_TICK_VALUE);
-   if(tick_size <= 0 || tick_val <= 0) return 0.0;
-   
-   double pips = diff / tick_size;
-   double lot = risk_amt / (pips * tick_val);
-   
-   double min_lot = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MIN);
-   double max_lot = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MAX);
-   double step    = SymbolInfoDouble(symbol, SYMBOL_VOLUME_STEP);
-   if(min_lot <= 0 || max_lot <= 0) return 0.0;
-   
-   if(step > 0)
-      lot = MathFloor((lot + 1e-9) / step) * step;
+   double risk_pct = (custom_risk > 0.0) ? MathMin(custom_risk, 0.50) : MathMin(InpRiskPercent, 0.50);
+   double risk_amt = effective_capital * (risk_pct / 100.0);
+   if(risk_amt <= 0.0) return 0.0;
+
+   // Валидация параметров реального инструмента брокера
+   double contract_size = SymbolInfoDouble(symbol, SYMBOL_TRADE_CONTRACT_SIZE);
+   double tick_size     = SymbolInfoDouble(symbol, SYMBOL_TRADE_TICK_SIZE);
+   double tick_val      = SymbolInfoDouble(symbol, SYMBOL_TRADE_TICK_VALUE);
+   double min_lot       = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MIN);
+   double max_lot       = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MAX);
+   double step          = SymbolInfoDouble(symbol, SYMBOL_VOLUME_STEP);
+   double point         = SymbolInfoDouble(symbol, SYMBOL_POINT);
+
+   if(contract_size <= 0 || tick_size <= 0 || tick_val <= 0 || min_lot <= 0 || max_lot <= 0 || step <= 0)
+      return 0.0;
+
+   // Учет спреда и консервативного резерва на проскальзывание
+   double ask = SymbolInfoDouble(symbol, SYMBOL_ASK);
+   double bid = SymbolInfoDouble(symbol, SYMBOL_BID);
+   double spread_cost = (ask > bid) ? (ask - bid) : 0.0;
+   double slip_cost = InpSlippage * ((point > 0) ? point : tick_size);
+   double effective_diff = diff + spread_cost + slip_cost;
+
+   // Расчет ожидаемого убытка на 1.0 стандартный лот через OrderCalcProfit MT5
+   ENUM_ORDER_TYPE ord_type = (entry_price > sl_price) ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
+   double loss_per_std_lot = 0.0;
+   double calc_profit = 0.0;
+
+   double effective_sl_price = (ord_type == ORDER_TYPE_BUY) ? (entry_price - effective_diff) : (entry_price + effective_diff);
+   if(OrderCalcProfit(ord_type, symbol, 1.0, entry_price, effective_sl_price, calc_profit) && calc_profit < 0.0)
+   {
+      loss_per_std_lot = MathAbs(calc_profit);
+   }
+   else
+   {
+      // Проверенный эквивалент на основе тиков и размера контракта
+      loss_per_std_lot = (effective_diff / tick_size) * tick_val;
+   }
+
+   // Фиксированная комиссия FundingPips ~$3/лот (резерв $3.00 на лот)
+   loss_per_std_lot += 3.0;
+
+   if(loss_per_std_lot <= 0.0) return 0.0;
+
+   // Проверка риска на минимальном лоте брокера (0.01)
+   double min_lot_risk = min_lot * loss_per_std_lot;
+   if(min_lot_risk > risk_amt + 1e-9)
+      return 0.0; // Риск на мин. лоте превышает бюджет -> NO TRADE
+
+   double raw_lot = risk_amt / loss_per_std_lot;
+   double lot = MathFloor((raw_lot + 1e-9) / step) * step;
+
    if(lot < min_lot)
-      return 0.0; // Risk budget exceeded by minimum lot -> NO TRADE
-   return MathMin(max_lot, lot);
+      return 0.0;
+   lot = MathMin(max_lot, lot);
+
+   // Повторная проверка ожидаемого денежного риска перед возвратом
+   double check_profit = 0.0;
+   double expected_loss = 0.0;
+   if(OrderCalcProfit(ord_type, symbol, lot, entry_price, sl_price, check_profit) && check_profit < 0.0)
+   {
+      expected_loss = MathAbs(check_profit) + (lot * (spread_cost + slip_cost) * (tick_val / tick_size)) + (lot * 3.0);
+   }
+   else
+   {
+      expected_loss = lot * loss_per_std_lot;
+   }
+
+   if(expected_loss > risk_amt + 1e-6)
+   {
+      lot = MathFloor((lot - step + 1e-9) / step) * step;
+      if(lot < min_lot) return 0.0;
+   }
+
+   return lot;
 }
 
 //+------------------------------------------------------------------+

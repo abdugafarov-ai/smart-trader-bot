@@ -120,6 +120,7 @@ def calculate_trade_costs(
             "slippage": round(slip_val, 2) if slip_val is not None else None,
             "net_pnl": round(net, 2),
             "is_complete": True,
+            "cost_status": "COMPLETE",
         }
     elif reported_profit is not None:
         rep_val = float(reported_profit)
@@ -130,6 +131,7 @@ def calculate_trade_costs(
             "slippage": round(slip_val, 2) if slip_val is not None else None,
             "net_pnl": round(rep_val, 2),
             "is_complete": False,
+            "cost_status": "INCOMPLETE_FEES_MISSING",
         }
     elif has_gross:
         return {
@@ -139,6 +141,7 @@ def calculate_trade_costs(
             "slippage": round(slip_val, 2) if slip_val is not None else None,
             "net_pnl": round(g_val, 2),
             "is_complete": False,
+            "cost_status": "INCOMPLETE_FEES_MISSING",
         }
     else:
         return {
@@ -148,6 +151,7 @@ def calculate_trade_costs(
             "slippage": round(slip_val, 2) if slip_val is not None else None,
             "net_pnl": None,
             "is_complete": False,
+            "cost_status": "INCOMPLETE_NO_DATA",
         }
 
 
@@ -197,16 +201,46 @@ def calculate_duration(
         return None, "N/A"
 
 
+def calculate_pips(
+    symbol: str,
+    entry_price: Optional[float],
+    close_price: Optional[float],
+    direction: str = "BUY",
+    pip_mult: Optional[float] = None,
+) -> Optional[float]:
+    """
+    Вычисляет изменение цены в пунктах (pips) с учетом инструмента и направления.
+    Если entry_price или close_price отсутствует / некорректен, возвращает None (честный N/A).
+    """
+    if entry_price is None or close_price is None:
+        return None
+    try:
+        e = float(entry_price)
+        c = float(close_price)
+        if not math.isfinite(e) or not math.isfinite(c) or e <= 0.0 or c <= 0.0:
+            return None
+        if pip_mult is None or pip_mult <= 0:
+            sym_u = str(symbol).upper()
+            pip_mult = 100.0 if "JPY" in sym_u else (10.0 if "XAU" in sym_u else 10000.0)
+        dir_u = str(direction).upper()
+        raw_pips = (c - e) * pip_mult if ("BUY" in dir_u or "LONG" in dir_u) else (e - c) * pip_mult
+        return round(raw_pips, 1)
+    except (ValueError, TypeError):
+        return None
+
+
 def calculate_mae_mfe(
     symbol: str,
     direction: str,
-    entry_price: float,
+    entry_price: Optional[float],
     open_time: Optional[datetime | str] = None,
     close_time: Optional[datetime | str] = None,
     lot: float = 0.01,
     df_bars: Optional[pd.DataFrame] = None,
     bars: Optional[pd.DataFrame] = None,
     close_price: Optional[float] = None,
+    contract_size: Optional[float] = None,
+    pip_mult: Optional[float] = None,
 ) -> Dict[str, Any]:
     """
     Вычисляет MAE (Maximum Adverse Excursion) и MFE (Maximum Favorable Excursion).
@@ -216,10 +250,48 @@ def calculate_mae_mfe(
     if df_bars is None and bars is not None:
         df_bars = bars
     sym_u = symbol.upper()
-    pip_mult = 100.0 if "JPY" in sym_u else (10.0 if "XAU" in sym_u else 10000.0)
-    contract_size = 100.0 if "XAU" in sym_u else (1000.0 if "JPY" in sym_u else 100000.0)
+    if pip_mult is None or pip_mult <= 0:
+        pip_mult = 100.0 if "JPY" in sym_u else (10.0 if "XAU" in sym_u else 10000.0)
+    if contract_size is None or contract_size <= 0:
+        contract_size = 100.0 if "XAU" in sym_u else (1000.0 if "JPY" in sym_u else 100000.0)
     dir_u = direction.upper()
     is_long = ("BUY" in dir_u or "LONG" in dir_u)
+
+    if entry_price is None:
+        return {
+            "mae": None,
+            "mfe": None,
+            "mae_pips": None,
+            "mfe_pips": None,
+            "mae_usd": None,
+            "mfe_usd": None,
+            "status": f"UNAVAILABLE: missing valid entry price for {symbol}",
+            "is_available": False,
+        }
+    try:
+        e_chk = float(entry_price)
+        if not math.isfinite(e_chk) or e_chk <= 0.0:
+            return {
+                "mae": None,
+                "mfe": None,
+                "mae_pips": None,
+                "mfe_pips": None,
+                "mae_usd": None,
+                "mfe_usd": None,
+                "status": f"UNAVAILABLE: invalid entry price for {symbol}",
+                "is_available": False,
+            }
+    except (ValueError, TypeError):
+        return {
+            "mae": None,
+            "mfe": None,
+            "mae_pips": None,
+            "mfe_pips": None,
+            "mae_usd": None,
+            "mfe_usd": None,
+            "status": f"UNAVAILABLE: invalid entry price for {symbol}",
+            "is_available": False,
+        }
 
     if isinstance(open_time, (int, float)):
         ot_str = datetime.fromtimestamp(open_time, tz=timezone.utc).isoformat()
@@ -238,6 +310,18 @@ def calculate_mae_mfe(
         ct_str = close_time.isoformat()
     else:
         ct_str = "N/A"
+
+    if not open_time or not close_time or ot_str == "N/A" or ct_str == "N/A":
+        return {
+            "mae": None,
+            "mfe": None,
+            "mae_pips": None,
+            "mfe_pips": None,
+            "mae_usd": None,
+            "mfe_usd": None,
+            "status": f"UNAVAILABLE: missing execution timestamps for {symbol}",
+            "is_available": False,
+        }
 
     if df_bars is None or df_bars.empty:
         return {

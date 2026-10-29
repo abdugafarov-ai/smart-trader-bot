@@ -276,7 +276,7 @@ def format_order_activated(signal: dict, is_admin: bool = False) -> str:
 
 # ── 6. ЭТАП 3: Результат Сделки (TP / SL / EXP) ─────────────
 
-def format_signal_result(signal: dict, status: str, close_price: float, pnl_pips: float) -> str:
+def format_signal_result(signal: dict, status: str, close_price: float, pnl_pips: float | None = None) -> str:
     """
     ЭТАП 3: Результат сделки (Bloomberg Terminal Style).
     """
@@ -289,6 +289,9 @@ def format_signal_result(signal: dict, status: str, close_price: float, pnl_pips
     close_str = format_price(close_price, symbol)
     rr = signal.get('risk_reward') or 2.5
 
+    pips_str = f"+{abs(pnl_pips):.1f} pips" if pnl_pips is not None else "N/A"
+    pips_loss_str = f"-{abs(pnl_pips):.1f} pips" if pnl_pips is not None else "N/A"
+
     if status in ('TP1_HIT', 'TP2_HIT'):
         target_name = "TARGET 1" if status == 'TP1_HIT' else "TARGET 2"
         return (
@@ -300,7 +303,7 @@ def format_signal_result(signal: dict, status: str, close_price: float, pnl_pips
             f"┌── <b>ФИНАНСОВЫЙ РЕЗУЛЬТАТ</b> ───────────\n"
             f"│ 📍 <b>ENTRY:</b>  <code>{entry}</code>\n"
             f"│ 🎯 <b>EXIT:</b>   <code>{close_str}</code>\n"
-            f"│ 💰 <b>PNL:</b>    <code>+{abs(pnl_pips):.1f} pips</code>\n"
+            f"│ 💰 <b>PNL:</b>    <code>{pips_str}</code>\n"
             f"│ 📐 <b>R:R:</b>    <code>1:{rr:.1f} ✅</code>\n"
             f"└──────────────────────────────────────\n"
             f"💸 <i>Зафиксируйте прибыль или переведите стоп в безубыток.</i>"
@@ -315,7 +318,7 @@ def format_signal_result(signal: dict, status: str, close_price: float, pnl_pips
             f"┌── <b>ФИКСАЦИЯ УБЫТКА</b> ─────────────────\n"
             f"│ 📍 <b>ENTRY:</b>  <code>{entry}</code>\n"
             f"│ 🛑 <b>EXIT:</b>   <code>{close_str}</code>\n"
-            f"│ 📉 <b>PNL:</b>    <code>-{abs(pnl_pips):.1f} pips</code>\n"
+            f"│ 📉 <b>PNL:</b>    <code>{pips_loss_str}</code>\n"
             f"└──────────────────────────────────────\n\n"
             f"🛑 <b>РАЗБОР СТОПА:</b>\n"
             f"• Импульсный пробой уровня / снятие ликвидности рынком.\n"
@@ -353,17 +356,21 @@ def format_manual_open(symbol: str, order_type: str, volume: float, price: float
     )
 
 
-def format_manual_close(symbol: str, profit: float, pnl_pips: float, price: float) -> str:
+def format_manual_close(symbol: str, profit: float, pnl_pips: float | None, price: float) -> str:
     """Уведомление о досрочном ручном закрытии сделки пользователем в MT5 (только для Администратора)."""
     profit_sign = "+" if profit >= 0 else ""
-    pips_sign = "+" if pnl_pips >= 0 else ""
+    if pnl_pips is not None:
+        pips_sign = "+" if pnl_pips >= 0 else ""
+        pips_part = f" ({pips_sign}{pnl_pips:.1f} pips)"
+    else:
+        pips_part = " (N/A pips)"
     price_str = format_price(price, symbol)
     profit_emoji = "💵" if profit > 0 else ("🛡" if profit == 0 else "📉")
     return (
         f"👑 <b>MT5: РУЧНОЕ ЗАКРЫТИЕ СДЕЛКИ</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         f"• Пара: <b>{symbol}</b>\n"
-        f"• Итог: {profit_emoji} <b>{profit_sign}{profit:.2f} USD</b> ({pips_sign}{pnl_pips:.1f} pips)\n"
+        f"• Итог: {profit_emoji} <b>{profit_sign}{profit:.2f} USD</b>{pips_part}\n"
         f"• Цена закрытия: <code>{price_str}</code>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         f"💼 <i>Сделка закрыта вручную в терминале MT5.</i>"

@@ -9,6 +9,7 @@ from pathlib import Path
 from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any, Tuple
 import json
+import pandas as pd
 
 from utils.trade_metrics import (
     calculate_planned_rr,
@@ -16,6 +17,7 @@ from utils.trade_metrics import (
     calculate_trade_costs,
     calculate_duration,
     calculate_mae_mfe,
+    calculate_pips,
     detect_trading_session,
 )
 from utils.trade_export import (
@@ -208,16 +210,19 @@ async def init_db():
                 mae_mfe_status TEXT,
                 comment TEXT DEFAULT '',
                 account TEXT,
+                cost_status TEXT DEFAULT 'INCOMPLETE_FEES_MISSING',
                 raw_telemetry TEXT,
                 created_at TEXT NOT NULL
             )
         """)
 
-        # Migration: ensure account column exists on trade_history
+        # Migration: ensure account and cost_status columns exist on trade_history
         cursor = await db.execute("PRAGMA table_info(trade_history);")
         th_cols = [row[1] for row in await cursor.fetchall()]
         if th_cols and "account" not in th_cols:
             await db.execute("ALTER TABLE trade_history ADD COLUMN account TEXT;")
+        if th_cols and "cost_status" not in th_cols:
+            await db.execute("ALTER TABLE trade_history ADD COLUMN cost_status TEXT DEFAULT 'INCOMPLETE_FEES_MISSING';")
 
         # Миграция существующих исторических сделок из broker_deals в trade_history если trade_history пуста
         cursor = await db.execute("SELECT COUNT(*) FROM trade_history")
@@ -243,13 +248,22 @@ async def init_db():
                     datetime.fromtimestamp(c_time_int, tz=timezone.utc).isoformat()
                     if c_time_int else datetime.now(timezone.utc).isoformat()
                 )
-                dur_sec, dur_str = calculate_duration(c_time_iso, c_time_iso)
-                t_sess = detect_trading_session(c_time_iso)
+                open_time_int = d.get("open_time")
+                open_time_iso = (
+                    datetime.fromtimestamp(open_time_int, tz=timezone.utc).isoformat()
+                    if open_time_int and open_time_int > 0 else None
+                )
+                dur_sec, dur_str = calculate_duration(open_time_iso, c_time_iso)
+                t_sess = detect_trading_session(open_time_iso or c_time_iso)
                 sym = d.get("symbol", "")
                 deal_type = d.get("deal_type", "BUY")
                 dir_clean = "BUY" if "BUY" in deal_type else "SELL"
                 pnl = float(d.get("profit_usd") or 0.0)
                 res_val = "TP1_HIT" if pnl > 0 else ("SL_HIT" if pnl < 0 else "BREAKEVEN")
+                migrated_pips = calculate_pips(sym, entry_p, close_p, dir_clean)
+                comm_val = d.get("commission")
+                swap_val = d.get("swap")
+                cost_stat = "COMPLETE" if (comm_val is not None and swap_val is not None) else "INCOMPLETE_FEES_MISSING"
                 await db.execute("""
                     INSERT INTO trade_history (
                         record_type, position_id, order_id, close_order_id,
@@ -259,23 +273,27 @@ async def init_db():
                         signal_time, open_time, close_time, duration_seconds, duration_str,
                         entry_type, strategy, setup_version, trading_session,
                         gross_profit, commission, swap, slippage,
-                        net_pnl, pnl_pips, result,
+                        net_pnl, pnl_pips, result, cost_status,
                         comment, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     d.get("record_type") or "LIVE", pos_id, d.get("order_id") or 0, 0,
                     0, d.get("ticket", 0), pos_id, d.get("signal_id"),
                     sym, sym, dir_clean, float(d.get("lot") or 0.01),
                     entry_p, close_p,
-                    c_time_iso, c_time_iso, c_time_iso, dur_sec, dur_str,
+                    open_time_iso, open_time_iso, c_time_iso, dur_sec, dur_str,
                     "AUTO", "ICT_SMC", "v1.0", t_sess,
-                    d.get("gross_profit"), d.get("commission"), d.get("swap"), d.get("slippage"),
-                    pnl, 0.0, res_val,
+                    d.get("gross_profit"), comm_val, swap_val, d.get("slippage"),
+                    pnl, migrated_pips, res_val, cost_stat,
                     d.get("comment", ""), d.get("created_at") or c_time_iso
                 ))
             if b_rows:
                 await db.commit()
                 logger.info("Migrated %d existing broker deals into trade_history", len(b_rows))
+
+        # Data integrity cleanup: do not fabricate zeros for unknown prices, durations, or pips
+        await db.execute("UPDATE trade_history SET pnl_pips = NULL WHERE (entry_price IS NULL OR entry_price <= 0) AND pnl_pips = 0.0;")
+        await db.execute("UPDATE trade_history SET duration_seconds = NULL, duration_str = 'N/A' WHERE open_time IS NULL OR open_time = '';")
 
         # Автоматическая очистка старых зависших PENDING ордеров старше 24ч при старте
         from datetime import timedelta
@@ -676,7 +694,7 @@ async def close_signal_by_broker(
                 raw_pips = (close_p - entry_val) * pip_mult if dir_clean == "BUY" else (entry_val - close_p) * pip_mult
                 pnl_pips = round(raw_pips, 1)
             else:
-                pnl_pips = 0.0
+                pnl_pips = None
 
             # 3. Торговые издержки и чистый PnL
             costs = calculate_trade_costs(
@@ -691,7 +709,7 @@ async def close_signal_by_broker(
             reason_u = str(reason or "").upper()
             if "PARTIAL" in reason_u:
                 status = reason_u if ("TP" in reason_u or "SL" in reason_u) else "PARTIAL_CLOSE"
-            elif "BREAKEVEN" in reason_u or (net_profit >= -0.50 and abs(pnl_pips) <= 3.5 and "TP" not in reason_u):
+            elif "BREAKEVEN" in reason_u or (net_profit >= -0.50 and pnl_pips is not None and abs(pnl_pips) <= 3.5 and "TP" not in reason_u):
                 status = "BREAKEVEN"
             elif net_profit > 0:
                 status = "TP1_HIT"
@@ -700,7 +718,9 @@ async def close_signal_by_broker(
             else:
                 status = "BREAKEVEN"
 
-            res_text = f"MT5: {net_profit:+.2f}$ ({reason})" if reason else f"MT5: {net_profit:+.2f}$"
+            cost_status = costs.get("cost_status", "COMPLETE" if costs.get("is_complete") else "INCOMPLETE_FEES_MISSING")
+            incomplete_tag = "" if costs.get("is_complete", True) else " [расходы неполные]"
+            res_text = f"MT5: {net_profit:+.2f}$ ({reason}){incomplete_tag}" if reason else f"MT5: {net_profit:+.2f}${incomplete_tag}"
 
             # 4. Расчет R-multiple и параметров риск-менеджмента
             init_sl = float(sig.get("initial_sl") or sig.get("stop_loss") or 0.0) or None
@@ -735,7 +755,7 @@ async def close_signal_by_broker(
             mae_res = calculate_mae_mfe(
                 symbol=sym_u,
                 direction=dir_clean,
-                entry_price=entry_p if entry_p > 0 else close_p,
+                entry_price=entry_val,
                 open_time=open_time_str,
                 close_time=close_time_str,
                 lot=trade_lot,
@@ -773,10 +793,10 @@ async def close_signal_by_broker(
                     entry_type, strategy, setup_version, trading_session,
                     balance_before, equity_before, risk_usd, risk_pct, planned_rr, actual_r,
                     gross_profit, commission, swap, slippage, slippage_pts,
-                    net_pnl, pnl_pips, result,
+                    net_pnl, pnl_pips, result, cost_status,
                     mae, mfe, mae_pips, mfe_pips, mae_mfe_status,
                     comment, raw_telemetry, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     rec_type, pos_ticket, sig.get("order_id") or 0, 0,
                     0, ticket, pos_ticket, sig_id,
@@ -786,7 +806,7 @@ async def close_signal_by_broker(
                     sig.get("order_type") or "AUTO", strat, s_ver, t_session,
                     sig.get("balance_before"), sig.get("equity_before"), risk_usd, risk_pct, planned_rr, actual_r,
                     costs["gross_profit"], costs["commission"], costs["swap"], costs["slippage"], None,
-                    net_profit, pnl_pips, status,
+                    net_profit, pnl_pips, status, cost_status,
                     mae_res["mae"], mae_res["mfe"], mae_res["mae_pips"], mae_res["mfe_pips"], mae_res["status"],
                     res_text, json.dumps({"reason": reason, "profit_usd": profit_usd}), now_iso
                 )
@@ -1032,6 +1052,11 @@ async def save_trade_record(t: dict) -> int:
         mfe_pips = t.get("mfe_pips")
         mae_mfe_status = t.get("mae_mfe_status") or ("AVAILABLE" if mae is not None else "UNAVAILABLE: requires historical tick/bar data")
 
+        pnl_pips_val = t.get("pnl_pips")
+        if pnl_pips_val is None and entry_val is not None and close_p > 0:
+            pnl_pips_val = calculate_pips(symbol, entry_val, close_p, dir_clean)
+        cost_status = t.get("cost_status") or ("COMPLETE" if (t.get("commission") is not None and t.get("swap") is not None) else "INCOMPLETE_FEES_MISSING")
+
         async with aiosqlite.connect(str(DB_PATH), timeout=30.0) as db:
             cursor = await db.execute(
                 """INSERT INTO trade_history (
@@ -1043,10 +1068,10 @@ async def save_trade_record(t: dict) -> int:
                     entry_type, strategy, setup_version, trading_session,
                     balance_before, equity_before, risk_usd, risk_pct, planned_rr, actual_r,
                     gross_profit, commission, swap, slippage, slippage_pts,
-                    net_pnl, pnl_pips, result,
+                    net_pnl, pnl_pips, result, cost_status,
                     mae, mfe, mae_pips, mfe_pips, mae_mfe_status,
                     comment, account, raw_telemetry, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     rec_type, pos_id, t.get("order_id"), t.get("close_order_id"),
                     t.get("deal_in_ticket"), t.get("deal_out_ticket") or pos_id, t.get("broker_ticket") or pos_id, t.get("signal_id"),
@@ -1056,7 +1081,7 @@ async def save_trade_record(t: dict) -> int:
                     t.get("entry_type") or "AUTO", t.get("strategy") or "ICT_SMC", t.get("setup_version") or "v1.0", t_session,
                     t.get("balance_before"), t.get("equity_before"), t.get("risk_usd"), t.get("risk_pct"), t.get("planned_rr"), t.get("actual_r"),
                     t.get("gross_profit"), t.get("commission"), t.get("swap"), t.get("slippage"), t.get("slippage_pts"),
-                    net_profit, t.get("pnl_pips") or 0.0, t.get("result") or "CLOSED",
+                    net_profit, pnl_pips_val, t.get("result") or "CLOSED", cost_status,
                     mae, mfe, mae_pips, mfe_pips, mae_mfe_status,
                     t.get("comment") or "", t.get("account") or "", t.get("raw_telemetry") or "", now_iso
                 )
@@ -1234,7 +1259,7 @@ async def get_trade_by_position_id(position_id: int) -> Optional[dict]:
         return None
 
 
-async def sync_broker_deals(deals: list[dict]) -> list[dict]:
+async def sync_broker_deals(deals: list[dict], df_bars: Optional[pd.DataFrame] = None) -> list[dict]:
     """
     Синхронизирует реальные закрытые сделки терминала MetaTrader 5:
     - Надёжно связывает вход и выход позиции по position_id/ticket
@@ -1249,11 +1274,16 @@ async def sync_broker_deals(deals: list[dict]) -> list[dict]:
         new_deals = []
         reset_ts = await get_stats_reset_time()
         telemetry = {}
+        symbol_specs = {}
         try:
             from trading.execution_bridge import bridge_manager
             telemetry = bridge_manager.mt5_telemetry or {}
+            symbol_specs = bridge_manager.symbol_specs or {}
         except Exception:
             telemetry = {}
+            symbol_specs = {}
+
+        cached_gold_bars = None
 
         async with aiosqlite.connect(str(DB_PATH), timeout=30.0) as db:
             db.row_factory = aiosqlite.Row
@@ -1306,7 +1336,11 @@ async def sync_broker_deals(deals: list[dict]) -> list[dict]:
                     c_sig = await db.execute("SELECT * FROM signals WHERE id = ?", (sig_id,))
                     sig_row = await c_sig.fetchone()
                     if sig_row:
-                        sig_match = dict(sig_row)
+                        cand = dict(sig_row)
+                        sig_pos = cand.get("position_id") or cand.get("broker_ticket")
+                        # Verify Entry and Close belong to the same MT5 position
+                        if not sig_pos or int(sig_pos) == pos_id:
+                            sig_match = cand
                 elif pos_id > 0:
                     c_sig = await db.execute(
                         "SELECT * FROM signals WHERE broker_ticket = ? OR position_id = ? ORDER BY id DESC LIMIT 1",
@@ -1319,7 +1353,21 @@ async def sync_broker_deals(deals: list[dict]) -> list[dict]:
                 if (entry_p is None or entry_p <= 0.0) and sig_match:
                     entry_p = float(sig_match.get("entry_price") or 0.0) or None
 
-                # 2. Если сигнала нет, ищем в trade_history по position_id
+                open_time_val = d.get("open_time")
+
+                # 2. Поиск парной сделки входа в broker_deals по position_id
+                if (entry_p is None or entry_p <= 0.0) and pos_id > 0:
+                    c_bd = await db.execute(
+                        "SELECT price, entry_price, close_time, open_time FROM broker_deals WHERE position_id = ? AND ticket != ? ORDER BY close_time ASC LIMIT 1",
+                        (pos_id, ticket)
+                    )
+                    bd_row = await c_bd.fetchone()
+                    if bd_row:
+                        entry_p = float(bd_row[1] or bd_row[0] or 0.0) or None
+                        if not open_time_val:
+                            open_time_val = bd_row[3] or bd_row[2]
+
+                # 3. Если сигнала нет, ищем в trade_history по position_id
                 if (entry_p is None or entry_p <= 0.0) and pos_id > 0:
                     c_th = await db.execute(
                         "SELECT entry_price FROM trade_history WHERE position_id = ? AND entry_price IS NOT NULL LIMIT 1",
@@ -1341,27 +1389,35 @@ async def sync_broker_deals(deals: list[dict]) -> list[dict]:
                     reported_profit=profit,
                 )
                 net_profit = costs["net_pnl"]
+                cost_status = costs.get("cost_status", "COMPLETE" if costs.get("is_complete") else "INCOMPLETE_FEES_MISSING")
 
-                # Пункты (pips)
-                pip_mult = 100.0 if "JPY" in sym else (10.0 if "XAU" in sym else 10000.0)
+                # Пункты (pips) из спецификаций брокера
+                spec = symbol_specs.get(sym, symbol_specs.get(broker_sym, {}))
+                contract_size = spec.get("contract_size")
+                if "JPY" in sym:
+                    pip_mult = 100.0
+                elif "XAU" in sym or "GOLD" in sym:
+                    pip_mult = 10.0
+                else:
+                    pip_mult = 10000.0
+
                 if entry_p and entry_p > 0 and close_p > 0:
                     raw_pips = (close_p - entry_p) * pip_mult if dir_clean == "BUY" else (entry_p - close_p) * pip_mult
                     pnl_pips = round(raw_pips, 1)
                 else:
-                    pnl_pips = 0.0
+                    pnl_pips = None
 
                 # Время и длительность
                 close_time_iso = (
                     datetime.fromtimestamp(close_time_int, tz=timezone.utc).isoformat()
                     if close_time_int > 0 else now_iso
                 )
-                open_time_val = d.get("open_time")
                 if open_time_val and isinstance(open_time_val, (int, float)) and open_time_val > 0:
                     open_time_iso = datetime.fromtimestamp(open_time_val, tz=timezone.utc).isoformat()
                 elif open_time_val and isinstance(open_time_val, str):
                     open_time_iso = open_time_val
                 elif sig_match:
-                    open_time_iso = sig_match.get("activated_at") or sig_match.get("created_at") or close_time_iso
+                    open_time_iso = sig_match.get("activated_at") or sig_match.get("created_at")
                 else:
                     open_time_iso = None
 
@@ -1374,7 +1430,7 @@ async def sync_broker_deals(deals: list[dict]) -> list[dict]:
                     res_status = reason_u if ("TP" in reason_u or "SL" in reason_u) else "PARTIAL_CLOSE"
                 elif "MANUAL" in reason_u:
                     res_status = "MANUAL_CLOSE"
-                elif "BREAKEVEN" in reason_u or (net_profit >= -0.50 and abs(pnl_pips) <= 3.5 and "TP" not in reason_u):
+                elif "BREAKEVEN" in reason_u or (net_profit >= -0.50 and pnl_pips is not None and abs(pnl_pips) <= 3.5 and "TP" not in reason_u):
                     res_status = "BREAKEVEN"
                 elif net_profit > 0:
                     res_status = "TP1_HIT"
@@ -1403,14 +1459,35 @@ async def sync_broker_deals(deals: list[dict]) -> list[dict]:
                     risk_usd=risk_usd,
                 )
 
-                # MAE / MFE
+                # MAE / MFE с поддержкой исторических баров
+                deal_bars = None
+                if "bars" in d and d["bars"] is not None:
+                    deal_bars = d["bars"] if isinstance(d["bars"], pd.DataFrame) else pd.DataFrame(d["bars"])
+                elif df_bars is not None:
+                    deal_bars = df_bars
+                elif "XAU" in sym or "GOLD" in sym:
+                    if cached_gold_bars is None:
+                        gold_csv = Path(__file__).resolve().parent.parent / "data" / "gold_candles" / "candles_XAUUSD_M5.csv"
+                        if gold_csv.exists():
+                            try:
+                                cached_gold_bars = pd.read_csv(gold_csv)
+                            except Exception:
+                                cached_gold_bars = False
+                        else:
+                            cached_gold_bars = False
+                    if isinstance(cached_gold_bars, pd.DataFrame):
+                        deal_bars = cached_gold_bars
+
                 mae_res = calculate_mae_mfe(
                     symbol=sym,
                     direction=dir_clean,
-                    entry_price=entry_p if entry_p else close_p,
+                    entry_price=entry_p,
                     open_time=open_time_iso,
                     close_time=close_time_iso,
                     lot=lot,
+                    df_bars=deal_bars,
+                    contract_size=contract_size,
+                    pip_mult=pip_mult,
                 )
 
                 strat = (sig_match.get("strategy") or sig_match.get("strategies_agreed")) if sig_match else "ICT_SMC"
@@ -1454,10 +1531,10 @@ async def sync_broker_deals(deals: list[dict]) -> list[dict]:
                         entry_type, strategy, setup_version, trading_session,
                         balance_before, equity_before, risk_usd, risk_pct, planned_rr, actual_r,
                         gross_profit, commission, swap, slippage, slippage_pts,
-                        net_pnl, pnl_pips, result,
+                        net_pnl, pnl_pips, result, cost_status,
                         mae, mfe, mae_pips, mfe_pips, mae_mfe_status,
                         comment, account, raw_telemetry, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         rec_type, pos_id, open_order_id, close_order_id,
                         deal_in_ticket, ticket, pos_id, sig_match.get("id") if sig_match else None,
@@ -1468,7 +1545,7 @@ async def sync_broker_deals(deals: list[dict]) -> list[dict]:
                         sig_match.get("balance_before") if sig_match else None, sig_match.get("equity_before") if sig_match else None,
                         risk_usd, risk_pct, planned_rr, actual_r,
                         costs["gross_profit"], costs["commission"], costs["swap"], costs["slippage"], None,
-                        net_profit, pnl_pips, res_status,
+                        net_profit, pnl_pips, res_status, cost_status,
                         mae_res["mae"], mae_res["mfe"], mae_res["mae_pips"], mae_res["mfe_pips"], mae_res["status"],
                         comment, d.get("account") or (telemetry.get("account") if telemetry else "") or "", json.dumps(d), now_iso
                     )
@@ -1476,12 +1553,13 @@ async def sync_broker_deals(deals: list[dict]) -> list[dict]:
 
                 # 3. Закрытие исходного сигнала в signals при наличии связи
                 if sig_match and sig_match.get("id"):
+                    incomplete_tag = "" if costs.get("is_complete", True) else " [расходы неполные]"
                     await db.execute(
                         """UPDATE signals
                            SET status = ?, close_price = ?, pnl_pips = ?, closed_at = ?, result = ?,
                                actual_r = ?, gross_profit = ?, commission = ?, swap = ?, duration_seconds = ?
                            WHERE id = ?""",
-                        (res_status, close_p, pnl_pips, now_iso, f"MT5: {net_profit:+.2f}$", actual_r,
+                        (res_status, close_p, pnl_pips, now_iso, f"MT5: {net_profit:+.2f}${incomplete_tag}", actual_r,
                          costs["gross_profit"], costs["commission"], costs["swap"], dur_sec, sig_match["id"])
                     )
 
@@ -1502,6 +1580,8 @@ async def sync_broker_deals(deals: list[dict]) -> list[dict]:
                         "gross_profit": costs["gross_profit"],
                         "commission": costs["commission"],
                         "swap": costs["swap"],
+                        "cost_status": cost_status,
+                        "pnl_pips": pnl_pips,
                         "actual_r": actual_r,
                         "planned_rr": planned_rr,
                         "duration_str": dur_str,
@@ -1615,6 +1695,8 @@ async def get_recent_signals(limit: int = 20) -> list[dict]:
                         "record_type": t.get("record_type", "LIVE"),
                         "duration_str": t.get("duration_str", "N/A"),
                         "trading_session": t.get("trading_session", "Unknown"),
+                        "cost_status": t.get("cost_status") or ("COMPLETE" if (t.get("commission") is not None and t.get("swap") is not None) else "INCOMPLETE_FEES_MISSING"),
+                        "pnl_pips": t.get("pnl_pips"),
                     })
             else:
                 # Fallback на broker_deals со строгим разделением entry_price и close_price
@@ -1674,6 +1756,8 @@ async def get_recent_signals(limit: int = 20) -> list[dict]:
                         "lot": d.get("lot", 0.01),
                         "created_at": d.get("created_at"),
                         "result": d.get("comment") or "",
+                        "cost_status": "INCOMPLETE_FEES_MISSING",
+                        "pnl_pips": None,
                     })
 
         return results[:limit]

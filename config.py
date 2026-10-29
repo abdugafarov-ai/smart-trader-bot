@@ -467,7 +467,7 @@ def _mask_account_id(acct: str) -> str:
 
 
 CHALLENGE_BROKER: str = os.getenv("CHALLENGE_BROKER", str(_challenge_cfg.get("broker", "FundingPips")))
-CHALLENGE_ACCOUNT: str = os.getenv("CHALLENGE_ACCOUNT", str(_challenge_cfg.get("account_number", "")))
+CHALLENGE_ACCOUNT: str = os.getenv("CHALLENGE_ACCOUNT", "")
 CHALLENGE_ACCOUNT_MASKED: str = _mask_account_id(CHALLENGE_ACCOUNT)
 CHALLENGE_PLAN: str = os.getenv(
     "CHALLENGE_PLAN", str(_challenge_cfg.get("plan_name", "$5k · 2 Step Flex (Biggest Max Loss)"))

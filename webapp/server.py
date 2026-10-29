@@ -302,7 +302,7 @@ async def bridge_get_orders(request: web.Request) -> web.Response:
                             direction = sig_dict.get('direction', 'LONG') if sig_dict else ('LONG' if 'BUY' in deal_type else 'SHORT')
                             sl_p = float(sig_dict.get('stop_loss') or 0.0)
                             tp_p = float(sig_dict.get('take_profit_1') or 0.0)
-                            pnl_pips = (close_p - entry_p if direction == 'LONG' else entry_p - close_p) * pip_mult if (entry_p and close_p) else 0.0
+                            pnl_pips = (close_p - entry_p if direction == 'LONG' else entry_p - close_p) * pip_mult if (entry_p and close_p) else None
 
                             if is_manual:
                                 msg = format_manual_close(sym, profit_val, pnl_pips, close_p)
@@ -321,12 +321,16 @@ async def bridge_get_orders(request: web.Request) -> web.Response:
                                     logger.error("Outcome chart generation error for sync_broker_deals: %s", chart_err)
                                 await _send_admin_only(msg, photo_bytes=chart_bytes)
                             else:
+                                pips_pos_str = f"+{abs(pnl_pips):.1f} pips" if pnl_pips is not None else "N/A pips"
+                                pips_neg_str = f"-{abs(pnl_pips):.1f} pips" if pnl_pips is not None else "N/A pips"
+                                pips_be_str = f"({pnl_pips:+.1f} pips)" if pnl_pips is not None else "(N/A pips)"
+
                                 if profit_val > 0:
                                     msg_admin = (
                                         f"🏆 <b>ТЕЙК-ПРОФИТ ВЗЯТ (METATRADER 5)!</b>\n"
                                         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
                                         f"📊 <b>{sym}</b> | <code>{deal_type} {lot} lot</code>\n"
-                                        f"💵 Результат: <b>+{profit_val:.2f} USD</b> (+{abs(pnl_pips):.1f} pips)\n"
+                                        f"💵 Результат: <b>+{profit_val:.2f} USD</b> ({pips_pos_str})\n"
                                         f"📍 Цена закрытия: <code>{close_p}</code>\n"
                                         f"🎫 Билет: <code>#{ticket_no}</code>\n"
                                         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -336,7 +340,7 @@ async def bridge_get_orders(request: web.Request) -> web.Response:
                                         f"🏆 <b>ТЕЙК-ПРОФИТ ВЗЯТ (СИГНАЛ ЗАКРЫТ)!</b>\n"
                                         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
                                         f"📊 <b>{sym}</b> | <code>{deal_type}</code>\n"
-                                        f"📈 Результат: <b>+{abs(pnl_pips):.1f} pips</b> (Цель достигнута 🎯)\n"
+                                        f"📈 Результат: <b>{pips_pos_str}</b> (Цель достигнута 🎯)\n"
                                         f"📍 Цена выхода: <code>{close_p}</code>\n"
                                         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
                                         f"🎯 <i>Цель полностью достигнута по алгоритму ICT/SMC. Прибыль зафиксирована.</i>"
@@ -347,7 +351,7 @@ async def bridge_get_orders(request: web.Request) -> web.Response:
                                         f"🛑 <b>СТОП-ЛОСС СРАБОТАЛ (METATRADER 5)</b>\n"
                                         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
                                         f"📊 <b>{sym}</b> | <code>{deal_type} {lot} lot</code>\n"
-                                        f"📉 Фиксация убытка: <b>-{abs(profit_val):.2f} USD</b> (-{abs(pnl_pips):.1f} pips)\n"
+                                        f"📉 Фиксация убытка: <b>-{abs(profit_val):.2f} USD</b> ({pips_neg_str})\n"
                                         f"📍 Цена выхода: <code>{close_p}</code>\n"
                                         f"🎫 Билет: <code>#{ticket_no}</code>\n\n"
                                         f"🛑 <b>РАЗБОР СТОПА:</b>\n"
@@ -360,7 +364,7 @@ async def bridge_get_orders(request: web.Request) -> web.Response:
                                         f"🛑 <b>СТОП-ЛОСС СРАБОТАЛ (ФИКСАЦИЯ УБЫТКА)</b>\n"
                                         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
                                         f"📊 <b>{sym}</b> | <code>{deal_type}</code>\n"
-                                        f"📉 Итог: <b>-{abs(pnl_pips):.1f} pips</b>\n"
+                                        f"📉 Итог: <b>{pips_neg_str}</b>\n"
                                         f"📍 Цена выхода: <code>{close_p}</code>\n\n"
                                         f"🛑 <b>РАЗБОР СТОПА:</b>\n"
                                         f"• Импульсный пробой уровня / снятие ликвидности рынком.\n"
@@ -374,7 +378,7 @@ async def bridge_get_orders(request: web.Request) -> web.Response:
                                         f"🛡 <b>СДЕЛКА ЗАКРЫТА В БЕЗУБЫТОК!</b>\n"
                                         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
                                         f"📊 <b>{sym}</b> | <code>{deal_type} {lot} lot</code>\n"
-                                        f"💵 Результат: <b>{profit_val:+.2f} USD</b> ({pnl_pips:+.1f} pips)\n"
+                                        f"💵 Результат: <b>{profit_val:+.2f} USD</b> {pips_be_str}\n"
                                         f"📍 Цена закрытия: <code>{close_p}</code>\n"
                                         f"🎫 Билет: <code>#{ticket_no}</code>\n"
                                         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -643,8 +647,24 @@ async def bridge_get_orders(request: web.Request) -> web.Response:
                     continue
                 order_lot = round(req_lot, 2)
 
-            contract_mult = 100.0 if ("XAU" in sym_clean or "GOLD" in sym_clean) else (1000.0 if "JPY" in sym_clean else 100000.0)
+            spec = getattr(bridge_manager, "symbol_specs", {}).get(sym_clean, {})
+            contract_mult = float(spec.get("contract_size") or (100.0 if ("XAU" in sym_clean or "GOLD" in sym_clean) else (1000.0 if "JPY" in sym_clean else 100000.0)))
             expected_risk_usd = round(order_lot * sl_dist * contract_mult, 2) if not sig.get("broker_confirmed") else 0.0
+
+            # Повторная проверка ожидаемого риска перед отправкой ордера
+            eff_bal = bridge_manager.get_effective_balance(0.0)
+            risk_budget_usd = eff_bal * (min(bridge_manager.default_risk, config.AUTOTRADE_MAX_RISK) / 100.0)
+            if eff_bal > 0 and expected_risk_usd > risk_budget_usd + 0.10:
+                logger.warning(
+                    "Signal #%s (%s) REJECTED: expected risk ($%.2f) exceeds risk budget ($%.2f)",
+                    sig.get("id"), sym, expected_risk_usd, risk_budget_usd
+                )
+                await update_signal_status(
+                    sig.get("id"),
+                    "CANCELLED_BY_MT5",
+                    result=f"NO TRADE: ожидаемый риск ${expected_risk_usd:.2f} превышает бюджет ${risk_budget_usd:.2f}"
+                )
+                continue
 
             # Институциональная многофакторная валидация перед входом в рынок (включая суммарный открытый риск)
             can_open, hold_reason = bridge_manager.can_open_new_position(
@@ -866,11 +886,11 @@ async def bridge_post_report(request: web.Request) -> web.Response:
         elif action == "MANUAL_CLOSE":
             sig = await close_signal_by_broker(symbol, price, profit, "MANUAL_CLOSE")
             pip_mult = 100.0 if 'JPY' in symbol else (10.0 if 'XAU' in symbol else 10000.0)
-            entry = float(sig.get('entry_price') or price) if sig else price
+            entry = float(sig.get('entry_price')) if (sig and sig.get('entry_price')) else None
             direction = sig.get('direction', 'LONG') if sig else 'LONG'
             sl_val = float(sig.get('stop_loss') or 0.0) if sig else 0.0
             tp_val = float(sig.get('take_profit_1') or 0.0) if sig else 0.0
-            pnl_pips = (price - entry if direction == 'LONG' else entry - price) * pip_mult if entry else 0.0
+            pnl_pips = (price - entry if direction == 'LONG' else entry - price) * pip_mult if (entry is not None and price) else None
 
             from utils.formatters import format_manual_close
             msg = format_manual_close(symbol, profit, pnl_pips, price)
@@ -988,18 +1008,22 @@ async def bridge_post_report(request: web.Request) -> web.Response:
             is_tp = (not is_be) and (profit > 0 or "TP" in reason_u)
             is_sl = (not is_be) and (profit < 0 or "SL" in reason_u)
             pip_mult = 100.0 if 'JPY' in symbol else (10.0 if 'XAU' in symbol else 10000.0)
-            entry = float(sig.get('entry_price') or price) if sig else price
+            entry = float(sig.get('entry_price')) if (sig and sig.get('entry_price')) else None
             direction = sig.get('direction', 'LONG') if sig else ('LONG' if 'BUY' in reason.upper() else 'SHORT')
             sl_val = float(sig.get('stop_loss') or 0.0) if sig else 0.0
             tp_val = float(sig.get('take_profit_1') or 0.0) if sig else 0.0
-            pnl_pips = (price - entry if direction == 'LONG' else entry - price) * pip_mult if entry else 0.0
+            pnl_pips = (price - entry if direction == 'LONG' else entry - price) * pip_mult if (entry is not None and price) else None
+
+            pips_pos_str = f"+{abs(pnl_pips):.1f} pips" if pnl_pips is not None else "N/A"
+            pips_neg_str = f"-{abs(pnl_pips):.1f} pips" if pnl_pips is not None else "N/A"
+            pips_be_str = f"{pnl_pips:+.1f} pips" if pnl_pips is not None else "N/A"
 
             if is_tp:
                 msg_admin = (
                     f"🏆 <b>ТЕЙК-ПРОФИТ ВЗЯТ (METATRADER 5)!</b>\n"
                     f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
                     f"📊 <b>{symbol}</b> | <code>{direction}</code>\n"
-                    f"💵 Результат: <b>+{profit:.2f} USD</b> (+{abs(pnl_pips):.1f} pips)\n"
+                    f"💵 Результат: <b>+{profit:.2f} USD</b> ({pips_pos_str})\n"
                     f"📍 Цена закрытия: <code>{price:.5f}</code>\n"
                     f"🎫 Билет сделки: <code>#{ticket}</code>\n"
                     f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -1009,7 +1033,7 @@ async def bridge_post_report(request: web.Request) -> web.Response:
                     f"🏆 <b>ТЕЙК-ПРОФИТ ВЗЯТ (СИГНАЛ ЗАКРЫТ)!</b>\n"
                     f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
                     f"📊 <b>{symbol}</b> | <code>{direction}</code>\n"
-                    f"📈 Результат: <b>+{abs(pnl_pips):.1f} pips</b> (Цель достигнута 🎯)\n"
+                    f"📈 Результат: <b>{pips_pos_str}</b> (Цель достигнута 🎯)\n"
                     f"📍 Цена выхода: <code>{price:.5f}</code>\n"
                     f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
                     f"🎯 <i>Сделка полностью закрыта с фиксацией прибыли по алгоритму ICT/SMC.</i>"
@@ -1019,7 +1043,7 @@ async def bridge_post_report(request: web.Request) -> web.Response:
                     f"🛑 <b>СТОП-ЛОСС СРАБОТАЛ (METATRADER 5)</b>\n"
                     f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
                     f"📊 <b>{symbol}</b> | <code>{direction}</code>\n"
-                    f"📉 Фиксация убытка: <b>-{abs(profit):.2f} USD</b> (-{abs(pnl_pips):.1f} pips)\n"
+                    f"📉 Фиксация убытка: <b>-{abs(profit):.2f} USD</b> ({pips_neg_str})\n"
                     f"📍 Цена выхода: <code>{price:.5f}</code>\n"
                     f"🎫 Билет сделки: <code>#{ticket}</code>\n\n"
                     f"🛑 <b>РАЗБОР СТОПА:</b>\n"
@@ -1032,7 +1056,7 @@ async def bridge_post_report(request: web.Request) -> web.Response:
                     f"🛑 <b>СТОП-ЛОСС СРАБОТАЛ (ФИКСАЦИЯ УБЫТКА)</b>\n"
                     f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
                     f"📊 <b>{symbol}</b> | <code>{direction}</code>\n"
-                    f"📉 Итог: <b>-{abs(pnl_pips):.1f} pips</b>\n"
+                    f"📉 Итог: <b>{pips_neg_str}</b>\n"
                     f"📍 Цена выхода: <code>{price:.5f}</code>\n\n"
                     f"🛑 <b>РАЗБОР СТОПА:</b>\n"
                     f"• Импульсный пробой уровня / снятие ликвидности рынком.\n"
@@ -1045,7 +1069,7 @@ async def bridge_post_report(request: web.Request) -> web.Response:
                     f"🛡 <b>СДЕЛКА ЗАКРЫТА В БЕЗУБЫТОК!</b>\n"
                     f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
                     f"📊 <b>{symbol}</b> | <code>{direction}</code>\n"
-                    f"💵 Результат: <b>{profit:+.2f} USD</b> ({pnl_pips:+.1f} pips)\n"
+                    f"💵 Результат: <b>{profit:+.2f} USD</b> ({pips_be_str})\n"
                     f"📍 Цена закрытия: <code>{price:.5f}</code>\n"
                     f"🎫 Билет сделки: <code>#{ticket}</code>\n"
                     f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
