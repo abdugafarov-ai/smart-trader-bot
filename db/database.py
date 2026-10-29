@@ -744,10 +744,10 @@ async def close_signal_by_broker(
             )
 
             # 5. Время, длительность и торговая сессия
-            open_time_str = sig.get("activated_at") or sig.get("created_at") or now_iso
+            open_time_str = sig.get("activated_at") or sig.get("created_at") or None
             close_time_str = now_iso
             dur_sec, dur_str = calculate_duration(open_time_str, close_time_str)
-            t_session = sig.get("trading_session") or detect_trading_session(open_time_str)
+            t_session = sig.get("trading_session") or (detect_trading_session(open_time_str) if open_time_str else "Unknown")
             strat = sig.get("strategy") or sig.get("strategies_agreed") or "ICT_SMC"
             s_ver = sig.get("setup_version") or (f"{sig.get('stars')} stars" if sig.get("stars") else "v1.0")
 
@@ -1394,12 +1394,27 @@ async def sync_broker_deals(deals: list[dict], df_bars: Optional[pd.DataFrame] =
                 # Пункты (pips) из спецификаций брокера
                 spec = symbol_specs.get(sym, symbol_specs.get(broker_sym, {}))
                 contract_size = spec.get("contract_size")
-                if "JPY" in sym:
-                    pip_mult = 100.0
-                elif "XAU" in sym or "GOLD" in sym:
-                    pip_mult = 10.0
+                pt_val = spec.get("point")
+                dig_val = spec.get("digits")
+
+                if pt_val and dig_val and pt_val > 0:
+                    if dig_val in (3, 5):
+                        pip_mult = round(1.0 / (10.0 * pt_val), 1)
+                    elif dig_val in (2, 4) and ("XAU" in sym or "GOLD" in sym):
+                        pip_mult = 10.0
+                    elif dig_val == 2 and "JPY" in sym:
+                        pip_mult = 100.0
+                    elif dig_val == 4:
+                        pip_mult = 10000.0
+                    else:
+                        pip_mult = 100.0 if "JPY" in sym else (10.0 if "XAU" in sym or "GOLD" in sym else 10000.0)
                 else:
-                    pip_mult = 10000.0
+                    if "JPY" in sym:
+                        pip_mult = 100.0
+                    elif "XAU" in sym or "GOLD" in sym:
+                        pip_mult = 10.0
+                    else:
+                        pip_mult = 10000.0
 
                 if entry_p and entry_p > 0 and close_p > 0:
                     raw_pips = (close_p - entry_p) * pip_mult if dir_clean == "BUY" else (entry_p - close_p) * pip_mult

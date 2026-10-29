@@ -167,8 +167,10 @@ string GetLiveQuotesSummary()
          double max_l  = SymbolInfoDouble(sym, SYMBOL_VOLUME_MAX);
          double step_l = SymbolInfoDouble(sym, SYMBOL_VOLUME_STEP);
          string cur    = AccountInfoString(ACCOUNT_CURRENCY);
-         json += StringFormat("\"%s\":{\"bid\":%.5f,\"ask\":%.5f,\"contract_size\":%.2f,\"tick_size\":%.5f,\"tick_val\":%.5f,\"min_lot\":%.2f,\"max_lot\":%.2f,\"lot_step\":%.2f,\"currency\":\"%s\"}",
-                              pair, tick.bid, tick.ask, c_size, t_size, t_val, min_l, max_l, step_l, cur);
+         double point  = SymbolInfoDouble(sym, SYMBOL_POINT);
+         long   digits = SymbolInfoInteger(sym, SYMBOL_DIGITS);
+         json += StringFormat("\"%s\":{\"bid\":%.5f,\"ask\":%.5f,\"contract_size\":%.2f,\"tick_size\":%.5f,\"tick_val\":%.5f,\"min_lot\":%.2f,\"max_lot\":%.2f,\"lot_step\":%.2f,\"currency\":\"%s\",\"point\":%.5f,\"digits\":%d}",
+                              pair, tick.bid, tick.ask, c_size, t_size, t_val, min_l, max_l, step_l, cur, point, (int)digits);
          count++;
       }
    }
@@ -749,6 +751,17 @@ void ParseAndExecuteOrders(string json)
          if(t_sz > 0 && t_vl > 0)
             check_loss = (p_diff / t_sz) * t_vl * lot;
       }
+      // Учет комиссии и запаса на спред/проскальзывание в предварительной проверке риска
+      double p_pt = SymbolInfoDouble(broker_symbol, SYMBOL_POINT);
+      double p_tsz = SymbolInfoDouble(broker_symbol, SYMBOL_TRADE_TICK_SIZE);
+      double p_tvl = SymbolInfoDouble(broker_symbol, SYMBOL_TRADE_TICK_VALUE);
+      double p_ask = SymbolInfoDouble(broker_symbol, SYMBOL_ASK);
+      double p_bid = SymbolInfoDouble(broker_symbol, SYMBOL_BID);
+      double p_spread = (p_ask > p_bid) ? (p_ask - p_bid) : 0.0;
+      double p_slip = InpSlippage * ((p_pt > 0) ? p_pt : p_tsz);
+      if(p_tsz > 0 && p_tvl > 0)
+         check_loss += (lot * (p_spread + p_slip) * (p_tvl / p_tsz));
+      check_loss += (lot * 3.0); // комиссия ~$3.00/лот
       double cur_bal = AccountInfoDouble(ACCOUNT_BALANCE);
       double cur_eq  = AccountInfoDouble(ACCOUNT_EQUITY);
       double max_allowed_loss = MathMin(cur_bal, cur_eq) * (eff_risk / 100.0);
@@ -1379,6 +1392,7 @@ void ManageOpenPositions()
 //+------------------------------------------------------------------+
 double CalculateRiskLot(string symbol, double entry_price, double sl_price, double custom_risk = 0.0)
 {
+   if(entry_price <= 0.0 || sl_price <= 0.0) return 0.0;
    double diff = MathAbs(entry_price - sl_price);
    if(diff <= 0.00001) return 0.0;
 

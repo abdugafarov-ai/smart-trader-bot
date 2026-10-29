@@ -73,6 +73,16 @@ class TestLotCalculationAndFactualSL(unittest.TestCase):
         lot = self.bridge.calculate_lot("XAUUSD", balance=10000.0, entry=2650.0, sl=2640.0, sl_dist_usd=2.0)
         self.assertEqual(lot, 0.0)
 
+    def test_contradictory_small_calc_dist_and_negative_dist_rejected(self):
+        # Edge case: calc_dist = 0.05, sl_dist_usd = -0.01. Difference is 0.06 (< 0.10) but distance is negative -> MUST REJECT!
+        lot = self.bridge.calculate_lot("XAUUSD", balance=5000.0, entry=2650.05, sl=2650.0, sl_dist_usd=-0.01)
+        self.assertEqual(lot, 0.0)
+
+    def test_nan_sl_distance_with_entry_sl_returns_zero(self):
+        # Edge case: entry and sl provided, but sl_dist_usd is float('nan') -> MUST REJECT!
+        lot = self.bridge.calculate_lot("XAUUSD", balance=5000.0, entry=2650.0, sl=2640.0, sl_dist_usd=float("nan"))
+        self.assertEqual(lot, 0.0)
+
     def test_non_positive_capital_returns_zero(self):
         lot_zero = self.bridge.calculate_lot("XAUUSD", balance=0.0, entry=2650.0, sl=2640.0)
         self.assertEqual(lot_zero, 0.0)
@@ -148,6 +158,30 @@ class TestDynamicBrokerParametersAndRiskBudget(unittest.TestCase):
             min_lot=0.01,
         )
         self.assertEqual(lot, 0.0)
+
+    def test_non_usd_currency_without_tick_value_rejected(self):
+        # When account currency is EUR or GBP and tick_value is not passed, assuming $1/point is invalid -> must reject
+        lot = calculate_gold_swing_lot(
+            balance=5000.0,
+            risk_pct=0.25,
+            sl_dist_usd=10.0,
+            account_currency="EUR",
+            tick_value=None,
+        )
+        self.assertEqual(lot, 0.0)
+
+    def test_pips_calculation_with_broker_digits_and_point(self):
+        # 3-digit gold: point=0.001, digits=3 -> 1 pip = 10 * 0.001 = 0.01
+        pips_3digit = calculate_pips("XAUUSD", 2650.000, 2651.000, "BUY", point=0.001, digits=3)
+        self.assertEqual(pips_3digit, 100.0)
+
+        # Standard 2-digit gold: 1 pip = $0.10
+        pips_std = calculate_pips("XAUUSD", 2650.00, 2651.00, "BUY", point=0.01, digits=2)
+        self.assertEqual(pips_std, 10.0)
+
+        # 5-digit Forex (EURUSD): 1 pip = 10 * 0.00001 = 0.0001
+        pips_5digit = calculate_pips("EURUSD", 1.08000, 1.08050, "BUY", point=0.00001, digits=5)
+        self.assertEqual(pips_5digit, 5.0)
 
 
 class TestTradeJournalAccuracy(unittest.IsolatedAsyncioTestCase):
@@ -259,6 +293,24 @@ class TestTradeJournalAccuracy(unittest.IsolatedAsyncioTestCase):
         new_deals = await database.sync_broker_deals(deals)
         self.assertEqual(new_deals[0]["duration_str"], "N/A")
 
+    async def test_close_signal_by_broker_missing_open_time_yields_na_duration(self):
+        # When closing an unlinked signal without open time, duration must be N/A (never fabricated 0s)
+        res = await database.close_signal_by_broker(
+            symbol="XAUUSD",
+            close_price=2650.0,
+            profit_usd=25.0,
+            reason="TP1_HIT",
+            ticket=9005,
+        )
+        self.assertIsNotNone(res)
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute("SELECT * FROM trade_history WHERE deal_out_ticket = 9005")
+            row = await cursor.fetchone()
+            self.assertIsNotNone(row)
+            self.assertIsNone(row["duration_seconds"])
+            self.assertEqual(row["duration_str"], "N/A")
+
 
 class TestMAEAndMFEHistoricalBars(unittest.TestCase):
     """Test MAE / MFE availability with and without bars."""
@@ -296,6 +348,26 @@ class TestMAEAndMFEHistoricalBars(unittest.TestCase):
         self.assertEqual(res["status"], "AVAILABLE")
         self.assertEqual(res["mae"], 5.0)  # Min low is 2645.0, entry 2650.0 -> 5.0
         self.assertEqual(res["mfe"], 20.0) # Max high is 2670.0, entry 2650.0 -> 20.0
+
+    def test_mae_mfe_with_tz_naive_csv_dataframe_and_tz_aware_utc_timestamps(self):
+        # CSV data with tz-naive strings, tested against ISO tz-aware timestamps
+        df_csv = pd.DataFrame([
+            {"timestamp": "2026.02.12 11:15", "open": 2650.0, "high": 2665.0, "low": 2640.0, "close": 2655.0},
+            {"timestamp": "2026.02.12 11:20", "open": 2655.0, "high": 2670.0, "low": 2648.0, "close": 2660.0},
+        ])
+        res = calculate_mae_mfe(
+            symbol="XAUUSD",
+            direction="BUY",
+            entry_price=2650.0,
+            open_time="2026-02-12T11:10:00+00:00",
+            close_time="2026-02-12T11:25:00+00:00",
+            lot=0.01,
+            df_bars=df_csv,
+        )
+        self.assertTrue(res["is_available"])
+        self.assertEqual(res["status"], "AVAILABLE")
+        self.assertEqual(res["mae"], 10.0) # 2650 - 2640 = 10.0
+        self.assertEqual(res["mfe"], 20.0) # 2670 - 2650 = 20.0
 
 
 class TestFormattersTruthfulDisplay(unittest.TestCase):

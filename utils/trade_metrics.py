@@ -207,10 +207,13 @@ def calculate_pips(
     close_price: Optional[float],
     direction: str = "BUY",
     pip_mult: Optional[float] = None,
+    point: Optional[float] = None,
+    digits: Optional[int] = None,
 ) -> Optional[float]:
     """
     Вычисляет изменение цены в пунктах (pips) с учетом инструмента и направления.
     Если entry_price или close_price отсутствует / некорректен, возвращает None (честный N/A).
+    При наличии спецификаций брокера (digits, point) точно масштабирует пипсы.
     """
     if entry_price is None or close_price is None:
         return None
@@ -221,7 +224,19 @@ def calculate_pips(
             return None
         if pip_mult is None or pip_mult <= 0:
             sym_u = str(symbol).upper()
-            pip_mult = 100.0 if "JPY" in sym_u else (10.0 if "XAU" in sym_u else 10000.0)
+            if point is not None and point > 0 and digits is not None:
+                if digits in (3, 5):
+                    pip_mult = round(1.0 / (10.0 * point), 1)
+                elif digits in (2, 4) and ("XAU" in sym_u or "GOLD" in sym_u):
+                    pip_mult = 10.0
+                elif digits == 2 and "JPY" in sym_u:
+                    pip_mult = 100.0
+                elif digits == 4:
+                    pip_mult = 10000.0
+                else:
+                    pip_mult = 100.0 if "JPY" in sym_u else (10.0 if "XAU" in sym_u else 10000.0)
+            else:
+                pip_mult = 100.0 if "JPY" in sym_u else (10.0 if "XAU" in sym_u else 10000.0)
         dir_u = str(direction).upper()
         raw_pips = (c - e) * pip_mult if ("BUY" in dir_u or "LONG" in dir_u) else (e - c) * pip_mult
         return round(raw_pips, 1)
@@ -342,9 +357,9 @@ def calculate_mae_mfe(
             sample = df[ts_col].iloc[0] if not df.empty else None
             is_numeric = isinstance(sample, (int, float)) or (isinstance(sample, str) and sample.replace(".", "", 1).isdigit())
             unit = "s" if (is_numeric and float(sample) < 1e11) else None
-            ts_series = pd.to_datetime(df[ts_col], unit=unit)
-            ot_dt = pd.to_datetime(open_time, unit="s" if isinstance(open_time, (int, float)) and open_time < 1e11 else None)
-            ct_dt = pd.to_datetime(close_time, unit="s" if isinstance(close_time, (int, float)) and close_time < 1e11 else None)
+            ts_series = pd.to_datetime(df[ts_col], unit=unit, utc=True)
+            ot_dt = pd.to_datetime(open_time, unit="s" if isinstance(open_time, (int, float)) and open_time < 1e11 else None, utc=True)
+            ct_dt = pd.to_datetime(close_time, unit="s" if isinstance(close_time, (int, float)) and close_time < 1e11 else None, utc=True)
             mask = (ts_series >= ot_dt) & (ts_series <= ct_dt)
             period_df = df[mask]
             if period_df.empty:

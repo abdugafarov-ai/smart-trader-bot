@@ -66,6 +66,9 @@ def calculate_gold_swing_lot(
     if tick_value is not None and float(tick_value) > 0 and math.isfinite(float(tick_value)):
         t_val = float(tick_value)
     else:
+        # Для счетов не в USD отсутствие проверенного tick_value брокера недопустимо
+        if account_currency and str(account_currency).upper() != "USD":
+            return 0.0
         # Для XAUUSD при депозите в USD: tick_value за 1 лот = tick_size * contract_size
         t_val = t_size * c_size
 
@@ -309,9 +312,9 @@ class ExecutionBridge:
                         d_f = float(sl_dist_usd)
                     except (ValueError, TypeError):
                         return 0.0
-                    # Проверка на противоречивость данных между ценами и переданной дистанцией
-                    if abs(calc_dist - d_f) > 0.10:
-                        logger.warning("calculate_lot: Contradictory SL info (calc=%.2f vs dist=%.2f) for %s. Rejecting order (0.0).", calc_dist, d_f, sym_clean)
+                    # Проверка на валидность дистанции и на противоречивость данных между ценами и переданной дистанцией
+                    if not math.isfinite(d_f) or d_f <= 0.01 or abs(calc_dist - d_f) > 0.10:
+                        logger.warning("calculate_lot: Contradictory or invalid SL info (calc=%.2f vs dist=%s) for %s. Rejecting order (0.0).", calc_dist, d_f, sym_clean)
                         return 0.0
                 actual_sl_usd = calc_dist
             else:
@@ -509,6 +512,8 @@ class ExecutionBridge:
                 max_l = float(q.get("max_lot", 0.0) or 0.0)
                 step_l = float(q.get("lot_step", 0.0) or q.get("step", 0.0) or 0.0)
                 cur = str(q.get("currency", "") or "")
+                point_val = float(q.get("point", 0.0) or 0.0)
+                digits_val = int(q.get("digits", 0) or 0)
 
                 if sym_u not in self.symbol_specs:
                     self.symbol_specs[sym_u] = {}
@@ -526,6 +531,10 @@ class ExecutionBridge:
                     self.symbol_specs[sym_u]["lot_step"] = step_l
                 if cur:
                     self.symbol_specs[sym_u]["currency"] = cur
+                if point_val > 0:
+                    self.symbol_specs[sym_u]["point"] = point_val
+                if digits_val > 0:
+                    self.symbol_specs[sym_u]["digits"] = digits_val
             except (ValueError, TypeError):
                 continue
 
