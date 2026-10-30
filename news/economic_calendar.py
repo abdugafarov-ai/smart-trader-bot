@@ -20,7 +20,9 @@ logger = logging.getLogger(__name__)
 class EconomicCalendar:
     _shared_cache_data: list[dict] = []
     _shared_cache_time: datetime | None = None
+    _last_successful_fetch: datetime | None = None
     _last_failed_time: datetime | None = None
+    _last_fetch_error: str = ""
     _fetch_lock = asyncio.Lock()
 
     def __init__(self, timezone_str: str = 'Asia/Tashkent'):
@@ -55,20 +57,116 @@ class EconomicCalendar:
                             if isinstance(data, list) and len(data) > 0:
                                 EconomicCalendar._shared_cache_data = data
                                 EconomicCalendar._shared_cache_time = now
+                                EconomicCalendar._last_successful_fetch = now
                                 EconomicCalendar._last_failed_time = None
+                                EconomicCalendar._last_fetch_error = ""
                                 logger.info("Fetched %d economic events from ForexFactory.", len(data))
                             else:
                                 logger.warning("ForexFactory returned empty or invalid data.")
                                 EconomicCalendar._last_failed_time = now
+                                EconomicCalendar._last_fetch_error = "Empty or invalid data payload returned"
                             return EconomicCalendar._shared_cache_data
                         else:
                             logger.warning("Failed to fetch economic calendar: HTTP %s (using cached data)", response.status)
                             EconomicCalendar._last_failed_time = now
+                            EconomicCalendar._last_fetch_error = f"HTTP {response.status}"
                             return EconomicCalendar._shared_cache_data
             except Exception as e:
                 logger.warning("Error fetching economic calendar: %s", e)
                 EconomicCalendar._last_failed_time = now
+                EconomicCalendar._last_fetch_error = str(e)
                 return EconomicCalendar._shared_cache_data
+
+    @classmethod
+    def get_calendar_health(cls, now_dt: datetime | None = None) -> tuple[bool, str]:
+        """
+        Проверяет достоверность и актуальность данных календаря новостей.
+        Возвращает (is_healthy, status_message).
+        При отсутствии данных, ошибке API или устаревании кэша (>4 часов без обновления)
+        возвращает (False, reason).
+        """
+        curr = now_dt if now_dt is not None else datetime.now(timezone.utc)
+        if curr.tzinfo is None:
+            curr = curr.replace(tzinfo=timezone.utc)
+        if not cls._shared_cache_data:
+            err = cls._last_fetch_error or "Данные календаря отсутствуют или не загружены"
+            return False, f"Календарь новостей пуст ({err})"
+        if cls._last_successful_fetch is None:
+            return False, "Календарь новостей не имеет отметки успешной загрузки"
+        age_hours = (curr - cls._last_successful_fetch).total_seconds() / 3600.0
+        if age_hours > 24.0:
+            return False, f"Данные календаря устарели (возраст {age_hours:.1f}ч > 24ч)"
+        if cls._last_failed_time is not None and age_hours > 4.0:
+            return False, f"Ошибка обновления календаря при устаревшем кэше ({age_hours:.1f}ч > 4ч): {cls._last_fetch_error}"
+        return True, "OK"
+
+    def check_news_blocked_sync(
+        self,
+        symbol: str,
+        now_dt: datetime | None = None,
+        pre_minutes: int = 30,
+        post_minutes: int = 30,
+    ) -> tuple[bool, str]:
+        """
+        Синхронная проверка блокировки новостей для символа (по кэшу событий).
+        - Если календарь нездоров, возвращает блокировку: (True, "NO_TRADE_NEWS_CALENDAR_UNAVAILABLE: ...")
+        - Если в окне [-post_minutes, +pre_minutes] есть High Impact новость по валютам пары: (True, reason)
+        - Иначе (False, "")
+        """
+        is_healthy, h_reason = self.get_calendar_health(now_dt)
+        if not is_healthy:
+            return True, f"NO_TRADE_NEWS_CALENDAR_UNAVAILABLE: {h_reason}. Новые входы запрещены до восстановления достоверных данных."
+
+        now = now_dt if now_dt is not None else datetime.now(timezone.utc)
+        if now.tzinfo is None:
+            now = now.replace(tzinfo=timezone.utc)
+
+        sym_u = symbol.upper().replace("/", "").replace("=X", "")
+        currencies = config.PAIR_CURRENCIES.get(sym_u)
+        if not currencies:
+            if "XAU" in sym_u or "GOLD" in sym_u:
+                currencies = ["USD"]
+            elif len(sym_u) == 6:
+                currencies = [sym_u[:3], sym_u[3:6]]
+            else:
+                currencies = ["USD"]
+
+        for item in self._shared_cache_data:
+            impact = str(item.get("impact", "")).strip().capitalize()
+            if impact != "High":
+                continue
+            item_country = str(item.get("country", "")).strip().upper()
+            if item_country not in currencies:
+                continue
+
+            dt = self._parse_datetime(item)
+            if not dt:
+                continue
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            else:
+                dt = dt.astimezone(timezone.utc)
+
+            minutes_until = int((dt - now).total_seconds() / 60)
+            if -post_minutes <= minutes_until <= pre_minutes:
+                title = item.get("title", "High Impact Event")
+                timing_str = f"через {minutes_until} мин" if minutes_until >= 0 else f"{abs(minutes_until)} мин назад"
+                return True, f"Новостной фильтр: {title} ({item_country}) {timing_str} (окно ±{pre_minutes}м)"
+
+        return False, ""
+
+    async def is_news_blocked_for_pair(
+        self,
+        symbol: str,
+        now_dt: datetime | None = None,
+        pre_minutes: int = 30,
+        post_minutes: int = 30,
+    ) -> tuple[bool, str]:
+        """
+        Асинхронная проверка блокировки новостей с предварительной загрузкой при необходимости.
+        """
+        await self.fetch_events()
+        return self.check_news_blocked_sync(symbol, now_dt=now_dt, pre_minutes=pre_minutes, post_minutes=post_minutes)
 
     def _parse_datetime(self, item: dict) -> datetime | None:
         """

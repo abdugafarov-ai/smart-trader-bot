@@ -535,6 +535,28 @@ async def bridge_get_orders(request: web.Request) -> web.Response:
         max_allowed_slots = 1 if trading_mode == "micro" else bridge_manager.max_concurrent_positions
         dispatched_symbols = set()
 
+        from db.database import get_today_signal_count
+        try:
+            raw_count = await get_today_signal_count()
+            today_signal_count = int(raw_count) if isinstance(raw_count, (int, float)) and not isinstance(raw_count, bool) else 0
+        except Exception:
+            today_signal_count = 0
+        active_prof = config.get_active_profile()
+        max_daily_trades = int(active_prof.get("max_daily_new_trades", getattr(config, "MAX_SIGNALS_PER_DAY", 5)))
+        if today_signal_count >= max_daily_trades:
+            logger.info("Daily signal limit reached (%d/%d). Orders held.", today_signal_count, max_daily_trades)
+            return web.json_response({
+                "status": "ok",
+                "autotrade_enabled": bridge_manager.enabled,
+                "panic_close_all": panic,
+                "lot": bridge_manager.default_lot,
+                "risk_percent": bridge_manager.default_risk,
+                "use_auto_risk": use_risk_flag,
+                "orders": [],
+                "reason": f"Дневной лимит сделок исчерпан ({today_signal_count}/{max_daily_trades})",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            })
+
         from db.database import get_consecutive_sl_count
         consec_sl = await get_consecutive_sl_count(max_lookback_hours=12.0)
 
@@ -580,7 +602,7 @@ async def bridge_get_orders(request: web.Request) -> web.Response:
                 logger.info("Signal #%s (%s) held by 12h 3-SL Cooldown (%d SLs)", sig.get("id"), sym, consec_sl)
                 continue
 
-            # Институциональная проверка R:R (строго >= 1:2.0 для XAUUSD, >= 1:1.5 для Forex)
+            # Институциональная проверка R:R (строго >= 1:2.0 для XAUUSD, >= 1:1.5 для Forex / Research Profile)
             entry_p = float(sig.get("entry_price") or 0.0)
             sl_p = float(sig.get("stop_loss") or 0.0)
             tp_p = float(sig.get("take_profit_1") or sig.get("take_profit_2") or 0.0)
@@ -594,12 +616,18 @@ async def bridge_get_orders(request: web.Request) -> web.Response:
                 continue
             sig_rr = reward_d / risk_d
             sym_clean = sym.upper().replace("/", "").replace("=X", "")
-            min_rr_req = 1.95 if ("XAU" in sym_clean or "GOLD" in sym_clean) else 1.48
+            prof_min_rr = float(active_prof.get("min_rr", 2.0 if ("XAU" in sym_clean or "GOLD" in sym_clean) else 1.5))
+            min_rr_req = max(1.0, prof_min_rr - 0.05)
             if sig_rr < min_rr_req:
                 logger.warning("Signal #%s (%s) rejected: R:R %.2f < %.2f", sig.get("id"), sym, sig_rr, min_rr_req)
                 continue
 
-            # Проверка лимита свободных слотов в текущем цикле отправки
+            # Проверка дневного лимита сделок и свободных слотов в текущем цикле отправки
+            if (today_signal_count + len(orders)) >= max_daily_trades:
+                logger.info("Daily signal capacity reached: %d/%d (holding remaining signals)",
+                            today_signal_count + len(orders), max_daily_trades)
+                break
+
             if (current_active_slots + len(orders)) >= max_allowed_slots:
                 logger.info("Batch slot capacity reached: %d/%d (holding remaining signals)",
                             current_active_slots + len(orders), max_allowed_slots)

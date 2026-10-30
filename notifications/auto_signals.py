@@ -93,14 +93,20 @@ class AutoSignalScanner:
         try:
             from news.economic_calendar import EconomicCalendar
             calendar = EconomicCalendar(config.TIMEZONE)
-            events = await calendar.get_upcoming_high_impact(within_minutes=30, post_minutes=30)
-            for event in events:
-                for pair in event.affected_pairs:
-                    blocked.add(pair)
-                    logger.info("Pair %s blocked: upcoming %s in %d min",
-                               pair, event.title, event.minutes_until)
+            await calendar.fetch_events()
+            is_healthy, health_reason = calendar.get_calendar_health()
+            if not is_healthy:
+                logger.warning("News calendar unhealthy (%s). Blocking ALL pairs for risk safety.", health_reason)
+                return set(self.symbols)
+
+            for sym in self.symbols:
+                is_b, r = calendar.check_news_blocked_sync(sym, pre_minutes=30, post_minutes=30)
+                if is_b:
+                    blocked.add(sym)
+                    logger.info("Pair %s blocked by News Guard: %s", sym, r)
         except Exception as e:
-            logger.error("News blocking check failed: %s", e)
+            logger.error("News blocking check failed: %s. Blocking all pairs as failsafe.", e)
+            return set(self.symbols)
         return blocked
 
     # ── Session Filter ──
@@ -201,7 +207,9 @@ class AutoSignalScanner:
     async def _check_daily_limit(self) -> bool:
         """Проверяет, не превышен ли дневной лимит сигналов. Считает из БД (переживает рестарт)."""
         count = await get_today_signal_count()
-        if count >= config.MAX_SIGNALS_PER_DAY:
+        prof = config.get_active_profile()
+        max_daily = prof.get("max_daily_new_trades", config.MAX_SIGNALS_PER_DAY)
+        if count >= max_daily:
             return False
         return True
 

@@ -895,9 +895,16 @@ class ExecutionBridge:
             return True, reason
         return True, reason
 
-    def can_open_new_position(self, symbol: str, trading_mode: str = "prop", new_trade_risk_usd: float = 0.0, now_dt: Optional[datetime] = None) -> tuple[bool, str]:
+    def can_open_new_position(
+        self,
+        symbol: str,
+        trading_mode: str = "prop",
+        new_trade_risk_usd: float = 0.0,
+        now_dt: Optional[datetime] = None,
+        check_news: bool = False,
+    ) -> tuple[bool, str]:
         """
-        Институциональная 10-факторная валидация перед открытием ордера на реальные деньги.
+        Институциональная многофакторная валидация перед открытием ордера на реальные деньги.
         Возвращает (allowed: bool, reason: str).
         """
         # 0. Проверка аварийного хард-стопа по эквити ($4,450.00)
@@ -937,6 +944,24 @@ class ExecutionBridge:
             in_rollover, roll_reason = config.is_rollover_window(now_utc)
             if in_rollover:
                 return False, f"Защита от ролловера: {roll_reason}"
+
+        # 3.2 Проверка новостного календаря (News Guard) при запросе проверки новостей
+        if check_news:
+            try:
+                from news.economic_calendar import EconomicCalendar
+                cal = EconomicCalendar()
+                is_news_blocked, news_reason = cal.check_news_blocked_sync(sym_u, now_dt=now_utc)
+                if is_news_blocked:
+                    return False, f"Защита от новостей: {news_reason}"
+            except Exception as n_err:
+                logger.debug("News check in can_open_new_position: %s", n_err)
+
+        # 3.3 Проверка дневного лимита сделок брокера
+        prof = config.get_active_profile()
+        max_daily_deals = prof.get("max_daily_new_trades", getattr(config, "MAX_SIGNALS_PER_DAY", 5))
+        today_deals_count = int(self.today_stats_cache.get("deals_count", 0) or 0)
+        if today_deals_count >= max_daily_deals:
+            return False, f"Дневной лимит сделок исчерпан ({today_deals_count}/{max_daily_deals} сделок)"
 
         # 4. Проверка связи с терминалом MT5 и достоверности капитала
         is_online, ping = self.is_mt5_online()
