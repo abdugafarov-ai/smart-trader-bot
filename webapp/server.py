@@ -432,7 +432,10 @@ async def bridge_get_orders(request: web.Request) -> web.Response:
             bridge_manager.panic_close_requested = False
             logger.warning("Sending panic_close_all=True to MT5 terminal!")
 
-        use_risk_flag = 1 if (getattr(bridge_manager, 'lot_mode', 'risk') in ('risk', 'dynamic')) else 0
+        active_prof = config.get_active_profile()
+        is_fixed_mode = bool(active_prof.get("lot_mode") == "fixed" or getattr(bridge_manager, 'lot_mode', 'risk') == 'fixed')
+        use_risk_flag = 0 if is_fixed_mode else 1
+        effective_bridge_lot = float(active_prof.get("fixed_lot", bridge_manager.default_lot)) if is_fixed_mode else bridge_manager.default_lot
 
         # 0. Проверка аварийного хард-стопа по эквити ($4,450.00 с запасом $50 до пола $4,400.00)
         from utils.broker_time import get_broker_today_date_str
@@ -456,7 +459,7 @@ async def bridge_get_orders(request: web.Request) -> web.Response:
                 "autotrade_enabled": False,
                 "daily_loss_locked": True,
                 "panic_close_all": True,
-                "lot": bridge_manager.default_lot,
+                "lot": effective_bridge_lot,
                 "risk_percent": bridge_manager.default_risk,
                 "use_auto_risk": use_risk_flag,
                 "orders": [],
@@ -492,7 +495,7 @@ async def bridge_get_orders(request: web.Request) -> web.Response:
                 "autotrade_enabled": False,
                 "daily_loss_locked": True,
                 "panic_close_all": panic,
-                "lot": bridge_manager.default_lot,
+                "lot": effective_bridge_lot,
                 "risk_percent": bridge_manager.default_risk,
                 "use_auto_risk": use_risk_flag,
                 "orders": [],
@@ -506,7 +509,7 @@ async def bridge_get_orders(request: web.Request) -> web.Response:
                 "autotrade_enabled": False,
                 "daily_loss_locked": False,
                 "panic_close_all": panic,
-                "lot": bridge_manager.default_lot,
+                "lot": effective_bridge_lot,
                 "risk_percent": bridge_manager.default_risk,
                 "use_auto_risk": use_risk_flag,
                 "orders": [],
@@ -549,7 +552,7 @@ async def bridge_get_orders(request: web.Request) -> web.Response:
                 "status": "ok",
                 "autotrade_enabled": bridge_manager.enabled,
                 "panic_close_all": panic,
-                "lot": bridge_manager.default_lot,
+                "lot": effective_bridge_lot,
                 "risk_percent": bridge_manager.default_risk,
                 "use_auto_risk": use_risk_flag,
                 "orders": [],
@@ -659,22 +662,22 @@ async def bridge_get_orders(request: web.Request) -> web.Response:
                 )
                 continue
 
-            if getattr(bridge_manager, 'lot_mode', 'risk') in ('risk', 'dynamic'):
+            if not is_fixed_mode:
                 order_lot = max_safe_lot
             else:
-                req_lot = float(sig.get("lot") or bridge_manager.default_lot)
-                if req_lot <= 0.0 or req_lot > max_safe_lot + 1e-9:
+                target_fixed_lot = effective_bridge_lot
+                if target_fixed_lot <= 0.0 or target_fixed_lot > max_safe_lot + 1e-9:
                     logger.warning(
                         "Signal #%s (%s) REJECTED: fixed lot %.2f exceeds max safe lot %.2f for SL %.2f",
-                        sig.get("id"), sym, req_lot, max_safe_lot, sl_dist
+                        sig.get("id"), sym, target_fixed_lot, max_safe_lot, sl_dist
                     )
                     await update_signal_status(
                         sig.get("id"),
                         "CANCELLED_BY_MT5",
-                        result=f"NO TRADE: фиксированный лот {req_lot:.2f} превышает риск-бюджет (макс {max_safe_lot:.2f})"
+                        result=f"NO TRADE: фиксированный лот {target_fixed_lot:.2f} превышает риск-бюджет (макс {max_safe_lot:.2f})"
                     )
                     continue
-                order_lot = round(req_lot, 2)
+                order_lot = round(target_fixed_lot, 2)
 
             spec = getattr(bridge_manager, "symbol_specs", {}).get(sym_clean, {})
             contract_mult = float(spec.get("contract_size") or (100.0 if ("XAU" in sym_clean or "GOLD" in sym_clean) else (1000.0 if "JPY" in sym_clean else 100000.0)))

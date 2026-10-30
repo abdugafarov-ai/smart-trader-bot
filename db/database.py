@@ -2114,8 +2114,13 @@ async def get_today_signal_count(record_type: str = "LIVE") -> int:
                    AND status NOT IN ('CANCELLED_BY_MT5', 'CANCELLED_UNCONFIRMED', 'EXPIRED') {cond}""",
                 params,
             )
-            count = (await cursor.fetchone())[0]
-            return count
+            if hasattr(cursor, "fetchone"):
+                row = await cursor.fetchone()
+                return int(row[0]) if row else 0
+            elif hasattr(cursor, "fetchall"):
+                rows = await cursor.fetchall()
+                return int(rows[0][0]) if rows else 0
+            return 0
     except Exception as e:
         logger.error("get_today_signal_count error: %s", e)
         return 0

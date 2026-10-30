@@ -58,6 +58,13 @@ class TestControlledResearchAudit(unittest.TestCase):
                 "broker_confirmed": True,
             }
         }
+        # Initialize healthy EconomicCalendar state by default
+        EconomicCalendar._shared_cache_data = [
+            {"title": "Prior USD Event", "country": "USD", "impact": "Low", "date": "2026-01-01T00:00:00Z"}
+        ]
+        EconomicCalendar._last_successful_fetch = now
+        EconomicCalendar._last_failed_time = None
+        EconomicCalendar._last_fetch_error = ""
 
     # -------------------------------------------------------------------------
     # Scenario 1: Fixed lot 0.02 accepted when risk within budget
@@ -434,6 +441,174 @@ class TestControlledResearchAudit(unittest.TestCase):
 
         fresh_bridge = ExecutionBridge()
         self.assertFalse(fresh_bridge.enabled, "Fresh ExecutionBridge must be disabled by default")
+
+    # -------------------------------------------------------------------------
+    # Scenario 14: Research profile auto-initializes lot_mode and default_lot
+    # -------------------------------------------------------------------------
+    def test_scenario_14_research_profile_auto_initializes_fixed_lot_and_mode(self):
+        """
+        Under RESEARCH_XAUUSD_FIXED002:
+        - ExecutionBridge must automatically initialize lot_mode == 'fixed'.
+        - default_lot must automatically initialize to 0.02.
+        - calculate_lot must default to 0.02 without manual monkey-patching.
+        """
+        with patch.object(config, "ACTIVE_TRADING_PROFILE", "RESEARCH_XAUUSD_FIXED002"):
+            b = ExecutionBridge()
+            self.assertEqual(b.lot_mode, "fixed")
+            self.assertEqual(b.default_lot, 0.02)
+            self.assertFalse(b.enabled)
+
+    # -------------------------------------------------------------------------
+    # Scenario 15: set_enabled(True) strictly prohibited in research profile
+    # -------------------------------------------------------------------------
+    def test_scenario_15_set_enabled_strictly_prohibited_in_research_profile(self):
+        """
+        Calling set_enabled(True) must strictly fail when:
+        1. ACTIVE_TRADING_PROFILE is a research profile (status == CONTROLLED_RESEARCH).
+        2. config.AUTOTRADE_ENABLED is False.
+        """
+        with patch.object(config, "ACTIVE_TRADING_PROFILE", "RESEARCH_XAUUSD_FIXED002"):
+            b = ExecutionBridge()
+            b.set_enabled(True)
+            self.assertFalse(b.enabled, "Autotrade must NOT be enabled under research profile!")
+
+        with patch.object(config, "AUTOTRADE_ENABLED", False):
+            b2 = ExecutionBridge()
+            b2.set_enabled(True)
+            self.assertFalse(b2.enabled, "Autotrade must NOT be enabled when AUTOTRADE_ENABLED=False!")
+
+    # -------------------------------------------------------------------------
+    # Scenario 16: Fixed lot cannot be overridden by SQLite signal lot or Telegram
+    # -------------------------------------------------------------------------
+    def test_scenario_16_sqlite_signal_lot_cannot_override_fixed_lot(self):
+        """
+        In webapp/server.py bridge_get_orders:
+        If a signal in SQLite has lot = 0.05 (e.g. from manual/legacy injection),
+        under RESEARCH_XAUUSD_FIXED002, the order lot MUST remain strictly 0.02.
+        """
+        import asyncio
+        from aiohttp import web
+        from unittest.mock import AsyncMock
+        import webapp.server as srv
+        import json
+
+        from trading.execution_bridge import bridge_manager
+
+        async def run_test():
+            auth_req = MagicMock(spec=web.Request)
+            auth_req.headers = {"X-Bridge-Key": "test_secret_key"}
+            auth_req.query = {}
+            mock_conn = MagicMock()
+            mock_cursor = MagicMock()
+            mock_cursor.fetchall = AsyncMock(return_value=[{
+                "id": 999,
+                "symbol": "XAUUSD",
+                "direction": "BUY",
+                "order_type": "BUY_MARKET",
+                "entry_price": 2650.0,
+                "stop_loss": 2645.0,
+                "take_profit_1": 2660.0,
+                "take_profit_2": 2665.0,
+                "lot": 0.05,  # Stored as 0.05 in DB!
+                "status": "ACTIVE",
+                "broker_confirmed": None,
+                "broker_ticket": None,
+                "created_at": "2026-10-30T10:00:00",
+            }])
+            mock_cursor.fetchone = AsyncMock(return_value=[0])
+            mock_conn.execute = AsyncMock(return_value=mock_cursor)
+            mock_conn.__aenter__ = AsyncMock(return_value=mock_conn)
+            mock_conn.__aexit__ = AsyncMock(return_value=None)
+
+            with patch.object(config, "ACTIVE_TRADING_PROFILE", "RESEARCH_XAUUSD_FIXED002"), \
+                 patch.object(config, "BRIDGE_API_KEY", "test_secret_key"), \
+                 patch.object(bridge_manager, "enabled", True), \
+                 patch.object(bridge_manager, "mt5_telemetry", self.bridge.mt5_telemetry), \
+                 patch.object(bridge_manager, "live_quotes", self.bridge.live_quotes), \
+                 patch.object(bridge_manager, "symbol_specs", self.bridge.symbol_specs), \
+                 patch("trading.execution_bridge.bridge_manager.check_equity_hard_stop", return_value=(False, "")), \
+                 patch("trading.execution_bridge.bridge_manager.check_daily_loss", return_value=(False, 0.0, 0.0, 5000.0)), \
+                 patch("trading.execution_bridge.bridge_manager.can_open_new_position", return_value=(True, "")), \
+                 patch("db.database.get_today_broker_pnl", new_callable=AsyncMock, return_value={"total_pnl": 0.0, "deals_count": 0}), \
+                 patch("db.database.get_today_signal_count", new_callable=AsyncMock, return_value=0), \
+                 patch("db.database.get_bot_setting", new_callable=AsyncMock, return_value="prop"), \
+                 patch("db.database.get_consecutive_sl_count", new_callable=AsyncMock, return_value=0), \
+                 patch("aiosqlite.connect", return_value=mock_conn):
+
+                resp = await srv.bridge_get_orders(auth_req)
+                data = json.loads(resp.text)
+                self.assertEqual(len(data["orders"]), 1)
+                self.assertEqual(data["orders"][0]["lot"], 0.02, "DB lot 0.05 must NOT override profile fixed lot 0.02!")
+                self.assertEqual(data["use_auto_risk"], 0, "use_auto_risk must be 0 in fixed lot mode")
+
+        asyncio.run(run_test())
+
+    # -------------------------------------------------------------------------
+    # Scenario 17: Fail-closed for high-impact events with tentative/unparseable time
+    # -------------------------------------------------------------------------
+    def test_scenario_17_fail_closed_unparseable_or_tentative_high_impact_news(self):
+        """
+        If a High Impact USD event is scheduled for today but time is 'Tentative' or unparseable,
+        check_news_blocked_sync must strictly block new entries (fail-closed).
+        """
+        cal = EconomicCalendar()
+        now = datetime.now(timezone.utc)
+        today_str = now.strftime("%Y-%m-%d")
+
+        EconomicCalendar._shared_cache_data = [
+            {
+                "title": "OPEC-JMMC Meetings / US Fiscal Summit",
+                "country": "USD",
+                "impact": "High",
+                "date": today_str,
+                "time": "Tentative",
+            }
+        ]
+        EconomicCalendar._last_successful_fetch = now
+        EconomicCalendar._last_failed_time = None
+
+        is_blocked, reason = cal.check_news_blocked_sync("XAUUSD", now_dt=now)
+        self.assertTrue(is_blocked, "Tentative high-impact USD event on current date must block trading")
+        self.assertIn("NO_TRADE_NEWS_UNPARSEABLE_EVENT", reason)
+
+    # -------------------------------------------------------------------------
+    # Scenario 18: Cost-inclusive risk budget rejection in backtest simulator
+    # -------------------------------------------------------------------------
+    def test_scenario_18_simulator_fixed_lot_cost_inclusive_risk_rejection(self):
+        """
+        On XAUUSD with 0.02 lot and $25.00 risk cap:
+        - SL = $11.00: cost-inclusive risk = 0.02 * (11.00 + 0.30 + 0.20) * 100 + 0.06 = $23.06 <= $25 -> ALLOW (lot=0.02)
+        - SL = $12.45: cost-inclusive risk = 0.02 * (12.45 + 0.30 + 0.20) * 100 + 0.06 = $25.96 > $25 -> REJECT (lot=0.0)
+        """
+        with patch.object(config, "ACTIVE_TRADING_PROFILE", "RESEARCH_XAUUSD_FIXED002"):
+            b = ExecutionBridge()
+            b.symbol_specs = self.bridge.symbol_specs
+            b.live_quotes = self.bridge.live_quotes
+            lot_11 = b.calculate_lot(
+                symbol="XAUUSD",
+                balance=5000.0,
+                risk_pct=0.50,
+                sl_dist_usd=11.00,
+                require_confirmed_specs=True,
+                entry=2650.0,
+                sl=2639.0,
+                spread_buffer_usd=0.30,
+                slippage_buffer_usd=0.20,
+            )
+            self.assertEqual(lot_11, 0.02, "SL $11.00 ($23.06 total risk) should be accepted")
+
+            lot_1245 = b.calculate_lot(
+                symbol="XAUUSD",
+                balance=5000.0,
+                risk_pct=0.50,
+                sl_dist_usd=12.45,
+                require_confirmed_specs=True,
+                entry=2650.0,
+                sl=2637.55,
+                spread_buffer_usd=0.30,
+                slippage_buffer_usd=0.20,
+            )
+            self.assertEqual(lot_1245, 0.0, "SL $12.45 ($25.96 total risk) MUST be rejected by risk manager")
 
 
 if __name__ == "__main__":

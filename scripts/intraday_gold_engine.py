@@ -259,7 +259,15 @@ def is_news_blocked(dt: datetime, events_utc: list[datetime], window_min: int = 
     return False
 
 
-def calculate_lot(balance: float, risk_pct: float, sl_distance_usd: float, legacy_mode: bool = False) -> float:
+def calculate_lot(
+    balance: float,
+    risk_pct: float,
+    sl_distance_usd: float,
+    legacy_mode: bool = False,
+    spread_usd: float = 0.0,
+    slippage_usd: float = 0.0,
+    commission_per_lot: float = 0.0,
+) -> float:
     if sl_distance_usd <= 0.01:
         return 0.0
     if legacy_mode:
@@ -270,11 +278,16 @@ def calculate_lot(balance: float, risk_pct: float, sl_distance_usd: float, legac
         return max(0.02, min(0.50, lot))
 
     risk_budget = balance * risk_pct
-    min_lot_risk = 0.01 * sl_distance_usd * 100.0
-    if min_lot_risk > risk_budget:
+    effective_sl = sl_distance_usd + spread_usd + slippage_usd
+    loss_per_std_lot = (effective_sl * 100.0) + commission_per_lot
+    if loss_per_std_lot <= 0.0:
+        return 0.0
+
+    min_lot_risk = 0.01 * loss_per_std_lot
+    if min_lot_risk > risk_budget + 1e-9:
         return 0.0  # Min lot risk exceeds budget -> REJECT (NO TRADE)
 
-    raw_lot = risk_budget / (sl_distance_usd * 100.0)
+    raw_lot = risk_budget / loss_per_std_lot
     lot = math.floor(raw_lot * 100.0) / 100.0
     return max(0.01, min(0.50, lot))
 
@@ -874,12 +887,21 @@ class IntradaySimulator:
 
                 if self.lot_mode == "fixed":
                     lot = self.fixed_lot
-                    sl_dollar_risk = lot * sl_dist * CONTRACT_SIZE
+                    effective_sl_dist = sl_dist + self.spread_usd + self.slippage_usd
+                    sl_dollar_risk = (lot * effective_sl_dist * CONTRACT_SIZE) + (lot * COMMISSION_PER_LOT)
                     max_risk_cap = balance * self.risk_pct if self.risk_pct > 0 else 25.0
                     if sl_dollar_risk > max_risk_cap + 1e-9:
                         lot = 0.0
                 else:
-                    lot = calculate_lot(balance, self.risk_pct, sl_dist, legacy_mode=self.legacy_mode)
+                    lot = calculate_lot(
+                        balance,
+                        self.risk_pct,
+                        sl_dist,
+                        legacy_mode=self.legacy_mode,
+                        spread_usd=self.spread_usd,
+                        slippage_usd=self.slippage_usd,
+                        commission_per_lot=COMMISSION_PER_LOT,
+                    )
 
                 if lot <= 0.0:
                     rejected_min_lot_risk += 1

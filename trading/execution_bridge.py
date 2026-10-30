@@ -143,10 +143,11 @@ class ExecutionBridge:
     """Управляет состоянием и передачей команд внешним торговым терминалам."""
 
     def __init__(self):
-        self.enabled = config.AUTOTRADE_ENABLED
-        self.default_risk = config.AUTOTRADE_DEFAULT_RISK
-        self.default_lot = config.AUTOTRADE_DEFAULT_LOT
-        self.lot_mode = "risk"  # "risk" (default) or "fixed" (still capped by risk budget)
+        prof = config.get_active_profile()
+        self.enabled = bool(config.AUTOTRADE_ENABLED and not (prof.get("status") == "CONTROLLED_RESEARCH" or prof.get("status", "").startswith("RESEARCH")))
+        self.default_risk = float(prof.get("default_risk_pct", config.AUTOTRADE_DEFAULT_RISK))
+        self.default_lot = float(prof.get("fixed_lot", config.AUTOTRADE_DEFAULT_LOT)) if prof.get("lot_mode") == "fixed" else config.AUTOTRADE_DEFAULT_LOT
+        self.lot_mode = prof.get("lot_mode", "risk")  # "risk" or "fixed" (still capped by risk budget)
         self._connected_terminals: Dict[str, Any] = {}
         
         # Реальная телеметрия из MetaTrader 5 (без фейковых данных по умолчанию)
@@ -237,6 +238,11 @@ class ExecutionBridge:
 
     def set_enabled(self, enabled: bool):
         if enabled:
+            prof = config.get_active_profile()
+            if not getattr(config, "AUTOTRADE_ENABLED", False) or prof.get("status") == "CONTROLLED_RESEARCH" or prof.get("status", "").startswith("RESEARCH"):
+                logger.warning("🚨 Cannot enable autopilot: strictly prohibited under research profile / AUTOTRADE_ENABLED=false.")
+                self.enabled = False
+                return
             is_hard, reason = self.check_equity_hard_stop()
             if is_hard:
                 logger.warning("🚨 Cannot enable autopilot: %s. Blocked by Equity Hard Stop.", reason)
@@ -433,14 +439,17 @@ class ExecutionBridge:
             )
             if max_safe_lot <= 0.0:
                 return 0.0
-            if self.lot_mode == "fixed":
-                if self.default_lot <= 0.0 or self.default_lot > max_safe_lot + 1e-9:
+            prof = config.get_active_profile()
+            active_lot_mode = prof.get("lot_mode", self.lot_mode)
+            active_fixed_lot = float(prof.get("fixed_lot", self.default_lot)) if active_lot_mode == "fixed" else self.default_lot
+            if active_lot_mode == "fixed":
+                if active_fixed_lot <= 0.0 or active_fixed_lot > max_safe_lot + 1e-9:
                     logger.warning(
                         "Fixed lot %.2f exceeds risk budget (max safe lot %.2f for SL $%.2f) -> REJECT (0.0)",
-                        self.default_lot, max_safe_lot, actual_sl_usd
+                        active_fixed_lot, max_safe_lot, actual_sl_usd
                     )
                     return 0.0
-                return max(v_min, min(v_max, round(self.default_lot, 2)))
+                return max(v_min, min(v_max, round(active_fixed_lot, 2)))
             return max_safe_lot
 
         # Forex pairs:
@@ -945,23 +954,32 @@ class ExecutionBridge:
             if in_rollover:
                 return False, f"Защита от ролловера: {roll_reason}"
 
-        # 3.2 Проверка новостного календаря (News Guard) при запросе проверки новостей
-        if check_news:
+        # 3.2 Проверка новостного календаря (News Guard) при запросе проверки новостей или если в профиле включен фильтр
+        prof = config.get_active_profile()
+        pre_m = int(prof.get("news_filter_pre_minutes", 0) or 0)
+        post_m = int(prof.get("news_filter_post_minutes", 0) or 0)
+        should_check_news = check_news or (pre_m > 0 or post_m > 0)
+        if should_check_news:
             try:
                 from news.economic_calendar import EconomicCalendar
                 cal = EconomicCalendar()
-                is_news_blocked, news_reason = cal.check_news_blocked_sync(sym_u, now_dt=now_utc)
+                is_news_blocked, news_reason = cal.check_news_blocked_sync(
+                    sym_u,
+                    now_dt=now_utc,
+                    pre_minutes=pre_m if pre_m > 0 else 30,
+                    post_minutes=post_m if post_m > 0 else 30,
+                )
                 if is_news_blocked:
                     return False, f"Защита от новостей: {news_reason}"
             except Exception as n_err:
                 logger.debug("News check in can_open_new_position: %s", n_err)
 
         # 3.3 Проверка дневного лимита сделок брокера
-        prof = config.get_active_profile()
         max_daily_deals = prof.get("max_daily_new_trades", getattr(config, "MAX_SIGNALS_PER_DAY", 5))
         today_deals_count = int(self.today_stats_cache.get("deals_count", 0) or 0)
-        if today_deals_count >= max_daily_deals:
-            return False, f"Дневной лимит сделок исчерпан ({today_deals_count}/{max_daily_deals} сделок)"
+        open_pos_count = len(self.mt5_telemetry.get("positions") or [])
+        if (today_deals_count + open_pos_count) >= max_daily_deals:
+            return False, f"Дневной лимит сделок исчерпан ({today_deals_count + open_pos_count}/{max_daily_deals} сделок)"
 
         # 4. Проверка связи с терминалом MT5 и достоверности капитала
         is_online, ping = self.is_mt5_online()

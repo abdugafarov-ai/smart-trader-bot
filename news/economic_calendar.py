@@ -141,6 +141,21 @@ class EconomicCalendar:
 
             dt = self._parse_datetime(item)
             if not dt:
+                # Fail-closed: блокируем входы при наличии High Impact события с неопределенным временем (All Day, Tentative) на сегодня
+                d_str = str(item.get("date", "")).strip()
+                t_str = str(item.get("time", "")).strip().lower()
+                title = item.get("title", "High Impact Event")
+                is_today_event = False
+                if d_str:
+                    try:
+                        from dateutil import parser as dt_parser
+                        parsed_d = dt_parser.parse(d_str).date()
+                        if parsed_d == now.date():
+                            is_today_event = True
+                    except Exception:
+                        pass
+                if is_today_event or t_str in ("all day", "tentative"):
+                    return True, f"NO_TRADE_NEWS_UNPARSEABLE_EVENT: Событие '{title}' ({item_country}) с неопределенным временем ({t_str or 'не указано'}). Новые входы заблокированы."
                 continue
             if dt.tzinfo is None:
                 dt = dt.replace(tzinfo=timezone.utc)
