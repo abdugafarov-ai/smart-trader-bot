@@ -935,13 +935,13 @@ class ExecutionBridge:
             return False, f"Защита от дневного убытка: {self.daily_lock_reason}"
 
         # 3. Проверка институционального недельного торгового окна и защиты от ролловера
-        w_open, w_reason = config.is_weekly_trading_window_open()
-        if not w_open:
-            return False, f"Торговое окно закрыто: {w_reason}"
-
         now_utc = now_dt if now_dt is not None else datetime.now(timezone.utc)
         if now_utc.tzinfo is None:
             now_utc = now_utc.replace(tzinfo=timezone.utc)
+
+        w_open, w_reason = config.is_weekly_trading_window_open(now_utc)
+        if not w_open:
+            return False, f"Торговое окно закрыто: {w_reason}"
 
         # 3.1 Strictly Intraday Trading Window & EOD Cutoff (20:30 UTC Mon-Thu, 19:00/19:30 UTC Fri)
         if now_utc.weekday() == 4 and (now_utc.hour >= 20 or (now_utc.hour == 19 and now_utc.minute >= 0)):

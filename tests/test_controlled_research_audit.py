@@ -513,7 +513,7 @@ class TestControlledResearchAudit(unittest.TestCase):
                 "status": "ACTIVE",
                 "broker_confirmed": None,
                 "broker_ticket": None,
-                "created_at": "2026-10-30T10:00:00",
+                "created_at": datetime.now(timezone.utc).isoformat(),
             }])
             mock_cursor.fetchone = AsyncMock(return_value=[0])
             mock_conn.execute = AsyncMock(return_value=mock_cursor)

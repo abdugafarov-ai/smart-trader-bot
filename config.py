@@ -294,7 +294,7 @@ MONDAY_START_HOUR_UTC: int = 7    # 12:00 Ташкент (UTC+5)
 FRIDAY_END_HOUR_UTC: int = 14     # 19:00 Ташкент (UTC+5)
 
 
-def is_weekly_trading_window_open() -> tuple[bool, str]:
+def is_weekly_trading_window_open(now_dt: Optional[datetime] = None) -> tuple[bool, str]:
     """
     Проверяет институциональное торговое окно недели:
     - Понедельник: входы разрешены с 07:00 UTC (12:00 Ташкент / Лондон)
@@ -305,7 +305,9 @@ def is_weekly_trading_window_open() -> tuple[bool, str]:
     if not WEEKLY_WINDOW_ENABLED:
         return True, ""
 
-    now = datetime.now(ZoneInfo('UTC'))
+    now = now_dt if now_dt is not None else datetime.now(ZoneInfo('UTC'))
+    if getattr(now, "tzinfo", None) is None:
+        now = now.replace(tzinfo=ZoneInfo('UTC'))
     wd = now.weekday()  # 0 = Mon, ..., 4 = Fri, 5 = Sat, 6 = Sun
     hour = now.hour
 
