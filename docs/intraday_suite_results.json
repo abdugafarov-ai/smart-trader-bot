@@ -33774,6 +33774,20 @@
   },
   {
     "category": "Monte Carlo Challenge Simulation",
+    "config": "Model A+B @ 0.50% (RR 1:2.5)",
+    "result": {
+      "n_simulations": 10000,
+      "phase1_pass_pct": 21.69,
+      "phase2_pass_pct": 34.76,
+      "joint_pass_pct": 7.54,
+      "daily_breach_pct": 0.0,
+      "max_dd_breach_pct": 0.12,
+      "loss_streak_p95": 8,
+      "loss_streak_p99": 10
+    }
+  },
+  {
+    "category": "Monte Carlo Challenge Simulation",
     "config": "Model A+B Fixed Lot 0.02 (RR 1:2.0)",
     "result": {
       "n_simulations": 10000,
@@ -33798,6 +33812,20 @@
       "max_dd_breach_pct": 0.0,
       "loss_streak_p95": 8,
       "loss_streak_p99": 10
+    }
+  },
+  {
+    "category": "Monte Carlo Challenge Simulation",
+    "config": "Model A+B Fixed Lot 0.02 (RR 1:2.5)",
+    "result": {
+      "n_simulations": 10000,
+      "phase1_pass_pct": 50.23,
+      "phase2_pass_pct": 64.74,
+      "joint_pass_pct": 32.52,
+      "daily_breach_pct": 0.0,
+      "max_dd_breach_pct": 0.0,
+      "loss_streak_p95": 8,
+      "loss_streak_p99": 11
     }
   }
 ]

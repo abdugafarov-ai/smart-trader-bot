@@ -1574,8 +1574,10 @@ def run_full_suite():
         ("model_a_plus_b", "dynamic", 0.02, 0.0025, 2.0, "Model A+B @ 0.25% (RR 1:2.0)"),
         ("model_a_plus_b", "dynamic", 0.02, 0.0050, 2.0, "Model A+B @ 0.50% (RR 1:2.0)"),
         ("model_a_plus_b", "dynamic", 0.02, 0.0050, 1.5, "Model A+B @ 0.50% (RR 1:1.5)"),
+        ("model_a_plus_b", "dynamic", 0.02, 0.0050, 2.5, "Model A+B @ 0.50% (RR 1:2.5)"),
         ("model_a_plus_b", "fixed", 0.02, 0.0050, 2.0, "Model A+B Fixed Lot 0.02 (RR 1:2.0)"),
         ("model_a_plus_b", "fixed", 0.02, 0.0050, 1.5, "Model A+B Fixed Lot 0.02 (RR 1:1.5)"),
+        ("model_a_plus_b", "fixed", 0.02, 0.0050, 2.5, "Model A+B Fixed Lot 0.02 (RR 1:2.5)"),
     ]
     mc_results = []
     for m_name, l_mode, f_lot, r_pct, rr, mc_label in mc_configs:

@@ -305,9 +305,12 @@ def is_weekly_trading_window_open(now_dt: Optional[datetime] = None) -> tuple[bo
     if not WEEKLY_WINDOW_ENABLED:
         return True, ""
 
-    now = now_dt if now_dt is not None else datetime.now(ZoneInfo('UTC'))
-    if getattr(now, "tzinfo", None) is None:
-        now = now.replace(tzinfo=ZoneInfo('UTC'))
+    if now_dt is None:
+        now = datetime.now(ZoneInfo('UTC'))
+    elif getattr(now_dt, "tzinfo", None) is None:
+        now = now_dt.replace(tzinfo=ZoneInfo('UTC'))
+    else:
+        now = now_dt.astimezone(ZoneInfo('UTC'))
     wd = now.weekday()  # 0 = Mon, ..., 4 = Fri, 5 = Sat, 6 = Sun
     hour = now.hour
 
@@ -402,9 +405,12 @@ def is_rollover_window(now_dt: Optional[datetime] = None) -> tuple[bool, str]:
     """
     if not ROLLOVER_GUARD_ENABLED:
         return False, ""
-    now = now_dt if now_dt is not None else datetime.now(ZoneInfo('UTC'))
-    if now.tzinfo is None:
-        now = now.replace(tzinfo=ZoneInfo('UTC'))
+    if now_dt is None:
+        now = datetime.now(ZoneInfo('UTC'))
+    elif getattr(now_dt, "tzinfo", None) is None:
+        now = now_dt.replace(tzinfo=ZoneInfo('UTC'))
+    else:
+        now = now_dt.astimezone(ZoneInfo('UTC'))
     mins = now.hour * 60 + now.minute
     start_mins = ROLLOVER_START_UTC_HOUR * 60 + ROLLOVER_START_UTC_MIN
     end_mins = ROLLOVER_END_UTC_HOUR * 60 + ROLLOVER_END_UTC_MIN
@@ -418,9 +424,12 @@ def is_eod_flat_cutoff(now_dt: Optional[datetime] = None) -> tuple[bool, str]:
     Проверяет, наступило ли время запрета новых входов перед концом дня (20:30 UTC)
     или перед закрытием пятницы (19:00 UTC).
     """
-    now = now_dt if now_dt is not None else datetime.now(ZoneInfo('UTC'))
-    if now.tzinfo is None:
-        now = now.replace(tzinfo=ZoneInfo('UTC'))
+    if now_dt is None:
+        now = datetime.now(ZoneInfo('UTC'))
+    elif getattr(now_dt, "tzinfo", None) is None:
+        now = now_dt.replace(tzinfo=ZoneInfo('UTC'))
+    else:
+        now = now_dt.astimezone(ZoneInfo('UTC'))
     wd = now.weekday()
     mins = now.hour * 60 + now.minute
     if wd == 4 and mins >= (19 * 60):
@@ -435,9 +444,12 @@ def should_force_eod_flat(now_dt: Optional[datetime] = None) -> tuple[bool, str]
     Проверяет, наступило ли время принудительного закрытия всех открытых Intraday-позиций
     и снятия лимитных ордеров перед банковским ролловером (20:40 UTC Пн-Чт) или выходными (19:30 UTC Пт).
     """
-    now = now_dt if now_dt is not None else datetime.now(ZoneInfo('UTC'))
-    if now.tzinfo is None:
-        now = now.replace(tzinfo=ZoneInfo('UTC'))
+    if now_dt is None:
+        now = datetime.now(ZoneInfo('UTC'))
+    elif getattr(now_dt, "tzinfo", None) is None:
+        now = now_dt.replace(tzinfo=ZoneInfo('UTC'))
+    else:
+        now = now_dt.astimezone(ZoneInfo('UTC'))
     wd = now.weekday()
     mins = now.hour * 60 + now.minute
     if wd == 4 and mins >= (19 * 60 + 30):

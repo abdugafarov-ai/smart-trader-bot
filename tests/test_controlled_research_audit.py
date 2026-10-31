@@ -610,6 +610,52 @@ class TestControlledResearchAudit(unittest.TestCase):
             )
             self.assertEqual(lot_1245, 0.0, "SL $12.45 ($25.96 total risk) MUST be rejected by risk manager")
 
+    # -------------------------------------------------------------------------
+    # Scenario 17: Multi-timezone normalization across trading window & rollover guards
+    # -------------------------------------------------------------------------
+    def test_scenario_17_multi_timezone_window_and_rollover_normalization(self):
+        """
+        Verifies that passing timezone-aware datetimes (Asia/Tashkent, Europe/Helsinki, etc.)
+        to config time guard functions correctly normalizes to UTC without false rejections.
+        """
+        # Friday 15:00 Tashkent (UTC+5) = 10:00 UTC. Market should be OPEN (cutoff is 14:00 UTC).
+        dt_tashkent_fri = datetime(2026, 11, 6, 15, 0, tzinfo=ZoneInfo("Asia/Tashkent"))
+        w_open, w_reason = config.is_weekly_trading_window_open(dt_tashkent_fri)
+        self.assertTrue(w_open, f"Friday 10:00 UTC (15:00 Tashkent) must be open, got: {w_reason}")
+
+        # Thursday 22:45 Helsinki (UTC+2) = 20:45 UTC. Must be inside bank rollover window (20:30-21:45 UTC).
+        dt_helsinki_rollover = datetime(2026, 11, 5, 22, 45, tzinfo=ZoneInfo("Europe/Helsinki"))
+        in_roll, roll_reason = config.is_rollover_window(dt_helsinki_rollover)
+        self.assertTrue(in_roll, "22:45 Helsinki (20:45 UTC) must be recognized as rollover window")
+
+        # Thursday 20:00 Helsinki (UTC+2) = 18:00 UTC. Must NOT be inside bank rollover window.
+        dt_helsinki_normal = datetime(2026, 11, 5, 20, 0, tzinfo=ZoneInfo("Europe/Helsinki"))
+        in_roll_norm, _ = config.is_rollover_window(dt_helsinki_normal)
+        self.assertFalse(in_roll_norm, "20:00 Helsinki (18:00 UTC) must not be in rollover window")
+
+    # -------------------------------------------------------------------------
+    # Scenario 18: Broker timezone handling in ExecutionBridge.can_open_new_position
+    # -------------------------------------------------------------------------
+    def test_scenario_18_broker_timezone_in_can_open_new_position(self):
+        """
+        Verifies that when MT5 broker server time (Europe/Helsinki) is passed to
+        ExecutionBridge.can_open_new_position, EOD flat and weekly window checks
+        operate strictly on the normalized UTC timestamp.
+        """
+        # Thursday 21:00 Helsinki = 19:00 UTC. Market is OPEN (intraday cutoff is 20:30 UTC).
+        dt_thu_broker = datetime(2026, 11, 5, 21, 0, tzinfo=ZoneInfo("Europe/Helsinki"))
+        self.bridge.live_quotes["XAUUSD"]["time"] = dt_thu_broker
+        self.bridge.mt5_telemetry["last_ping"] = dt_thu_broker
+        allowed, reason = self.bridge.can_open_new_position("XAUUSD", now_dt=dt_thu_broker)
+        self.assertTrue(allowed, f"Thursday 21:00 Helsinki (19:00 UTC) must be allowed, got: {reason}")
+
+        # Friday 15:00 Helsinki = 13:00 UTC. Market is OPEN (Friday cutoff is 14:00 UTC).
+        dt_fri_broker = datetime(2026, 11, 6, 15, 0, tzinfo=ZoneInfo("Europe/Helsinki"))
+        self.bridge.live_quotes["XAUUSD"]["time"] = dt_fri_broker
+        self.bridge.mt5_telemetry["last_ping"] = dt_fri_broker
+        allowed_fri, reason_fri = self.bridge.can_open_new_position("XAUUSD", now_dt=dt_fri_broker)
+        self.assertTrue(allowed_fri, f"Friday 15:00 Helsinki (13:00 UTC) must be allowed, got: {reason_fri}")
+
 
 if __name__ == "__main__":
     unittest.main()

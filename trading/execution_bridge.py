@@ -934,10 +934,12 @@ class ExecutionBridge:
         if self.daily_loss_locked:
             return False, f"Защита от дневного убытка: {self.daily_lock_reason}"
 
-        # 3. Проверка институционального недельного торгового окна и защиты от ролловера
-        now_utc = now_dt if now_dt is not None else datetime.now(timezone.utc)
-        if now_utc.tzinfo is None:
-            now_utc = now_utc.replace(tzinfo=timezone.utc)
+        if now_dt is None:
+            now_utc = datetime.now(timezone.utc)
+        elif getattr(now_dt, "tzinfo", None) is None:
+            now_utc = now_dt.replace(tzinfo=timezone.utc)
+        else:
+            now_utc = now_dt.astimezone(timezone.utc)
 
         w_open, w_reason = config.is_weekly_trading_window_open(now_utc)
         if not w_open:
