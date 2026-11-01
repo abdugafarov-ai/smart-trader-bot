@@ -597,9 +597,9 @@ async def cmd_autotrade(message: Message):
                 await message.answer(
                     "⚠️ <b>ПРАВИЛО 1 ФАЗЫ 7 (MANUAL CONFIRMATION REQUIRED):</b>\n"
                     "Запуск челленджа требует предварительного подтверждения оператора.\n"
-                    "Выполните команду в терминале:\n"
-                    "<code>python scripts/daily_challenge_monitor.py --confirm-launch &lt;ID&gt; --token CONFIRM_PROP_CHALLENGE_LAUNCH_5000</code>\n"
-                    "или отправьте команду: <code>/confirm_launch CONFIRM_PROP_CHALLENGE_LAUNCH_5000</code>",
+                    "Используйте одноразовый токен (сгенерированный через <code>--generate-token</code>) или <code>CHALLENGE_LAUNCH_TOKEN</code> из защищённого <code>.env</code>:\n"
+                    "<code>python scripts/daily_challenge_monitor.py --confirm-launch &lt;ADMIN_ID&gt; --token &lt;TOKEN&gt;</code>\n"
+                    "или отправьте команду: <code>/confirm_launch &lt;TOKEN&gt;</code>",
                     parse_mode="HTML"
                 )
                 return
@@ -655,7 +655,7 @@ async def cmd_confirm_launch(message: Message):
         await message.answer("❌ Доступно только администратору.", parse_mode=None)
         return
     parts = message.text.split(maxsplit=1)
-    from scripts.daily_challenge_monitor import ChallengeMonitor, CONFIRMATION_TOKEN
+    from scripts.daily_challenge_monitor import ChallengeMonitor
     monitor = ChallengeMonitor()
     token = parts[1].strip() if len(parts) > 1 else ""
     success, msg = await monitor.confirm_challenge_launch(

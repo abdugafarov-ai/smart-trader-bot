@@ -98,11 +98,27 @@ class TestPhase6DemoForwardHarness(unittest.TestCase):
         self.assertEqual(s4["max_drawdown_usd"], 37.50)
         self.assertTrue(results["max_daily_drawdown_usd"] >= 37.50)
 
+    def test_06_signals_only_forward_observer(self):
+        """Verify signals-only observer initializes, enforces zero orders, and cleanly reports REAL_DEMO_FORWARD_NOT_PERFORMED when offline."""
+        from scripts.run_demo_forward_simulation import SignalsOnlyForwardObserver
+        observer = SignalsOnlyForwardObserver(target_sessions=5)
+        conn = observer.check_mt5_connection()
+        self.assertFalse(conn["autotrade_enabled"])
+
+        obs_res = observer.run_observation()
+        self.assertEqual(obs_res["observation_mode"], "SIGNALS_ONLY (Zero Orders Dispatched)")
+        self.assertFalse(obs_res["autotrade_enabled"])
+        self.assertEqual(obs_res["status"], "REAL_DEMO_FORWARD_NOT_PERFORMED")
+        self.assertEqual(obs_res["phase6_overall_status"], "PARTIAL")
+        self.assertIn("REAL_DEMO_FORWARD_NOT_PERFORMED", obs_res["verdict"])
+
 
 class TestPhase7ChallengeMonitor(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         await init_db()
         self.monitor = ChallengeMonitor()
+        self.test_token = "SECURE_TEST_LAUNCH_TOKEN_2026"
+        os.environ["CHALLENGE_LAUNCH_TOKEN"] = self.test_token
 
     def test_01_configuration_audit_fundingpips(self):
         """Verify audit passes against FundingPips $5,000 2-step Flex specs."""
@@ -132,8 +148,10 @@ class TestPhase7ChallengeMonitor(unittest.IsolatedAsyncioTestCase):
         """
         Verify Rule 1: 'Запустить челлендж только после ручного подтверждения пользователя'
         - Unconfirmed initially -> LOCKED_FAIL_CLOSED
-        - Invalid token -> Rejected
-        - Valid token -> Confirmed, but strictly respects AUTOTRADE_ENABLED=false
+        - Unauthorized non-admin user -> Rejected
+        - Invalid token -> Rejected without secret leakage
+        - Valid token -> Confirmed (one-time consumed), strictly respects AUTOTRADE_ENABLED=false
+        - Token reuse -> Blocked by single-use consumption
         - Revoke -> Restored to LOCKED_FAIL_CLOSED
         """
         # Ensure fresh state
@@ -145,16 +163,24 @@ class TestPhase7ChallengeMonitor(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(gate["is_confirmed"])
         self.assertEqual(gate["routing_status"], "LOCKED_FAIL_CLOSED")
 
-        # Step 2: Confirmation with invalid token must fail
+        # Step 2A: Non-admin user must be rejected
+        ok_non_admin, msg_non_admin = await self.monitor.confirm_challenge_launch(
+            user_id="unauthorized_user_999", confirmation_token=self.test_token
+        )
+        self.assertFalse(ok_non_admin)
+        self.assertIn("not an authorized administrator", msg_non_admin)
+
+        # Step 2B: Confirmation with invalid token must fail
         ok_bad, msg_bad = await self.monitor.confirm_challenge_launch(
             user_id="test_admin", confirmation_token="WRONG_TOKEN"
         )
         self.assertFalse(ok_bad)
-        self.assertIn("Invalid token", msg_bad)
+        self.assertIn("REJECTED", msg_bad)
+        self.assertNotIn(self.test_token, msg_bad, "Error message must never leak secret token")
 
         # Step 3: Confirmation with valid token succeeds
         ok_good, msg_good = await self.monitor.confirm_challenge_launch(
-            user_id="test_admin", confirmation_token=CONFIRMATION_TOKEN
+            user_id="test_admin", confirmation_token=self.test_token
         )
         self.assertTrue(ok_good)
         self.assertIn("USER MANUAL CONFIRMATION REGISTERED", msg_good)
@@ -169,7 +195,16 @@ class TestPhase7ChallengeMonitor(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(gate2["autotrade_enabled_config"])
         self.assertEqual(gate2["routing_status"], "LOCKED_FAIL_CLOSED")
 
-        # Step 4: Revocation works cleanly
+        # Step 4: Token single-use consumption check
+        # Clear confirmation flag manually to test that token was consumed and cannot be re-used
+        await set_bot_setting("challenge_user_confirmed_at", "")
+        ok_reuse, msg_reuse = await self.monitor.confirm_challenge_launch(
+            user_id="test_admin", confirmation_token=self.test_token
+        )
+        self.assertFalse(ok_reuse)
+        self.assertIn("already consumed", msg_reuse)
+
+        # Step 5: Revocation works cleanly and resets consumption state
         ok_rev, msg_rev = await self.monitor.revoke_challenge_launch()
         self.assertTrue(ok_rev)
         metrics3 = await self.monitor.get_equity_metrics()
@@ -202,7 +237,7 @@ class TestPhase7ChallengeMonitor(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await get_bot_setting("autotrade_enabled", "false"), "false")
 
         # Step C: /confirm_launch with valid token -> SUCCESS
-        mock_msg.text = f"/confirm_launch {CONFIRMATION_TOKEN}"
+        mock_msg.text = f"/confirm_launch {self.test_token}"
         await cmd_confirm_launch(mock_msg)
         self.assertTrue(await get_bot_setting("challenge_user_confirmed_at", ""))
 
