@@ -129,7 +129,7 @@ async def run_multi_tf_analysis(symbol: str) -> MultiTFResult:
 
         for strategy in ALL_STRATEGIES:
             if hasattr(strategy, "short_name") and strategy.short_name == 'ict_smc':
-                result = strategy.analyze(df, symbol, tf, df_d1=df_d1, df_ltf=df_ltf_for_tf)
+                result = strategy.analyze(df, symbol, tf, df_d1=df_d1, df_ltf=df_ltf_for_tf, df_h1=dfs_by_tf.get("H1"))
             else:
                 result = strategy.analyze(df, symbol, tf)
             strategy_results.append(result)
@@ -369,13 +369,14 @@ async def run_full_analysis(symbol: str, timeframe: str) -> FullAnalysisResult:
     df = TechnicalIndicators.calculate_all(df)
     indicators = TechnicalIndicators.calculate(df)
 
-    # 0. Загружаем D1 данные для трендового фильтра старшего ТФ
+    # 0. Загружаем D1 и H1 данные для трендового фильтра старшего ТФ
     df_d1 = await fetcher.fetch_ohlcv(symbol, "D1")
+    df_h1 = await fetcher.fetch_ohlcv(symbol, "H1")
     
     strategy_results = []
     for strategy in ALL_STRATEGIES:
         if hasattr(strategy, "short_name") and strategy.short_name == 'ict_smc':
-            result = strategy.analyze(df, symbol, timeframe, df_d1=df_d1)
+            result = strategy.analyze(df, symbol, timeframe, df_d1=df_d1, df_h1=df_h1)
         else:
             result = strategy.analyze(df, symbol, timeframe)
         strategy_results.append(result)
@@ -588,7 +589,30 @@ async def cmd_autotrade(message: Message):
                     parse_mode="HTML"
                 )
                 return
+
+            # Проверка Правила 1 Фазы 7: ручное подтверждение запуска оператором
+            from db.database import get_bot_setting
+            user_confirmed_at = await get_bot_setting("challenge_user_confirmed_at", "")
+            if not user_confirmed_at:
+                await message.answer(
+                    "⚠️ <b>ПРАВИЛО 1 ФАЗЫ 7 (MANUAL CONFIRMATION REQUIRED):</b>\n"
+                    "Запуск челленджа требует предварительного подтверждения оператора.\n"
+                    "Выполните команду в терминале:\n"
+                    "<code>python scripts/daily_challenge_monitor.py --confirm-launch &lt;ID&gt; --token CONFIRM_PROP_CHALLENGE_LAUNCH_5000</code>\n"
+                    "или отправьте команду: <code>/confirm_launch CONFIRM_PROP_CHALLENGE_LAUNCH_5000</code>",
+                    parse_mode="HTML"
+                )
+                return
+
             bridge_manager.set_enabled(True)
+            if not bridge_manager.enabled:
+                await message.answer(
+                    "🚨 <b>ВКЛЮЧЕНИЕ АВТОПИЛОТА ЗАБЛОКИРОВАНО:</b>\n"
+                    "В <code>.env</code> установлено <code>AUTOTRADE_ENABLED=false</code> или активен исследовательский профиль.\n"
+                    "Реальная автоторговля строго отключена для защиты капитала.",
+                    parse_mode="HTML"
+                )
+                return
             await set_bot_setting("autotrade_enabled", "true")
             await message.answer("✅ <b>АВТОПИЛОТ ВКЛЮЧЕН!</b>\nВсе подтвержденные сигналы передаются в MetaTrader советник.", parse_mode="HTML")
             return
@@ -624,6 +648,31 @@ async def cmd_autotrade(message: Message):
         f"• <code>/lot 0.01</code> — установить фиксированный лот (в рамках риск-бюджета)"
     )
     await message.answer(text, reply_markup=back_keyboard(), parse_mode="HTML")
+
+@router.message(Command("confirm_launch"))
+async def cmd_confirm_launch(message: Message):
+    if message.from_user.id != config.ADMIN_ID:
+        await message.answer("❌ Доступно только администратору.", parse_mode=None)
+        return
+    parts = message.text.split(maxsplit=1)
+    from scripts.daily_challenge_monitor import ChallengeMonitor, CONFIRMATION_TOKEN
+    monitor = ChallengeMonitor()
+    token = parts[1].strip() if len(parts) > 1 else ""
+    success, msg = await monitor.confirm_challenge_launch(
+        user_id=str(message.from_user.id),
+        confirmation_token=token
+    )
+    await message.answer(msg, parse_mode=None)
+
+@router.message(Command("revoke_launch"))
+async def cmd_revoke_launch(message: Message):
+    if message.from_user.id != config.ADMIN_ID:
+        await message.answer("❌ Доступно только администратору.", parse_mode=None)
+        return
+    from scripts.daily_challenge_monitor import ChallengeMonitor
+    monitor = ChallengeMonitor()
+    success, msg = await monitor.revoke_challenge_launch()
+    await message.answer(msg, parse_mode=None)
 
 @router.message(Command("risk"))
 async def cmd_risk(message: Message):
@@ -1095,7 +1144,21 @@ async def cb_autotrade_actions(callback: CallbackQuery):
         if is_hard:
             await callback.answer(f"❌ Заблокировано: {reason}", show_alert=True)
             return
+
+        # Проверка Правила 1 Фазы 7: ручное подтверждение запуска оператором
+        user_confirmed_at = await get_bot_setting("challenge_user_confirmed_at", "")
+        if not user_confirmed_at:
+            await callback.answer(
+                "⚠️ Запуск челленджа требует предварительного подтверждения оператора (Правило 1 Фазы 7)!\n"
+                "Выполните /confirm_launch CONFIRM_PROP_CHALLENGE_LAUNCH_5000",
+                show_alert=True
+            )
+            return
+
         bridge_manager.set_enabled(True)
+        if not bridge_manager.enabled:
+            await callback.answer("🚨 Заблокировано: AUTOTRADE_ENABLED=false в .env", show_alert=True)
+            return
         await set_bot_setting("autotrade_enabled", "true")
         await callback.answer("🟢 Автопилот включен!")
     elif action == "off":

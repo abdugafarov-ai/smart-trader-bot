@@ -194,6 +194,14 @@ class ExecutionBridge:
         self.today_stats_cache: Dict[str, Any] = {}
         self.order_in_flight: bool = False
 
+        # Phase 2: Институциональный динамический риск и контроль серий убытков
+        self.consecutive_losses: int = 0
+        self.today_consecutive_losses: int = 0
+        self.consecutive_loss_paused: bool = False
+        self.consecutive_loss_reason: str = ""
+        self.peak_equity: float = float(getattr(config, "CHALLENGE_INITIAL_BALANCE", 5000.0))
+        self.processed_deal_tickets: set = set()
+
     def has_confirmed_symbol_specs(self, symbol: str) -> bool:
         """Проверяет, подтверждены ли спецификации инструмента брокером MT5."""
         sym_clean = symbol.upper().replace("/", "").replace("=X", "")
@@ -263,6 +271,103 @@ class ExecutionBridge:
         self.lot_mode = "fixed"
         logger.info("Auto-Trading Bridge lot set to: %.2f (mode: fixed, capped by risk budget)", self.default_lot)
 
+    def get_dynamic_risk_pct(self, base_risk: Optional[float] = None) -> float:
+        """
+        Институциональное динамическое масштабирование риска:
+        - Базовый ориентир: 0.25% (или переданный base_risk / self.default_risk).
+        - Снижение при неблагоприятной серии (consecutive losses):
+            >= 2 убытка подряд: снижение риска на 25% (множитель 0.75 -> 0.1875%).
+            >= 3 убытка подряд: снижение риска на 50% (множитель 0.50 -> 0.125%).
+        - Снижение при приближении к дневному лимиту:
+            если текущая дневная просадка >= 1.5% (60% от лимита 2.5%): множитель 0.50.
+        - Снижение при общей просадке от пика эквити:
+            если текущая просадка от пика эквити >= 6.0% (50% от лимита 12.0%): множитель 0.50.
+        - Защитные рамки: min 0.10%, max AUTOTRADE_MAX_RISK (0.50%).
+        """
+        raw_base = float(base_risk) if (base_risk is not None and base_risk > 0) else self.default_risk
+        max_cap = getattr(config, "AUTOTRADE_MAX_RISK", 0.50)
+        eff_base = min(raw_base, max_cap)
+
+        multiplier = 1.0
+
+        # 1. Снижение по серии убытков за день
+        streak = max(getattr(self, "today_consecutive_losses", 0), getattr(self, "consecutive_losses", 0))
+        if streak >= 3:
+            multiplier = min(multiplier, 0.50)
+        elif streak >= 2:
+            multiplier = min(multiplier, 0.75)
+
+        # 2. Снижение по дневной просадке (при приближении к лимиту 2.5%)
+        today_stats = getattr(self, "today_stats_cache", {})
+        start_bal = float(today_stats.get("start_balance", 0.0) or 0.0)
+        today_net = float(today_stats.get("net_pnl", 0.0) or 0.0)
+        if start_bal > 0 and today_net < 0:
+            dd_pct = (abs(today_net) / start_bal) * 100.0
+            if dd_pct >= 1.5:
+                multiplier = min(multiplier, 0.50)
+
+        # 3. Снижение по максимальной просадке от пика эквити
+        bal = self.account_balance
+        eq = self.account_equity
+        eff_cap = min(bal, eq) if (bal > 0 and eq > 0) else bal
+        init_cap = float(getattr(config, "CHALLENGE_INITIAL_BALANCE", 5000.0))
+        peak = max(getattr(self, "peak_equity", 0.0), init_cap)
+        if peak > 0 and eff_cap > 0 and eff_cap < peak:
+            tot_dd_pct = ((peak - eff_cap) / peak) * 100.0
+            if tot_dd_pct >= 6.0:
+                multiplier = min(multiplier, 0.50)
+
+        scaled_risk = eff_base * multiplier
+        return max(0.10, min(max_cap, round(scaled_risk, 4)))
+
+    def validate_sl_update(self, current_sl: float, new_sl: float, pos_type: str) -> bool:
+        """
+        Строгий запрет расширения стоп-лосса (Stop Loss widening ban):
+        Стоп-лосс может быть только подтянут в сторону безубытка или прибыли (Auto-BE / Trailing).
+        Увеличение дистанции стоп-лосса (отодвигание назад от цены) строго ЗАПРЕЩЕНО.
+        """
+        if current_sl <= 0.0 or new_sl <= 0.0:
+            return False
+        p_type = pos_type.upper()
+        if "BUY" in p_type:
+            if new_sl < current_sl - 1e-6:
+                logger.warning("🚨 SL WIDENING REJECTED for BUY: new_sl %.2f < current_sl %.2f", new_sl, current_sl)
+                return False
+        elif "SELL" in p_type:
+            if new_sl > current_sl + 1e-6:
+                logger.warning("🚨 SL WIDENING REJECTED for SELL: new_sl %.2f > current_sl %.2f", new_sl, current_sl)
+                return False
+        return True
+
+    def record_trade_result(self, pnl: float, ticket: Optional[int] = None):
+        """
+        Регистрирует исход закрытой сделки для отслеживания серий убытков и защитных пауз.
+        Предотвращает повторный учет одной и той же сделки по уникальному номеру тикета.
+        """
+        if ticket is not None and int(ticket) > 0:
+            t_int = int(ticket)
+            if t_int in self.processed_deal_tickets:
+                return
+            self.processed_deal_tickets.add(t_int)
+            if len(self.processed_deal_tickets) > 500:
+                self.processed_deal_tickets = set(sorted(self.processed_deal_tickets)[-250:])
+
+        if pnl < -1e-6:
+            self.consecutive_losses += 1
+            self.today_consecutive_losses += 1
+            if self.today_consecutive_losses >= 3:
+                self.consecutive_loss_paused = True
+                self.consecutive_loss_reason = (
+                    f"Серия из {self.today_consecutive_losses} убытков подряд за день: "
+                    f"пауза торговли активирована до 00:00 EET"
+                )
+                logger.warning("🚨 %s", self.consecutive_loss_reason)
+        elif pnl > 1e-6:
+            self.consecutive_losses = 0
+            self.today_consecutive_losses = 0
+
+        self._schedule_persist_circuit_breaker()
+
     def calculate_lot(
         self,
         symbol: str = "XAUUSD",
@@ -300,7 +405,7 @@ class ExecutionBridge:
         """
         sym_clean = symbol.upper().replace("/", "").replace("=X", "")
         max_r = getattr(config, "AUTOTRADE_MAX_RISK", 0.50)
-        raw_risk = risk_pct if (risk_pct is not None and risk_pct > 0) else self.default_risk
+        raw_risk = risk_pct if (risk_pct is not None and risk_pct > 0) else self.get_dynamic_risk_pct()
         effective_risk = min(float(raw_risk), max_r)
         bal_val = float(balance) if (balance is not None and balance > 0) else self.get_effective_balance(0.0)
 
@@ -534,11 +639,46 @@ class ExecutionBridge:
                     "Дневной лимит просадки исчерпан (сохранен после перезапуска)"
                 )
 
+            # Восстановление контроля серии убытков и пика эквити
+            init_cap = float(getattr(config, "CHALLENGE_INITIAL_BALANCE", 5000.0))
+            saved_peak = await get_bot_setting("peak_equity", "")
+            if saved_peak:
+                try:
+                    self.peak_equity = max(init_cap, float(saved_peak))
+                except (ValueError, TypeError):
+                    self.peak_equity = init_cap
+            else:
+                self.peak_equity = init_cap
+
+            saved_consec = await get_bot_setting("consecutive_losses", "")
+            if saved_consec:
+                try:
+                    self.consecutive_losses = max(0, int(saved_consec))
+                except (ValueError, TypeError):
+                    pass
+
+            consec_lock_date = await get_bot_setting("consecutive_loss_date", "")
+            if consec_lock_date == today_str:
+                saved_today_consec = await get_bot_setting("today_consecutive_losses", "")
+                if saved_today_consec:
+                    try:
+                        self.today_consecutive_losses = max(0, int(saved_today_consec))
+                    except (ValueError, TypeError):
+                        pass
+                consec_paused_str = await get_bot_setting("consecutive_loss_paused", "")
+                if consec_paused_str.lower() in ("true", "1", "yes"):
+                    self.consecutive_loss_paused = True
+                    self.consecutive_loss_reason = await get_bot_setting(
+                        "consecutive_loss_reason",
+                        "Серия из 3 убытков подряд за день: пауза торговли активирована до 00:00 EET"
+                    )
+
             logger.info(
-                "Loaded Bridge settings from DB: lot=%.2f, risk=%.2f%%, lot_mode=%s, enabled=%s, daily_loss_limit=%.1f%%, max_positions=%d, hard_stop=%s, daily_locked=%s",
+                "Loaded Bridge settings from DB: lot=%.2f, risk=%.2f%%, lot_mode=%s, enabled=%s, daily_loss_limit=%.1f%%, max_positions=%d, hard_stop=%s, daily_locked=%s, streak_pause=%s, peak_equity=%.2f",
                 self.default_lot, self.default_risk, self.lot_mode, self.enabled,
                 self.max_daily_loss_pct, self.max_concurrent_positions,
                 self.equity_hard_stop_triggered, self.daily_loss_locked,
+                self.consecutive_loss_paused, self.peak_equity,
             )
         except Exception as e:
             logger.error("Failed to load Bridge settings from DB: %s", e)
@@ -552,6 +692,12 @@ class ExecutionBridge:
             await set_bot_setting("daily_loss_locked", "true" if self.daily_loss_locked else "false")
             await set_bot_setting("daily_lock_reason", self.daily_lock_reason or "")
             await set_bot_setting("daily_lock_date", self.current_trade_date or get_broker_today_date_str())
+            await set_bot_setting("consecutive_loss_paused", "true" if self.consecutive_loss_paused else "false")
+            await set_bot_setting("consecutive_loss_reason", self.consecutive_loss_reason or "")
+            await set_bot_setting("consecutive_loss_date", self.current_trade_date or get_broker_today_date_str())
+            await set_bot_setting("consecutive_losses", str(self.consecutive_losses))
+            await set_bot_setting("today_consecutive_losses", str(self.today_consecutive_losses))
+            await set_bot_setting("peak_equity", f"{self.peak_equity:.2f}")
             if self.equity_hard_stop_triggered:
                 await set_bot_setting("autotrade_enabled", "false")
         except Exception as e:
@@ -583,6 +729,11 @@ class ExecutionBridge:
         self.mt5_telemetry["orders"] = orders or []
         self.mt5_telemetry["last_ping"] = datetime.now(timezone.utc)
         self._connected_terminals["MT5"] = self.mt5_telemetry["last_ping"]
+
+        # Обновление исторического пика эквити при получении свежей телеметрии
+        if equity > self.peak_equity:
+            self.peak_equity = equity
+            self._schedule_persist_circuit_breaker()
 
         # Аварийный контроль хард-стопа по эквити ($4,450.00)
         self.check_equity_hard_stop()
@@ -804,6 +955,9 @@ class ExecutionBridge:
             self.daily_loss_locked = False
             self.daily_lock_reason = ""
             self.daily_lock_alerted_date = ""
+            self.today_consecutive_losses = 0
+            self.consecutive_loss_paused = False
+            self.consecutive_loss_reason = ""
             self._schedule_persist_circuit_breaker()
 
         is_online, _ = self.is_mt5_online()
@@ -814,6 +968,15 @@ class ExecutionBridge:
         eq = float(self.mt5_telemetry.get("equity", 0.0))
         if bal <= 0:
             return self.daily_loss_locked, 0.0, 0.0, 0.0
+
+        # Обновление исторического пика эквити для контроля общей просадки
+        init_cap = float(getattr(config, "CHALLENGE_INITIAL_BALANCE", 5000.0))
+        cur_eff = max(bal, eq)
+        if cur_eff > self.peak_equity:
+            self.peak_equity = cur_eff
+            self._schedule_persist_circuit_breaker()
+        elif self.peak_equity < init_cap:
+            self.peak_equity = init_cap
 
         floating_pnl = eq - bal
         today_net_pnl = today_closed_pnl + floating_pnl
@@ -938,6 +1101,10 @@ class ExecutionBridge:
         # 2. Проверка Hard Daily Drawdown Lock
         if self.daily_loss_locked:
             return False, f"Защита от дневного убытка: {self.daily_lock_reason}"
+
+        # 2.1 Защита от серии убытков (Consecutive Loss Daily Pause)
+        if getattr(self, "consecutive_loss_paused", False):
+            return False, f"Защита от серии убытков: {self.consecutive_loss_reason}"
 
         if now_dt is None:
             now_utc = datetime.now(timezone.utc)

@@ -1,0 +1,67 @@
+======================================================================
+SMART TRADER BOT — PHASE 0 GIT BASELINE AUDIT
+Timestamp: 2026-11-01 14:00 UTC
+Repository: https://github.com/abdugafarov-ai/smart-trader-bot
+======================================================================
+
+>>> COMMAND: git status
+On branch main
+Your branch is up to date with 'origin/main'.
+
+nothing to commit, working tree clean
+----------------------------------------------------------------------
+
+>>> COMMAND: git branch --show-current
+main
+----------------------------------------------------------------------
+
+>>> COMMAND: git rev-parse HEAD
+ad1eea881e39205e56ec8703328e925a84e46d11
+----------------------------------------------------------------------
+
+>>> COMMAND: git log -1 --oneline
+ad1eea8 docs(phase3): add Phase 3 research validation executive PDF report
+----------------------------------------------------------------------
+
+>>> COMMAND: git log -5 --graph --decorate --oneline
+* ad1eea8 (HEAD -> main, origin/main, origin/feat-xauusd-ict-audit, origin/HEAD) docs(phase3): add Phase 3 research validation executive PDF report
+* ccdd0b6 fix(phase3): overhaul Monte Carlo daily calendar bootstrap, empirical volatility tertiles, and genuine technical stress tests
+* 4f88d56 feat(research): implement Phase 3 research validation, signal ledger, block bootstrap MC, and technical stress tests
+* b33d964 docs(audit): add Phase 2 executive audit PDF report
+* d498444 fix(core): normalize multi-timezone datetimes across trading window, rollover, and execution bridge
+----------------------------------------------------------------------
+
+>>> COMMAND: git log -1 --stat
+commit ad1eea881e39205e56ec8703328e925a84e46d11
+Author: abdugafarov-ai <abdugafarov2300@gmail.com>
+Date:   Sun Nov 1 11:15:24 2026 +0500
+
+    docs(phase3): add Phase 3 research validation executive PDF report
+
+ docs/SMART_TRADER_BOT_PHASE_3_RESEARCH_REPORT.pdf | Bin 0 -> 374219 bytes
+ 1 file changed, 0 insertions(+), 0 deletions(-)
+----------------------------------------------------------------------
+
+>>> COMMAND: git diff
+(no output / empty)
+----------------------------------------------------------------------
+
+>>> COMMAND: git diff --cached
+(no output / empty)
+----------------------------------------------------------------------
+
+>>> COMMAND: git remote -v
+origin	https://abdugafarov-ai@github.com/abdugafarov-ai/smart-trader-bot.git (fetch)
+origin	https://abdugafarov-ai@github.com/abdugafarov-ai/smart-trader-bot.git (push)
+----------------------------------------------------------------------
+
+>>> COMMAND: git branch -a
+backup/pre-audit-worker
+  checkpoint-before-critical-fixes
+  checkpoint-pre-review
+  feat-xauusd-ict-audit
+* main
+  remotes/origin/HEAD -> origin/main
+  remotes/origin/feat-xauusd-ict-audit
+  remotes/origin/main
+----------------------------------------------------------------------

@@ -255,6 +255,8 @@ async def bridge_get_orders(request: web.Request) -> web.Response:
                         fetcher = DataFetcher()
                         for nd in new_closed_deals:
                             profit_val = float(nd.get("profit") or 0.0)
+                            ticket_no = int(nd.get("ticket", 0) or 0)
+                            bridge_manager.record_trade_result(profit_val, ticket=ticket_no)
                             profit_sign = "+" if profit_val >= 0 else ""
                             sym = nd.get('symbol', '').upper()
                             deal_type = nd.get('type', 'BUY').upper()
@@ -490,16 +492,35 @@ async def bridge_get_orders(request: web.Request) -> web.Response:
                 )
                 await _send_telegram_notification(alert_text)
 
+            dyn_risk = bridge_manager.get_dynamic_risk_pct()
             return web.json_response({
                 "status": "ok",
                 "autotrade_enabled": False,
                 "daily_loss_locked": True,
+                "consecutive_loss_paused": getattr(bridge_manager, "consecutive_loss_paused", False),
                 "panic_close_all": panic,
                 "lot": effective_bridge_lot,
-                "risk_percent": bridge_manager.default_risk,
+                "risk_percent": dyn_risk,
                 "use_auto_risk": use_risk_flag,
                 "orders": [],
                 "reason": bridge_manager.daily_lock_reason,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            })
+
+        # 1.1 Проверка Consecutive Loss Lockout (серия убытков подряд за день)
+        dyn_risk = bridge_manager.get_dynamic_risk_pct()
+        if getattr(bridge_manager, "consecutive_loss_paused", False):
+            return web.json_response({
+                "status": "ok",
+                "autotrade_enabled": False,
+                "daily_loss_locked": False,
+                "consecutive_loss_paused": True,
+                "panic_close_all": panic,
+                "lot": effective_bridge_lot,
+                "risk_percent": dyn_risk,
+                "use_auto_risk": use_risk_flag,
+                "orders": [],
+                "reason": bridge_manager.consecutive_loss_reason,
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             })
 
@@ -508,9 +529,10 @@ async def bridge_get_orders(request: web.Request) -> web.Response:
                 "status": "ok",
                 "autotrade_enabled": False,
                 "daily_loss_locked": False,
+                "consecutive_loss_paused": False,
                 "panic_close_all": panic,
                 "lot": effective_bridge_lot,
-                "risk_percent": bridge_manager.default_risk,
+                "risk_percent": dyn_risk,
                 "use_auto_risk": use_risk_flag,
                 "orders": [],
                 "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -551,9 +573,11 @@ async def bridge_get_orders(request: web.Request) -> web.Response:
             return web.json_response({
                 "status": "ok",
                 "autotrade_enabled": bridge_manager.enabled,
+                "daily_loss_locked": False,
+                "consecutive_loss_paused": False,
                 "panic_close_all": panic,
                 "lot": effective_bridge_lot,
-                "risk_percent": bridge_manager.default_risk,
+                "risk_percent": dyn_risk,
                 "use_auto_risk": use_risk_flag,
                 "orders": [],
                 "reason": f"Дневной лимит сделок исчерпан ({today_signal_count}/{max_daily_trades})",
@@ -653,12 +677,12 @@ async def bridge_get_orders(request: web.Request) -> web.Response:
             if max_safe_lot <= 0.0:
                 logger.warning(
                     "Signal #%s (%s) REJECTED: min lot 0.01 risk ($%.2f) exceeds allowed risk budget (%.2f%%)",
-                    sig.get("id"), sym, sl_dist, bridge_manager.default_risk
+                    sig.get("id"), sym, sl_dist, dyn_risk
                 )
                 await update_signal_status(
                     sig.get("id"),
                     "CANCELLED_BY_MT5",
-                    result=f"NO TRADE: риск на 0.01 лота (${sl_dist:.2f}) превышает бюджет ({bridge_manager.default_risk:.2f}%)"
+                    result=f"NO TRADE: риск на 0.01 лота (${sl_dist:.2f}) превышает бюджет ({dyn_risk:.2f}%)"
                 )
                 continue
 
@@ -687,7 +711,7 @@ async def bridge_get_orders(request: web.Request) -> web.Response:
 
             # Повторная проверка ожидаемого риска перед отправкой ордера
             eff_bal = bridge_manager.get_effective_balance(0.0)
-            risk_budget_usd = eff_bal * (min(bridge_manager.default_risk, config.AUTOTRADE_MAX_RISK) / 100.0)
+            risk_budget_usd = eff_bal * (dyn_risk / 100.0)
             if eff_bal > 0 and expected_risk_usd > risk_budget_usd + 0.10:
                 logger.warning(
                     "Signal #%s (%s) REJECTED: expected risk ($%.2f) exceeds risk budget ($%.2f)",
@@ -721,7 +745,7 @@ async def bridge_get_orders(request: web.Request) -> web.Response:
                 "tp2": sig.get("take_profit_2"),
                 "breakeven_applied": bool(sig.get("breakeven_applied", 0)),
                 "lot": order_lot,
-                "risk_percent": bridge_manager.default_risk,
+                "risk_percent": dyn_risk,
                 "use_auto_risk": use_risk_flag,
                 "commission_per_lot": comm_per_lot,
                 "magic_number": 888001,
@@ -730,9 +754,11 @@ async def bridge_get_orders(request: web.Request) -> web.Response:
         return web.json_response({
             "status": "ok",
             "autotrade_enabled": bridge_manager.enabled,
+            "daily_loss_locked": False,
+            "consecutive_loss_paused": False,
             "panic_close_all": panic,
             "lot": bridge_manager.default_lot,
-            "risk_percent": bridge_manager.default_risk,
+            "risk_percent": dyn_risk,
             "use_auto_risk": use_risk_flag,
             "orders": orders,
             "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -1037,6 +1063,7 @@ async def bridge_post_report(request: web.Request) -> web.Response:
         # Позиция закрыта в MT5 (TP, SL, безубыток, EOD Flat)
         elif action in ("DEAL_CLOSED", "STALE_PROFIT_CLOSE", "CLOSED", "CLOSED_EOD_FLAT"):
             sig = await close_signal_by_broker(symbol, price, profit, reason)
+            bridge_manager.record_trade_result(profit, ticket=ticket)
             profit_sign = "+" if profit >= 0 else ""
             reason_u = str(reason or "").upper()
             is_be = "BREAKEVEN" in reason_u or (sig and sig.get("status") == "BREAKEVEN")

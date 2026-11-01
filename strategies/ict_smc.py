@@ -1015,7 +1015,7 @@ class ICTSMCStrategy(BaseStrategy):
             except Exception:
                 return False
 
-    def analyze(self, df: pd.DataFrame, symbol: str, timeframe: str, df_d1: Optional[pd.DataFrame] = None, df_ltf: Optional[pd.DataFrame] = None, current_time: Optional[datetime] = None, account_balance: Optional[float] = None) -> StrategyResult:
+    def analyze(self, df: pd.DataFrame, symbol: str, timeframe: str, df_d1: Optional[pd.DataFrame] = None, df_ltf: Optional[pd.DataFrame] = None, current_time: Optional[datetime] = None, account_balance: Optional[float] = None, df_h1: Optional[pd.DataFrame] = None) -> StrategyResult:
         # Support multi-timeframe dict input (e.g., {"D1": df_d1, "H1": df_h1, "M15": df_m15, "M5": df_m5})
         if isinstance(df, dict):
             mtf_dict = df
@@ -1030,6 +1030,7 @@ class ICTSMCStrategy(BaseStrategy):
                     ["Отсутствует подтверждающий ТФ M5 — NO TRADE"],
                 )
             df_d1 = df_d1 if df_d1 is not None else mtf_dict.get("D1")
+            df_h1 = df_h1 if df_h1 is not None else mtf_dict.get("H1")
             df_ltf = df_ltf if df_ltf is not None else mtf_dict.get("M5")
             df = mtf_dict.get(timeframe) if timeframe in mtf_dict else mtf_dict.get("M15")
             if df is None:
@@ -1329,6 +1330,44 @@ class ICTSMCStrategy(BaseStrategy):
                 )
             elif d1_trend:
                 details.append(f"✅ D1 Trend Filter согласован: {d1_reason}")
+
+        # ═══ STRONG TREND CASCADE & EXHAUSTION GUARD (PHASE 3 UPGRADE) ═══
+        if is_gold and df_h1 is not None and len(df_h1) >= 10 and len(df) >= 3:
+            h1_last_c = float(df_h1['close'].iloc[-1])
+            h1_prev_10 = float(df_h1['close'].iloc[-10])
+            h1_slope = (h1_last_c - h1_prev_10) / max(0.1, atr)
+            h1_h_max = float(df_h1['high'].iloc[-20:].max()) if len(df_h1) >= 20 else float(df_h1['high'].max())
+            h1_l_min = float(df_h1['low'].iloc[-20:].min()) if len(df_h1) >= 20 else float(df_h1['low'].min())
+            h1_eq = (h1_h_max + h1_l_min) / 2.0
+            h1_bull = h1_last_c > h1_eq
+            h1_bear = h1_last_c < h1_eq
+            is_strong_uptrend = (h1_slope > 0.6 and h1_bull)
+            is_strong_downtrend = (h1_slope < -0.6 and h1_bear)
+
+            h1_open_last = float(df_h1['open'].iloc[-1])
+            h1_drop_atr = (h1_open_last - h1_last_c) / max(0.1, atr)
+            h1_rally_atr = (h1_last_c - h1_open_last) / max(0.1, atr)
+            m15_c0 = float(df['close'].iloc[-1])
+            m15_c1 = float(df['close'].iloc[-2])
+            m15_c2 = float(df['close'].iloc[-3])
+            m15_cascade_down = (m15_c0 < m15_c1 < m15_c2)
+            m15_cascade_up = (m15_c0 > m15_c1 > m15_c2)
+
+            block_strong_bull_entry = is_strong_uptrend and (m15_cascade_down or h1_drop_atr > 0.70)
+            block_strong_bear_entry = is_strong_downtrend and (m15_cascade_up or h1_rally_atr > 0.70)
+
+            if direction == "LONG" and block_strong_bull_entry:
+                details.append("❌ Strong Trend Cascade Guard: Покупка заблокирована — M15 падает каскадом или резкое падение H1 > 0.70 ATR в сильном аптренде")
+                return self._make_result(
+                    StrategySignal(direction="NEUTRAL", confidence=0, details=details, rejection_reasons=["STRONG_TREND_CASCADE_DOWN"]),
+                    details + ["Каскадное падение в сильном аптренде — вход заблокирован"]
+                )
+            elif direction == "SHORT" and block_strong_bear_entry:
+                details.append("❌ Strong Trend Cascade Guard: Продажа заблокирована — M15 растет каскадом или резкий взлет H1 > 0.70 ATR в сильном даунтренде")
+                return self._make_result(
+                    StrategySignal(direction="NEUTRAL", confidence=0, details=details, rejection_reasons=["STRONG_TREND_CASCADE_UP"]),
+                    details + ["Каскадный рост в сильном даунтренде — вход заблокирован"]
+                )
 
         # ═══ ФРАКТАЛЬНАЯ МОДЕЛЬ (HTF Narrative: Draw on Liquidity) ═══
         dol = self.calculate_draw_on_liquidity(df_d1, current_price, symbol)

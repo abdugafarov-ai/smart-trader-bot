@@ -319,6 +319,7 @@ class IntradaySimulator:
         max_daily_trades: int = 5,
         use_news_filter: bool = True,
         news_window_min: int = 30,
+        use_strong_trend_filter: bool = True,
     ):
         self.df_m5 = df_m5
         self.df_m15 = df_m15
@@ -333,6 +334,7 @@ class IntradaySimulator:
         self.use_killzone_filter = use_killzone_filter
         self.use_h1_bias_filter = use_h1_bias_filter
         self.use_discount_premium_filter = use_discount_premium_filter
+        self.use_strong_trend_filter = use_strong_trend_filter
         self.spread_usd = spread_usd
         self.slippage_usd = slippage_usd
         self.legacy_mode = legacy_mode
@@ -366,9 +368,13 @@ class IntradaySimulator:
                 },
             )
 
-        df_m5 = self.df_m5
-        df_m15 = self.df_m15
-        df_h1 = self.df_h1
+        df_m5 = self.df_m5.copy()
+        df_m15 = self.df_m15.copy()
+        df_h1 = self.df_h1.copy()
+
+        for d in (df_m5, df_m15, df_h1):
+            if "time" not in d.columns and "timestamp" in d.columns:
+                d["time"] = pd.to_datetime(d["timestamp"], utc=True)
 
         m5_times = df_m5["time"].values
         m15_times = df_m15["time"].values
@@ -385,6 +391,7 @@ class IntradaySimulator:
         m15_closes = df_m15["close"].values
         m15_atrs = df_m15["atr"].values
 
+        h1_opens = df_h1["open"].values
         h1_highs = df_h1["high"].values
         h1_lows = df_h1["low"].values
         h1_closes = df_h1["close"].values
@@ -672,6 +679,23 @@ class IntradaySimulator:
             sig = None
             active_model = "model_a" if self.model == "baseline_legacy" else self.model
 
+            # Strong Trend Structural Exhaustion Guard
+            h1_slope = (h1_last_c - h1_closes[h1_end - 10]) / max(0.1, cur_atr)
+            is_strong_uptrend = (h1_slope > 0.6 and h1_bull)
+            is_strong_downtrend = (h1_slope < -0.6 and h1_bear)
+
+            if self.use_strong_trend_filter and not self.legacy_mode:
+                h1_drop_atr = (h1_opens[h1_end - 1] - h1_closes[h1_end - 1]) / max(0.1, cur_atr)
+                h1_rally_atr = (h1_closes[h1_end - 1] - h1_opens[h1_end - 1]) / max(0.1, cur_atr)
+                m15_cascade_down = (last_m15_c < m15_closes[m15_end - 2] < m15_closes[m15_end - 3])
+                m15_cascade_up = (last_m15_c > m15_closes[m15_end - 2] > m15_closes[m15_end - 3])
+
+                block_strong_bull_entry = is_strong_uptrend and (m15_cascade_down or h1_drop_atr > 0.70)
+                block_strong_bear_entry = is_strong_downtrend and (m15_cascade_up or h1_rally_atr > 0.70)
+            else:
+                block_strong_bull_entry = False
+                block_strong_bear_entry = False
+
             if active_model in ("model_a", "model_a_plus_b"):
                 # Model A: Sweep -> Displacement -> MSS -> FVG (1 trade per M15 FVG)
                 poi_key = ("MODEL_A_FVG", m15_end - 2)
@@ -689,7 +713,7 @@ class IntradaySimulator:
                     bull_fvg = (c3_l > c1_h) and (c2_c > c2_o) and (abs(c2_c - c2_o) > 0.4 * cur_atr)
                     bear_fvg = (c3_h < c1_l) and (c2_c < c2_o) and (abs(c2_c - c2_o) > 0.4 * cur_atr)
 
-                    if bull_swp and bull_fvg and h1_bull:
+                    if bull_swp and bull_fvg and h1_bull and not block_strong_bull_entry:
                         sl = np.min(m15_l_slice) - (0.50 if self.sl_buffer_mode == "structural" else 1.2 * cur_atr)
                         if self.legacy_mode and (b_close - sl) < 10.0:
                             sl = b_close - 10.0
@@ -697,7 +721,7 @@ class IntradaySimulator:
                         limit_p = (c1_h + c3_l) / 2.0
                         sig = {"type": "BUY", "entry": entry, "sl": sl, "limit_price": limit_p, "poi_key": poi_key}
 
-                    elif bear_swp and bear_fvg and h1_bear:
+                    elif bear_swp and bear_fvg and h1_bear and not block_strong_bear_entry:
                         sl = np.max(m15_h_slice) + (0.50 if self.sl_buffer_mode == "structural" else 1.2 * cur_atr)
                         if self.legacy_mode and (sl - b_close) < 10.0:
                             sl = b_close + 10.0
@@ -742,7 +766,7 @@ class IntradaySimulator:
                 m5_prev3_high = np.max(m5_highs[i - 3 : i])
                 m5_prev3_low = np.min(m5_lows[i - 3 : i])
 
-                if h1_bull and in_discount and down_idx:
+                if h1_bull and in_discount and down_idx and not block_strong_bull_entry:
                     ob_k = down_idx[-1]
                     ob_h = m15_highs[ob_k]
                     ob_l = m15_lows[ob_k]
@@ -757,7 +781,7 @@ class IntradaySimulator:
                             "poi_key": ("OB_BUY", ob_k),
                         }
 
-                elif h1_bear and in_premium and up_idx:
+                elif h1_bear and in_premium and up_idx and not block_strong_bear_entry:
                     ob_k = up_idx[-1]
                     ob_h = m15_highs[ob_k]
                     ob_l = m15_lows[ob_k]

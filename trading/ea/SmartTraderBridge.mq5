@@ -606,6 +606,20 @@ void ParseAndExecuteOrders(string json)
       return; // Автопилот выключен
    }
 
+   // Институциональная защита: блокировка по дневному лимиту убытка (Daily Loss Stop)
+   if(StringFind(json, "\"daily_loss_locked\":true") >= 0 || StringFind(json, "\"daily_loss_locked\": true") >= 0)
+   {
+      Print("🛑 [SmartTrader MT5] ВХОД ЗАБЛОКИРОВАН: сработал Hard Daily Loss Lock на сервере!");
+      return;
+   }
+
+   // Институциональная защита: пауза после серии из 3 убытков подряд (Circuit Breaker)
+   if(StringFind(json, "\"consecutive_loss_paused\":true") >= 0 || StringFind(json, "\"consecutive_loss_paused\": true") >= 0)
+   {
+      Print("🛑 [SmartTrader MT5] ВХОД ЗАБЛОКИРОВАН: активирована пауза после серии убытков (Circuit Breaker)!");
+      return;
+   }
+
    for(int i = 0; i < ArraySize(common_pairs); i++)
    {
       string pair = common_pairs[i];

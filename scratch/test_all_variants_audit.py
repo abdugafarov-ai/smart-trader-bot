@@ -133,9 +133,9 @@ async def test_variant_3_bridge_and_ea():
         print("  [OK] Bridge POST /api/v1/bridge/report successfully acknowledged order execution")
         
         mql5_file = Path("trading/ea/SmartTraderBridge.mq5")
-        mql4_file = Path("trading/ea/SmartTraderBridge.mq4")
+        mql4_file = Path("trading/ea/legacy_mt4_quarantine/SmartTraderBridge.mq4")
         assert mql5_file.exists(), "SmartTraderBridge.mq5 must exist!"
-        assert mql4_file.exists(), "SmartTraderBridge.mq4 must exist!"
+        assert mql4_file.exists(), "SmartTraderBridge.mq4 must exist in quarantine!"
         assert mql5_file.stat().st_size > 1000
         assert mql4_file.stat().st_size > 1000
         print("  [OK] SmartTraderBridge.mq5 and SmartTraderBridge.mq4 present and verified")
