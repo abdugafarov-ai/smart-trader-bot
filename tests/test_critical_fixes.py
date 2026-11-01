@@ -291,17 +291,21 @@ class TestCriticalFixes(unittest.TestCase):
                  patch("db.database.get_consecutive_sl_count", new_callable=AsyncMock, return_value=0), \
                  patch("aiosqlite.connect", return_value=mock_conn):
 
-                # First poll: signal is fresh and gets dispatched
-                resp1 = await srv.bridge_get_orders(auth_req)
-                data1 = json.loads(resp1.text)
-                self.assertEqual(len(data1["orders"]), 1)
-                self.assertEqual(data1["orders"][0]["id"], 901)
-                self.assertIn(901, srv._dispatched_in_flight)
+                try:
+                    # First poll: signal is fresh and gets dispatched
+                    resp1 = await srv.bridge_get_orders(auth_req)
+                    data1 = json.loads(resp1.text)
+                    self.assertEqual(len(data1["orders"]), 1)
+                    self.assertEqual(data1["orders"][0]["id"], 901)
+                    self.assertIn(901, srv._dispatched_in_flight)
 
-                # Immediate second poll (e.g. timeout retry 2s later): signal is in-flight -> NOT dispatched
-                resp2 = await srv.bridge_get_orders(auth_req)
-                data2 = json.loads(resp2.text)
-                self.assertEqual(len(data2["orders"]), 0, "In-flight signal must NOT be dispatched a second time!")
+                    # Immediate second poll (e.g. timeout retry 2s later): signal is in-flight -> NOT dispatched
+                    resp2 = await srv.bridge_get_orders(auth_req)
+                    data2 = json.loads(resp2.text)
+                    self.assertEqual(len(data2["orders"]), 0, "In-flight signal must NOT be dispatched a second time!")
+                finally:
+                    bridge.live_quotes.clear()
+                    bridge.mt5_telemetry["last_ping"] = None
 
         asyncio.run(run_dedup_test())
 

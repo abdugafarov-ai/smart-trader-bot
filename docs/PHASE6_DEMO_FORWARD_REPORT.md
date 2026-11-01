@@ -4,7 +4,7 @@
 **Prop Firm Specification:** FundingPips $5,000 2-Step Flex  
 **Evaluation Harness:** `scripts/run_demo_forward_simulation.py`  
 **Classification:** **Offline Historical Replay & Execution Stress Simulation**  
-**Date of Run:** 2026-11-01 16:04:43 UTC  
+**Date of Run:** 2026-11-01 16:51:47 UTC  
 **Offline Replay Verdict:** **GO (OFFLINE HISTORICAL REPLAY PASS / REAL DEMO FORWARD PENDING)**  
 **Overall Phase 6 Status:** **`PARTIAL (OFFLINE REPLAY: PASS / REAL DEMO FORWARD: REAL_DEMO_FORWARD_NOT_PERFORMED)`**  
 
@@ -23,11 +23,11 @@ This report documents an **offline historical replay and intraday stress simulat
 
 | Session | Date | Day Type | Start Balance | End Balance | Net PnL | Max Session DD | Circuit Breaker |
 | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| 1 | 2026-10-21 | Normal Trading | $5,000.00 | $5,012.27 | $+12.27 | $0.00 | Active |
-| 2 | 2026-10-22 | Normal Trading | $5,012.27 | $5,006.47 | $-5.80 | $9.11 | Active |
-| 3 | 2026-10-23 | Normal Trading | $5,006.47 | $5,018.71 | $+12.24 | $0.00 | Active |
-| 4 | 2026-10-26 | Stress Test | $5,018.71 | $4,981.21 | $-37.50 | $37.50 | PAUSED (3 Losses) |
-| 5 | 2026-10-27 | Normal Trading | $4,981.21 | $4,981.21 | $+0.00 | $0.00 | Active |
+| 1 | 2026-10-21 | Normal Trading | $5,000.00 | $5,012.21 | $+12.21 | $0.00 | Active |
+| 2 | 2026-10-22 | Normal Trading | $5,012.21 | $5,006.46 | $-5.75 | $9.12 | Active |
+| 3 | 2026-10-23 | Normal Trading | $5,006.46 | $5,018.68 | $+12.22 | $0.00 | Active |
+| 4 | 2026-10-26 | Stress Test | $5,018.68 | $4,981.18 | $-37.50 | $37.50 | PAUSED (3 Losses) |
+| 5 | 2026-10-27 | Normal Trading | $4,981.18 | $4,981.18 | $+0.00 | $0.00 | Active |
 
 ---
 
@@ -38,8 +38,8 @@ This report documents an **offline historical replay and intraday stress simulat
 | Verification Criterion | Broker / Plan Threshold | Observed Performance | Evaluation Status |
 | :--- | :---: | :---: | :---: |
 | **FundingPips Max Daily Drawdown (< $200.00 / 4.0%)** | 200.0 | 37.5 | **PASS** |
-| **FundingPips Max Total Drawdown (< $600.00 / 12.0%)** | 600.0 | 39.51 | **PASS** |
-| **Hard Equity Floor ($4,400.00 broker limit, $4,450.00 hard stop)** | 4400.0 | 4981.21 | **PASS** |
+| **FundingPips Max Total Drawdown (< $600.00 / 12.0%)** | 600.0 | 39.54 | **PASS** |
+| **Hard Equity Floor ($4,400.00 broker limit, $4,450.00 hard stop)** | 4400.0 | 4981.18 | **PASS** |
 | **Zero Overnight / Weekend Rollover Exposure (EOD Flat Enforcement)** | N/A | Verified | **PASS** |
 | **Stop Loss Anti-Widening Enforcement (100% rejection rate)** | N/A | Verified | **PASS** |
 | **MT5 Deal Ticket Deduplication & Idempotency** | N/A | Verified | **PASS** |

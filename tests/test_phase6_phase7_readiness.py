@@ -101,6 +101,9 @@ class TestPhase6DemoForwardHarness(unittest.TestCase):
     def test_06_signals_only_forward_observer(self):
         """Verify signals-only observer initializes, enforces zero orders, and cleanly reports REAL_DEMO_FORWARD_NOT_PERFORMED when offline."""
         from scripts.run_demo_forward_simulation import SignalsOnlyForwardObserver
+        from trading.execution_bridge import bridge_manager
+        bridge_manager.mt5_telemetry["last_ping"] = None
+        bridge_manager.live_quotes.clear()
         observer = SignalsOnlyForwardObserver(target_sessions=5)
         conn = observer.check_mt5_connection()
         self.assertFalse(conn["autotrade_enabled"])
@@ -119,6 +122,12 @@ class TestPhase7ChallengeMonitor(unittest.IsolatedAsyncioTestCase):
         self.monitor = ChallengeMonitor()
         self.test_token = "SECURE_TEST_LAUNCH_TOKEN_2026"
         os.environ["CHALLENGE_LAUNCH_TOKEN"] = self.test_token
+        self.original_admin_id = getattr(config, "ADMIN_ID", 0)
+        self.test_admin_id = 999888777
+        config.ADMIN_ID = self.test_admin_id
+
+    async def asyncTearDown(self):
+        config.ADMIN_ID = self.original_admin_id
 
     def test_01_configuration_audit_fundingpips(self):
         """Verify audit passes against FundingPips $5,000 2-step Flex specs."""
@@ -149,6 +158,7 @@ class TestPhase7ChallengeMonitor(unittest.IsolatedAsyncioTestCase):
         Verify Rule 1: 'Запустить челлендж только после ручного подтверждения пользователя'
         - Unconfirmed initially -> LOCKED_FAIL_CLOSED
         - Unauthorized non-admin user -> Rejected
+        - Test actor 'test_admin' -> Strictly rejected without explicit ADMIN_ID match
         - Invalid token -> Rejected without secret leakage
         - Valid token -> Confirmed (one-time consumed), strictly respects AUTOTRADE_ENABLED=false
         - Token reuse -> Blocked by single-use consumption
@@ -170,17 +180,24 @@ class TestPhase7ChallengeMonitor(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(ok_non_admin)
         self.assertIn("not an authorized administrator", msg_non_admin)
 
-        # Step 2B: Confirmation with invalid token must fail
+        # Step 2B: Hardcoded 'test_admin' actor must be STRICTLY REJECTED (no backdoor)
+        ok_test_actor, msg_test_actor = await self.monitor.confirm_challenge_launch(
+            user_id="test_admin", confirmation_token=self.test_token
+        )
+        self.assertFalse(ok_test_actor, "Hardcoded 'test_admin' must NEVER bypass factual ADMIN_ID authorization")
+        self.assertIn("not an authorized administrator", msg_test_actor)
+
+        # Step 2C: Confirmation with invalid token must fail
         ok_bad, msg_bad = await self.monitor.confirm_challenge_launch(
-            user_id="test_admin", confirmation_token="WRONG_TOKEN"
+            user_id=str(self.test_admin_id), confirmation_token="WRONG_TOKEN"
         )
         self.assertFalse(ok_bad)
         self.assertIn("REJECTED", msg_bad)
         self.assertNotIn(self.test_token, msg_bad, "Error message must never leak secret token")
 
-        # Step 3: Confirmation with valid token succeeds
+        # Step 3: Confirmation with valid token succeeds for factual ADMIN_ID
         ok_good, msg_good = await self.monitor.confirm_challenge_launch(
-            user_id="test_admin", confirmation_token=self.test_token
+            user_id=str(self.test_admin_id), confirmation_token=self.test_token
         )
         self.assertTrue(ok_good)
         self.assertIn("USER MANUAL CONFIRMATION REGISTERED", msg_good)
@@ -189,7 +206,7 @@ class TestPhase7ChallengeMonitor(unittest.IsolatedAsyncioTestCase):
         metrics2 = await self.monitor.get_equity_metrics()
         gate2 = metrics2["phase7_rule1_launch_gate"]
         self.assertTrue(gate2["is_confirmed"])
-        self.assertEqual(gate2["confirmed_by"], "test_admin")
+        self.assertEqual(gate2["confirmed_by"], str(self.test_admin_id))
 
         # Invariant check: because AUTOTRADE_ENABLED is False in .env, routing remains fail-closed
         self.assertFalse(gate2["autotrade_enabled_config"])
@@ -199,7 +216,7 @@ class TestPhase7ChallengeMonitor(unittest.IsolatedAsyncioTestCase):
         # Clear confirmation flag manually to test that token was consumed and cannot be re-used
         await set_bot_setting("challenge_user_confirmed_at", "")
         ok_reuse, msg_reuse = await self.monitor.confirm_challenge_launch(
-            user_id="test_admin", confirmation_token=self.test_token
+            user_id=str(self.test_admin_id), confirmation_token=self.test_token
         )
         self.assertFalse(ok_reuse)
         self.assertIn("already consumed", msg_reuse)

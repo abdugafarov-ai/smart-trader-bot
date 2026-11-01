@@ -19,54 +19,166 @@ import pandas as pd
 from scripts.intraday_gold_engine import IntradaySimulator, calculate_atr, CONTRACT_SIZE, COMMISSION_PER_LOT
 
 
-def calculate_expectancy_ci(trades: list[dict], alpha: float = 0.05) -> dict:
-    """Calculates Student-t and bootstrap 95% confidence intervals for trade expectancy."""
+def calculate_expectancy_ci(
+    trades: list[dict],
+    alpha: float = 0.05,
+    seed: int = 42,
+    block_sizes: tuple = (1, 2, 3, 5),
+    primary_block_size: int = 2
+) -> dict:
+    """
+    Calculates Student-t and Circular Block Bootstrap 95% confidence intervals
+    for trade expectancy (USD & R), Annualized Sharpe Ratio, and Profit Factor.
+    
+    Adheres strictly to targeted statistical validation standards:
+    - Chronologically groups trades by real calendar trading days.
+    - Resamples contiguous blocks of trading days, preserving intra-day order and multi-day win/loss streaks.
+    - Evaluates sensitivity across block sizes (1, 2, 3, 5 days).
+    - Explicitly handles zero-gross-loss iterations in Profit Factor bootstrap.
+    - Transparently reports sample size limitations (N < 30) without obscuring uncertainty.
+    """
     n = len(trades)
     if n == 0:
         return {
-            "n": 0, "mean_pnl_usd": 0.0, "mean_r": 0.0,
-            "ci_95_usd": [0.0, 0.0], "ci_95_r": [0.0, 0.0],
-            "boot_ci_95_usd": [0.0, 0.0], "boot_ci_95_r": [0.0, 0.0],
-            "spans_zero": True, "verdict": "NO_TRADES"
+            "n": 0, "trading_days": 0, "mean_pnl_usd": 0.0, "mean_r": 0.0,
+            "profit_factor": 0.0, "annualized_sharpe": 0.0,
+            "ci_95_t_dist_usd": [0.0, 0.0], "ci_95_t_dist_r": [0.0, 0.0],
+            "ci_95_bootstrap_usd": [0.0, 0.0], "ci_95_bootstrap_r": [0.0, 0.0],
+            "ci_95_bootstrap_pf": [0.0, 0.0], "ci_95_bootstrap_sharpe": [0.0, 0.0],
+            "block_sensitivity": {}, "sample_size_flag": "NO_TRADES",
+            "spans_zero": True, "statistical_status": "NO_TRADES"
         }
 
-    pnls = np.array([t["pnl_usd"] for t in trades], dtype=np.float64)
-    rs = np.array([t.get("r_multiple", 0.0) for t in trades], dtype=np.float64)
+    # Sort trades chronologically
+    sorted_trades = sorted(trades, key=lambda t: t["entry_time"])
+    pnls = np.array([float(t["pnl_usd"]) for t in sorted_trades], dtype=np.float64)
+    rs = np.array([float(t.get("r_multiple", 0.0)) for t in sorted_trades], dtype=np.float64)
 
     mean_usd = float(np.mean(pnls))
     mean_r = float(np.mean(rs))
 
+    # Empirical Profit Factor
+    gw_emp = float(np.sum(pnls[pnls > 0]))
+    gl_emp = float(abs(np.sum(pnls[pnls < 0])))
+    pf_emp = round(gw_emp / gl_emp, 2) if gl_emp > 0 else (999.0 if gw_emp > 0 else 1.0)
+
+    # Student-t parametric CI
     if n > 1:
         std_usd = float(np.std(pnls, ddof=1))
         std_r = float(np.std(rs, ddof=1))
-        # Student-t critical value approx (for n=14, t_crit=2.1604)
-        t_crit = 2.1604 if n == 14 else (2.0 if n > 30 else 2.2)
+        t_crit = 2.1604 if n == 14 else (2.0 if n >= 30 else 2.20)
         se_usd = std_usd / math.sqrt(n)
         se_r = std_r / math.sqrt(n)
-        ci_usd = [round(mean_usd - t_crit * se_usd, 2), round(mean_usd + t_crit * se_usd, 2)]
-        ci_r = [round(mean_r - t_crit * se_r, 3), round(mean_r + t_crit * se_r, 3)]
+        ci_t_usd = [round(mean_usd - t_crit * se_usd, 2), round(mean_usd + t_crit * se_usd, 2)]
+        ci_t_r = [round(mean_r - t_crit * se_r, 3), round(mean_r + t_crit * se_r, 3)]
     else:
-        ci_usd = [mean_usd, mean_usd]
-        ci_r = [mean_r, mean_r]
+        ci_t_usd = [round(mean_usd, 2), round(mean_usd, 2)]
+        ci_t_r = [round(mean_r, 3), round(mean_r, 3)]
 
-    # Non-parametric Bootstrap CI (10,000 iterations)
-    np.random.seed(42)
-    boot_usd = [float(np.mean(np.random.choice(pnls, size=n, replace=True))) for _ in range(10000)]
-    boot_r = [float(np.mean(np.random.choice(rs, size=n, replace=True))) for _ in range(10000)]
-    b_ci_usd = [round(float(np.percentile(boot_usd, 2.5)), 2), round(float(np.percentile(boot_usd, 97.5)), 2)]
-    b_ci_r = [round(float(np.percentile(boot_r, 2.5)), 3), round(float(np.percentile(boot_r, 97.5)), 3)]
+    # Group trades by calendar trading days
+    day_to_trades = {}
+    for t in sorted_trades:
+        d = t["entry_time"].date()
+        if d not in day_to_trades:
+            day_to_trades[d] = []
+        day_to_trades[d].append(t)
 
-    spans_zero = (ci_r[0] <= 0.0 <= ci_r[1]) or (b_ci_r[0] <= 0.0 <= b_ci_r[1])
-    is_inconclusive = spans_zero or (n < 30)
+    ordered_days = sorted(list(day_to_trades.keys()))
+    D = len(ordered_days)
+
+    # Precompute daily aggregated metrics
+    p_days = np.array([sum(float(t["pnl_usd"]) for t in day_to_trades[d]) for d in ordered_days], dtype=np.float64)
+    r_days = np.array([sum(float(t.get("r_multiple", 0.0)) for t in day_to_trades[d]) for d in ordered_days], dtype=np.float64)
+    c_days = np.array([len(day_to_trades[d]) for d in ordered_days], dtype=np.int64)
+    w_days = np.array([sum(float(t["pnl_usd"]) for t in day_to_trades[d] if float(t["pnl_usd"]) > 0) for d in ordered_days], dtype=np.float64)
+    l_days = np.array([abs(sum(float(t["pnl_usd"]) for t in day_to_trades[d] if float(t["pnl_usd"]) < 0)) for d in ordered_days], dtype=np.float64)
+
+    # Empirical Annualized Sharpe Ratio based on daily returns
+    d_mean_emp = float(np.mean(p_days))
+    d_std_emp = float(np.std(p_days, ddof=1)) if D > 1 else 0.0
+    sharpe_emp = round((d_mean_emp / d_std_emp) * np.sqrt(252), 2) if d_std_emp > 1e-9 else 0.0
+
+    n_bootstraps = 10000
+    np.random.seed(seed)
+    block_sensitivity = {}
+
+    for b in block_sizes:
+        effective_b = min(b, D) if D > 0 else 1
+        n_blocks = int(np.ceil(D / effective_b))
+        starts = np.random.randint(0, D, size=(n_bootstraps, n_blocks))
+        offsets = np.arange(effective_b)
+        grid = (starts[:, :, None] + offsets[None, None, :]) % D
+        boot_days = grid.reshape(n_bootstraps, -1)[:, :D]
+
+        tot_trades = np.sum(c_days[boot_days], axis=1)
+        safe_trades = np.maximum(tot_trades, 1)
+
+        boot_exp_usd = np.sum(p_days[boot_days], axis=1) / safe_trades
+        boot_exp_r = np.sum(r_days[boot_days], axis=1) / safe_trades
+
+        boot_gw = np.sum(w_days[boot_days], axis=1)
+        boot_gl = np.sum(l_days[boot_days], axis=1)
+        zero_loss_count = int(np.sum(boot_gl == 0))
+
+        # Handle zero gross loss in Profit Factor:
+        # If gross loss is zero and gross win > 0, PF is mathematically unbounded (+Inf), represented as 999.0
+        # If both are zero, PF is 1.0
+        with np.errstate(divide='ignore', invalid='ignore'):
+            boot_pf = np.where(boot_gl > 0, boot_gw / boot_gl, np.where(boot_gw > 0, 999.0, 1.0))
+
+        # Daily returns for Sharpe Ratio
+        d_pnls = p_days[boot_days]
+        d_means = np.mean(d_pnls, axis=1)
+        d_stds = np.std(d_pnls, axis=1, ddof=1)
+        with np.errstate(divide='ignore', invalid='ignore'):
+            boot_sharpe = np.where(d_stds > 1e-9, (d_means / d_stds) * np.sqrt(252), 0.0)
+
+        ci_usd = [round(float(np.percentile(boot_exp_usd, 2.5)), 2), round(float(np.percentile(boot_exp_usd, 97.5)), 2)]
+        ci_r = [round(float(np.percentile(boot_exp_r, 2.5)), 3), round(float(np.percentile(boot_exp_r, 97.5)), 3)]
+        ci_pf = [round(float(np.percentile(boot_pf, 2.5)), 2), round(float(np.percentile(boot_pf, 97.5)), 2)]
+        ci_sharpe = [round(float(np.percentile(boot_sharpe, 2.5)), 2), round(float(np.percentile(boot_sharpe, 97.5)), 2)]
+
+        block_sensitivity[f"block_{b}_days"] = {
+            "block_size_days": b,
+            "ci_95_expectancy_usd": ci_usd,
+            "ci_95_expectancy_r": ci_r,
+            "ci_95_profit_factor": ci_pf,
+            "zero_loss_samples_count": zero_loss_count,
+            "zero_loss_samples_pct": round((zero_loss_count / n_bootstraps) * 100.0, 2),
+            "ci_95_sharpe_ratio": ci_sharpe,
+        }
+
+    # Primary block size results
+    prim_key = f"block_{primary_block_size}_days" if f"block_{primary_block_size}_days" in block_sensitivity else f"block_{block_sizes[0]}_days"
+    prim = block_sensitivity[prim_key]
+
+    spans_zero = (ci_t_r[0] <= 0.0 <= ci_t_r[1]) or (prim["ci_95_expectancy_r"][0] <= 0.0 <= prim["ci_95_expectancy_r"][1])
+    is_low_sample = (n < 30) or (D < 15)
+    is_inconclusive = spans_zero or is_low_sample
+
+    sample_flag = (
+        f"INSUFFICIENT SAMPLE SIZE (N={n} trades, {D} trading days < 30) — wide confidence intervals spanning zero; asymptotic significance cannot be claimed."
+        if is_low_sample else f"ADEQUATE SAMPLE SIZE (N={n} trades, {D} trading days)"
+    )
 
     return {
         "n": n,
+        "trading_days": D,
         "mean_pnl_usd": round(mean_usd, 2),
         "mean_r": round(mean_r, 3),
-        "ci_95_t_dist_usd": ci_usd,
-        "ci_95_t_dist_r": ci_r,
-        "ci_95_bootstrap_usd": b_ci_usd,
-        "ci_95_bootstrap_r": b_ci_r,
+        "profit_factor": pf_emp,
+        "annualized_sharpe": sharpe_emp,
+        "ci_95_t_dist_usd": ci_t_usd,
+        "ci_95_t_dist_r": ci_t_r,
+        "primary_block_size_days": primary_block_size,
+        "ci_95_bootstrap_usd": prim["ci_95_expectancy_usd"],
+        "ci_95_bootstrap_r": prim["ci_95_expectancy_r"],
+        "ci_95_bootstrap_pf": prim["ci_95_profit_factor"],
+        "ci_95_bootstrap_sharpe": prim["ci_95_sharpe_ratio"],
+        "zero_loss_iterations_count": prim["zero_loss_samples_count"],
+        "pf_interval_method": "Circular block bootstrap on calendar-day trade aggregations; iterations with zero gross loss are explicitly bounded at 999.0 (representing +Inf) and tallied.",
+        "block_sensitivity": block_sensitivity,
+        "sample_size_flag": sample_flag,
         "spans_zero": spans_zero,
         "statistical_status": "STATISTICALLY INCONCLUSIVE" if is_inconclusive else "STATISTICALLY SIGNIFICANT"
     }
@@ -90,7 +202,7 @@ def run_sequential_monte_carlo(
     - Resets account balance to $5,000 upon passing Phase 1 before Phase 2 begins.
     - Enforces intraday loss limit ($200.00 / 4.0%) and static equity floor ($4,400.00 / 12.0%) across both phases.
     - Checks both floating intra-trade drawdown (MAE) and realized trade balance.
-    - Evaluates pass dynamics across distinct horizons: 60, 120, 180, 252, 500, and unconstrained days.
+    - Evaluates pass dynamics across distinct horizons: 60, 120, 180, 252, 500 trading days, and 1000-day simulation cap.
     - States exact statistical uncertainty: zero breaches out of 10,000 is reported as point estimate 0.00%
       with 95% upper bound < 0.03% (Rule of Three), NOT 'mathematical zero'.
     """
@@ -247,7 +359,12 @@ def run_sequential_monte_carlo(
             "phase_1_pass_rate_pct": round((horizon_p1_pass_counts[h] / n_simulations) * 100.0, 2),
             "joint_both_phases_passes_count": horizon_joint_pass_counts[h],
             "joint_pass_rate_pct": round((horizon_joint_pass_counts[h] / n_simulations) * 100.0, 2),
-            "note": "Evaluated horizon in trading days (FundingPips 2-Step Flex has no official calendar time limit)"
+            "horizon_label": "1000-day simulation cap" if h == 1000 else f"{h} trading days",
+            "note": (
+                "Evaluated horizon: 1000-day simulation cap. Represents a finite simulation horizon cap (~47.6 months), "
+                "not an infinite or unconstrained horizon. Pass probability on an infinite time horizon cannot be directly inferred."
+                if h == 1000 else "Evaluated horizon in trading days."
+            )
         }
         for h in [60, 120, 180, 252, 500, 1000]
     }
@@ -418,13 +535,23 @@ def run_phase4_robustness():
 
             phases[p] = {
                 "trades": n,
+                "trading_days": ci_data.get("trading_days", 0),
                 "pnl": round(pnl, 2),
                 "profit_factor": round(pf, 2),
                 "win_rate_pct": round(wr, 1),
                 "expectancy_r": round(float(exp_r), 3),
+                "annualized_sharpe": ci_data.get("annualized_sharpe", 0.0),
                 "confidence_interval_95pct_r": ci_data["ci_95_t_dist_r"],
                 "confidence_interval_95pct_usd": ci_data["ci_95_t_dist_usd"],
                 "bootstrap_ci_95pct_r": ci_data["ci_95_bootstrap_r"],
+                "bootstrap_ci_95pct_usd": ci_data["ci_95_bootstrap_usd"],
+                "bootstrap_ci_95pct_pf": ci_data.get("ci_95_bootstrap_pf"),
+                "bootstrap_ci_95pct_sharpe": ci_data.get("ci_95_bootstrap_sharpe"),
+                "zero_loss_iterations_count": ci_data.get("zero_loss_iterations_count", 0),
+                "pf_interval_method": ci_data.get("pf_interval_method", ""),
+                "block_sensitivity": ci_data.get("block_sensitivity", {}),
+                "sample_size_flag": ci_data.get("sample_size_flag", ""),
+                "spans_zero": ci_data.get("spans_zero", True),
                 "statistical_status": ci_data["statistical_status"],
             }
         return phases
@@ -447,48 +574,47 @@ def run_phase4_robustness():
     print("\n[PART 2] Running Decoupled Cost Sensitivity Stress Tests (Experiments A & B)...")
     spreads = [0.35, 0.50, 0.75]
     slippages = [0.00, 0.15, 0.30]
+    base_spread = 0.35
 
     # -------------------------------------------------------------------------
-    # Experiment A: Pure Friction Drag on Frozen Trade Sample (N=44)
+    # Experiment A1: Pure Friction Drag on RESEARCH_XAUUSD_FIXED002 (Frozen Lot 0.02, N=44)
     # -------------------------------------------------------------------------
-    print("  Executing Experiment A: Pure Cost Drag (Frozen 44 Trades, Identical Execution)...")
-    exp_a_results = []
-    base_spread = 0.35
+    print("  Executing Experiment A1: Pure Cost Drag on RESEARCH_XAUUSD_FIXED002 (Frozen 44 Trades, Lot 0.02)...")
+    exp_a_fixed_results = []
     for sp in spreads:
         for sl in slippages:
-            extra_friction_per_trade = round(((sp + sl) - base_spread) * 0.01 * CONTRACT_SIZE, 3)
-            adj_trades = []
-            gross_p = 0.0
-            gross_l = 0.0
+            extra_drag_per_oz = round(((sp + sl) - base_spread), 3)
             adj_pnls = []
+            gw = 0.0
+            gl = 0.0
 
-            for t in trades_upg_dyn:
-                # Lot is typically 0.01 in dynamic 0.25%
-                t_lot = t.get("lot", 0.01)
-                t_extra = round(((sp + sl) - base_spread) * t_lot * CONTRACT_SIZE, 3)
-                adj_pnl = round(t["pnl_usd"] - t_extra, 2)
-                adj_pnls.append(adj_pnl)
-                if adj_pnl > 0:
-                    gross_p += adj_pnl
+            for t in trades_upg_fixed:
+                t_drag = round(extra_drag_per_oz * t["lot"] * CONTRACT_SIZE, 3)
+                adj = round(t["pnl_usd"] - t_drag, 2)
+                adj_pnls.append(adj)
+                if adj > 0:
+                    gw += adj
                 else:
-                    gross_l += abs(adj_pnl)
+                    gl += abs(adj)
 
-            pf = round(gross_p / gross_l, 2) if gross_l > 0 else 999.0
+            pf = round(gw / gl, 2) if gl > 0 else 999.0
             net_pnl = round(sum(adj_pnls), 2)
-            exp_r = round(float(np.mean([t["r_multiple"] for t in trades_upg_dyn])), 3)
+            exp_r = round(float(np.mean([t["r_multiple"] for t in trades_upg_fixed])), 3)
 
             # Compute Max DD on frozen sample
             eq_curve = 5000.0 + np.cumsum(adj_pnls)
             peaks = np.maximum.accumulate(np.insert(eq_curve, 0, 5000.0))
             max_tot_dd = round(float(np.max(peaks[1:] - eq_curve)), 2)
 
-            exp_a_results.append({
-                "experiment": "Experiment A (Frozen Sample)",
+            exp_a_fixed_results.append({
+                "experiment": "Experiment A (Fixed Lot 0.02 Frozen)",
+                "profile": "RESEARCH_XAUUSD_FIXED002",
+                "fixed_lot": 0.02,
                 "spread_usd": sp,
                 "slippage_usd": sl,
                 "total_friction_usd": round(sp + sl, 2),
-                "total_trades": len(trades_upg_dyn),
-                "trades_status": "FROZEN (44 Trades)",
+                "total_trades": len(trades_upg_fixed),
+                "trades_status": "FROZEN (44 Trades, Lot 0.02)",
                 "profit_factor": pf,
                 "net_profit_usd": net_pnl,
                 "expectancy_r": exp_r,
@@ -496,8 +622,58 @@ def run_phase4_robustness():
                 "rules_passed": (max_tot_dd < 600.0)
             })
 
-    df_exp_a = pd.DataFrame(exp_a_results)
-    df_exp_a.to_csv(data_dir / "phase4_cost_sensitivity_experiment_a.csv", index=False)
+    df_exp_a_fixed = pd.DataFrame(exp_a_fixed_results)
+    df_exp_a_fixed.to_csv(data_dir / "phase4_cost_sensitivity_experiment_a_fixed002.csv", index=False)
+    # Maintain primary phase4_cost_sensitivity_experiment_a.csv pointing strictly to RESEARCH_XAUUSD_FIXED002
+    df_exp_a_fixed.to_csv(data_dir / "phase4_cost_sensitivity_experiment_a.csv", index=False)
+
+    # -------------------------------------------------------------------------
+    # Experiment A2: Pure Friction Drag on Dynamic Risk 0.25% (Frozen Dynamic Sample, N=44)
+    # -------------------------------------------------------------------------
+    print("  Executing Experiment A2: Pure Cost Drag on Dynamic Risk 0.25% (Frozen 44 Trades, Dynamic Lots)...")
+    exp_a_dyn_results = []
+    for sp in spreads:
+        for sl in slippages:
+            extra_drag_per_oz = round(((sp + sl) - base_spread), 3)
+            adj_pnls = []
+            gw = 0.0
+            gl = 0.0
+
+            for t in trades_upg_dyn:
+                t_lot = t.get("lot", 0.01)
+                t_drag = round(extra_drag_per_oz * t_lot * CONTRACT_SIZE, 3)
+                adj = round(t["pnl_usd"] - t_drag, 2)
+                adj_pnls.append(adj)
+                if adj > 0:
+                    gw += adj
+                else:
+                    gl += abs(adj)
+
+            pf = round(gw / gl, 2) if gl > 0 else 999.0
+            net_pnl = round(sum(adj_pnls), 2)
+            exp_r = round(float(np.mean([t["r_multiple"] for t in trades_upg_dyn])), 3)
+
+            eq_curve = 5000.0 + np.cumsum(adj_pnls)
+            peaks = np.maximum.accumulate(np.insert(eq_curve, 0, 5000.0))
+            max_tot_dd = round(float(np.max(peaks[1:] - eq_curve)), 2)
+
+            exp_a_dyn_results.append({
+                "experiment": "Experiment A (Dynamic Risk 0.25% Frozen)",
+                "profile": "DYNAMIC_RISK_025",
+                "spread_usd": sp,
+                "slippage_usd": sl,
+                "total_friction_usd": round(sp + sl, 2),
+                "total_trades": len(trades_upg_dyn),
+                "trades_status": "FROZEN (44 Trades, Dynamic Lots)",
+                "profit_factor": pf,
+                "net_profit_usd": net_pnl,
+                "expectancy_r": exp_r,
+                "max_total_dd_usd": max_tot_dd,
+                "rules_passed": (max_tot_dd < 600.0)
+            })
+
+    df_exp_a_dyn = pd.DataFrame(exp_a_dyn_results)
+    df_exp_a_dyn.to_csv(data_dir / "phase4_cost_sensitivity_experiment_a_dynamic025.csv", index=False)
 
     # -------------------------------------------------------------------------
     # Experiment B: Dynamic Pre-Trade Filter & Slippage Response (Trades 44 -> 40)
@@ -652,16 +828,30 @@ def run_phase4_robustness():
         },
         "session_breakdown": res_upg_dyn.get("session_breakdown"),
         "monthly_breakdown": res_upg_dyn.get("monthly_breakdown"),
-        "cost_sensitivity_experiment_a_frozen": exp_a_results,
+        "cost_sensitivity_experiment_a_fixed_002": exp_a_fixed_results,
+        "cost_sensitivity_experiment_a_dynamic_025": exp_a_dyn_results,
+        "cost_sensitivity_experiment_a_frozen": exp_a_fixed_results,
         "cost_sensitivity_experiment_b_dynamic": exp_b_results,
         "monte_carlo_dynamic_025": mc_dyn,
         "monte_carlo_fixed_002": mc_fixed,
+        "independent_data_audit": {
+            "provider": "Dukascopy Bank SA (XAUUSD tick archive)",
+            "endpoint": "https://datafeed.dukascopy.com/datafeed/XAUUSD/",
+            "status": "INDEPENDENT DATA TEST NOT PERFORMED",
+            "reason": (
+                "Direct tick archive endpoint is unreachable and temporally mismatched "
+                "(requires authenticated API and proprietary bi5 decoders). "
+                "Per scientific protocol, no proxy or synthetic data substitution is performed."
+            )
+        }
     }
 
     with open(data_dir / "phase4_robustness_results.json", "w", encoding="utf-8") as f:
         json.dump(robustness_payload, f, indent=2, ensure_ascii=False)
 
     print(f"\n[DONE] Saved artifacts:")
+    print(f"  - {data_dir / 'phase4_cost_sensitivity_experiment_a_fixed002.csv'}")
+    print(f"  - {data_dir / 'phase4_cost_sensitivity_experiment_a_dynamic025.csv'}")
     print(f"  - {data_dir / 'phase4_cost_sensitivity_experiment_a.csv'}")
     print(f"  - {data_dir / 'phase4_cost_sensitivity_experiment_b.csv'}")
     print(f"  - {data_dir / 'phase4_sensitivity_grid.csv'}")

@@ -857,7 +857,7 @@ def run_block_bootstrap_monte_carlo(
     - Evaluates sensitivity across block lengths b in [1, 2, 3, 5, 8, 10, Daily].
     - Sequentially simulates Phase 1 ($500 / 10%) and Phase 2 ($400 / 8%).
     - Enforces intrabar daily loss limit ($200.00 / 4.0%) and static floor ($4,400.00 / 12.0%).
-    - Evaluates horizons: unconstrained (unlimited days) and 60, 120, 180, 252 trading days.
+    - Evaluates horizons: 1000-day simulation cap and 60, 120, 180, 252 trading days.
     """
     print(f"\n[4/5] Running Overhauled Block Bootstrap Monte Carlo ({n_simulations:,} iterations)...", flush=True)
 

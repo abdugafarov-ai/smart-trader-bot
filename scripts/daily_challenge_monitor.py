@@ -281,9 +281,16 @@ class ChallengeMonitor:
         Strictly verifies that user_id matches an authorized ADMIN_ID and requires a valid, unconsumed token.
         Enforces single-use consumption of confirmation tokens.
         """
-        allowed_admins = {str(getattr(config, "ADMIN_ID", "")), "test_admin"}
+        # Strictly require factual ADMIN_ID or ALLOWED_USERS; no hardcoded test actors permitted
+        allowed_admins = set()
+        admin_id_val = getattr(config, "ADMIN_ID", 0)
+        if admin_id_val and str(admin_id_val).strip() not in ("0", ""):
+            allowed_admins.add(str(admin_id_val).strip())
         if hasattr(config, "ALLOWED_USERS") and isinstance(config.ALLOWED_USERS, list):
-            allowed_admins.update(str(u) for u in config.ALLOWED_USERS)
+            for u in config.ALLOWED_USERS:
+                u_str = str(u).strip()
+                if u_str and u_str not in ("0", ""):
+                    allowed_admins.add(u_str)
 
         if not user_id or str(user_id) not in allowed_admins:
             return False, f"❌ REJECTED: User ID '{user_id}' is not an authorized administrator (ADMIN_ID mismatch). Launch confirmation denied."
