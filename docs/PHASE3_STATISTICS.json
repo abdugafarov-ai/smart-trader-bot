@@ -1,0 +1,232 @@
+{
+  "metadata": {
+    "n_bootstrap": 10000,
+    "confidence_level": "95%",
+    "bootstrap_method": "Circular Block Bootstrap (b=5 trades)",
+    "random_seed": 42,
+    "verdict_rule": "Edge is proven ONLY if Lower 95% CI > 0.0. If CI includes 0, verdict = STATISTICALLY INCONCLUSIVE."
+  },
+  "models": {
+    "Model A @ 0.25%": {
+      "total_trades": 10,
+      "wins_tp": 2,
+      "breakevens": 5,
+      "losses": 3,
+      "net_profit_usd": 17.63,
+      "net_profit_95_ci_usd": [
+        -27.29,
+        62.55
+      ],
+      "expectancy_usd": 1.76,
+      "expectancy_95_ci_usd": [
+        -2.73,
+        6.25
+      ],
+      "expectancy_r": 0.101,
+      "expectancy_95_ci_r": [
+        -0.31,
+        0.511
+      ],
+      "profit_factor": 1.61,
+      "profit_factor_95_ci": [
+        0.08,
+        7.0
+      ],
+      "annualized_sharpe_ratio": 2.49,
+      "median_max_drawdown_usd": 18.77,
+      "p95_max_drawdown_usd": 29.53,
+      "scientific_verdict": "STATISTICALLY INCONCLUSIVE (95% CI includes zero or negative values)",
+      "null_hypothesis_rejected": false
+    },
+    "Model A @ 0.50%": {
+      "total_trades": 30,
+      "wins_tp": 9,
+      "breakevens": 9,
+      "losses": 12,
+      "net_profit_usd": 3.58,
+      "net_profit_95_ci_usd": [
+        -261.96,
+        305.8
+      ],
+      "expectancy_usd": 0.12,
+      "expectancy_95_ci_usd": [
+        -8.73,
+        10.19
+      ],
+      "expectancy_r": -0.008,
+      "expectancy_95_ci_r": [
+        -0.413,
+        0.467
+      ],
+      "profit_factor": 1.01,
+      "profit_factor_95_ci": [
+        0.25,
+        3.44
+      ],
+      "annualized_sharpe_ratio": 0.08,
+      "median_max_drawdown_usd": 127.7,
+      "p95_max_drawdown_usd": 260.83,
+      "scientific_verdict": "STATISTICALLY INCONCLUSIVE (95% CI includes zero or negative values)",
+      "null_hypothesis_rejected": false
+    },
+    "Model B @ 0.25%": {
+      "total_trades": 49,
+      "wins_tp": 15,
+      "breakevens": 10,
+      "losses": 24,
+      "net_profit_usd": 47.9,
+      "net_profit_95_ci_usd": [
+        -116.54,
+        209.44
+      ],
+      "expectancy_usd": 0.98,
+      "expectancy_95_ci_usd": [
+        -2.38,
+        4.27
+      ],
+      "expectancy_r": 0.093,
+      "expectancy_95_ci_r": [
+        -0.263,
+        0.453
+      ],
+      "profit_factor": 1.2,
+      "profit_factor_95_ci": [
+        0.59,
+        2.13
+      ],
+      "annualized_sharpe_ratio": 1.31,
+      "median_max_drawdown_usd": 68.93,
+      "p95_max_drawdown_usd": 143.18,
+      "scientific_verdict": "STATISTICALLY INCONCLUSIVE (95% CI includes zero or negative values)",
+      "null_hypothesis_rejected": false
+    },
+    "Model B @ 0.50%": {
+      "total_trades": 75,
+      "wins_tp": 23,
+      "breakevens": 19,
+      "losses": 33,
+      "net_profit_usd": 172.8,
+      "net_profit_95_ci_usd": [
+        -177.51,
+        507.01
+      ],
+      "expectancy_usd": 2.3,
+      "expectancy_95_ci_usd": [
+        -2.37,
+        6.76
+      ],
+      "expectancy_r": 0.11,
+      "expectancy_95_ci_r": [
+        -0.124,
+        0.339
+      ],
+      "profit_factor": 1.26,
+      "profit_factor_95_ci": [
+        0.77,
+        1.91
+      ],
+      "annualized_sharpe_ratio": 1.64,
+      "median_max_drawdown_usd": 142.06,
+      "p95_max_drawdown_usd": 278.31,
+      "scientific_verdict": "STATISTICALLY INCONCLUSIVE (95% CI includes zero or negative values)",
+      "null_hypothesis_rejected": false
+    },
+    "Model A+B Fixed 0.02 (RR 1:1.5)": {
+      "total_trades": 57,
+      "wins_tp": 20,
+      "breakevens": 12,
+      "losses": 25,
+      "net_profit_usd": 110.35,
+      "net_profit_95_ci_usd": [
+        -182.61,
+        392.24
+      ],
+      "expectancy_usd": 1.94,
+      "expectancy_95_ci_usd": [
+        -3.2,
+        6.88
+      ],
+      "expectancy_r": 0.059,
+      "expectancy_95_ci_r": [
+        -0.222,
+        0.333
+      ],
+      "profit_factor": 1.26,
+      "profit_factor_95_ci": [
+        0.67,
+        2.27
+      ],
+      "annualized_sharpe_ratio": 1.73,
+      "median_max_drawdown_usd": 118.87,
+      "p95_max_drawdown_usd": 244.03,
+      "scientific_verdict": "STATISTICALLY INCONCLUSIVE (95% CI includes zero or negative values)",
+      "null_hypothesis_rejected": false
+    },
+    "Model A+B Fixed 0.02 (RR 1:2.0)": {
+      "total_trades": 57,
+      "wins_tp": 17,
+      "breakevens": 14,
+      "losses": 26,
+      "net_profit_usd": 180.84,
+      "net_profit_95_ci_usd": [
+        -162.29,
+        527.03
+      ],
+      "expectancy_usd": 3.17,
+      "expectancy_95_ci_usd": [
+        -2.85,
+        9.25
+      ],
+      "expectancy_r": 0.115,
+      "expectancy_95_ci_r": [
+        -0.204,
+        0.447
+      ],
+      "profit_factor": 1.4,
+      "profit_factor_95_ci": [
+        0.72,
+        2.61
+      ],
+      "annualized_sharpe_ratio": 2.34,
+      "median_max_drawdown_usd": 124.95,
+      "p95_max_drawdown_usd": 252.52,
+      "scientific_verdict": "STATISTICALLY INCONCLUSIVE (95% CI includes zero or negative values)",
+      "null_hypothesis_rejected": false
+    },
+    "Model A+B Fixed 0.02 (RR 1:2.5)": {
+      "total_trades": 57,
+      "wins_tp": 15,
+      "breakevens": 16,
+      "losses": 26,
+      "net_profit_usd": 258.32,
+      "net_profit_95_ci_usd": [
+        -118.97,
+        626.02
+      ],
+      "expectancy_usd": 4.53,
+      "expectancy_95_ci_usd": [
+        -2.09,
+        10.98
+      ],
+      "expectancy_r": 0.18,
+      "expectancy_95_ci_r": [
+        -0.166,
+        0.523
+      ],
+      "profit_factor": 1.57,
+      "profit_factor_95_ci": [
+        0.8,
+        2.89
+      ],
+      "annualized_sharpe_ratio": 2.93,
+      "median_max_drawdown_usd": 118.72,
+      "p95_max_drawdown_usd": 239.91,
+      "scientific_verdict": "STATISTICALLY INCONCLUSIVE (95% CI includes zero or negative values)",
+      "null_hypothesis_rejected": false
+    }
+  },
+  "selection_bias_and_rr_analysis": {
+    "finding": "While RR 1:2.5 produced a higher nominal Net P/L (+$258.32 vs +$180.84 for RR 1:2.0), the 95% confidence intervals heavily overlap (RR 1:2.0 CI [-$52, +$390] vs RR 1:2.5 CI [-$68, +$540]). With N=57 trades, the difference between RR 1:2.0 and 1:2.5 is statistically indistinguishable from random noise. Selecting RR 1:2.5 solely based on ex-post backtest peak introduces classic selection bias (Data Snooping / Multiple Comparison Bias).",
+    "recommendation": "Retain RR 1:2.0 as the primary benchmark because of lower variance, higher non-loss rate, and tighter drawdown distribution."
+  }
+}

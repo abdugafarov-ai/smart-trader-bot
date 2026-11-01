@@ -1182,6 +1182,7 @@ class IntradaySimulator:
             "monthly_breakdown": monthly_breakdown,
             "session_breakdown": session_breakdown,
         }
+        self._last_trades = trades
         return res
 
 

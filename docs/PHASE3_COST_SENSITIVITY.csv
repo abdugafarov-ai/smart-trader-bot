@@ -1,0 +1,19 @@
+experiment,spread_usd,slippage_usd,total_friction_per_trade_usd,total_trades,sample_status,wins_tp,breakevens,losses,tp_win_rate_pct,non_loss_rate_pct,profit_factor,net_profit_usd,expectancy_usd,expectancy_r,max_drawdown_usd,notes
+Experiment A (Pure Cost Sensitivity),0.35,0.0,0.76,57,FROZEN (100% Constant Sample),17,14,26,29.8,54.4,1.4,180.84,3.17,0.127,151.88,Frozen 57 trades. Friction drag = -$0.00/trade.
+Experiment A (Pure Cost Sensitivity),0.35,0.15,1.06,57,FROZEN (100% Constant Sample),17,14,26,29.8,54.4,1.35,163.74,2.87,0.115,154.88,Frozen 57 trades. Friction drag = -$0.30/trade.
+Experiment A (Pure Cost Sensitivity),0.35,0.3,1.36,57,FROZEN (100% Constant Sample),17,14,26,29.8,54.4,1.31,146.64,2.57,0.103,157.88,Frozen 57 trades. Friction drag = -$0.60/trade.
+Experiment A (Pure Cost Sensitivity),0.5,0.0,1.06,57,FROZEN (100% Constant Sample),17,14,26,29.8,54.4,1.35,163.74,2.87,0.115,154.88,Frozen 57 trades. Friction drag = -$0.30/trade.
+Experiment A (Pure Cost Sensitivity),0.5,0.15,1.36,57,FROZEN (100% Constant Sample),17,14,26,29.8,54.4,1.31,146.64,2.57,0.103,157.88,Frozen 57 trades. Friction drag = -$0.60/trade.
+Experiment A (Pure Cost Sensitivity),0.5,0.3,1.66,57,FROZEN (100% Constant Sample),17,14,26,29.8,54.4,1.27,129.54,2.27,0.091,161.14,Frozen 57 trades. Friction drag = -$0.90/trade.
+Experiment A (Pure Cost Sensitivity),0.75,0.0,1.56,57,FROZEN (100% Constant Sample),17,14,26,29.8,54.4,1.28,135.24,2.37,0.095,160.04,Frozen 57 trades. Friction drag = -$0.80/trade.
+Experiment A (Pure Cost Sensitivity),0.75,0.15,1.86,57,FROZEN (100% Constant Sample),17,14,26,29.8,54.4,1.24,118.14,2.07,0.083,163.34,Frozen 57 trades. Friction drag = -$1.10/trade.
+Experiment A (Pure Cost Sensitivity),0.75,0.3,2.16,57,FROZEN (100% Constant Sample),17,14,26,29.8,54.4,1.2,101.04,1.77,0.071,166.64,Frozen 57 trades. Friction drag = -$1.40/trade.
+Experiment B (Operational Execution Filter),0.35,0.0,0.76,57,FULL (57 Trades Accepted),17,14,26,29.8,54.4,1.4,180.84,3.17,0.115,164.62,Filter active: 494 total candidates rejected by risk cap.
+Experiment B (Operational Execution Filter),0.35,0.15,1.06,54,DYNAMIC (3 wider-SL trades rejected by risk cap),18,12,24,33.3,55.6,1.58,243.46,4.51,0.167,143.22,Filter active: 500 total candidates rejected by risk cap.
+Experiment B (Operational Execution Filter),0.35,0.3,1.36,54,DYNAMIC (3 wider-SL trades rejected by risk cap),18,12,24,33.3,55.6,1.51,220.06,4.08,0.139,148.02,Filter active: 500 total candidates rejected by risk cap.
+Experiment B (Operational Execution Filter),0.5,0.0,1.06,54,DYNAMIC (3 wider-SL trades rejected by risk cap),18,12,24,33.3,55.6,1.63,259.54,4.81,0.185,140.52,Filter active: 499 total candidates rejected by risk cap.
+Experiment B (Operational Execution Filter),0.5,0.15,1.36,54,DYNAMIC (3 wider-SL trades rejected by risk cap),18,12,24,33.3,55.6,1.55,234.46,4.34,0.157,145.32,Filter active: 500 total candidates rejected by risk cap.
+Experiment B (Operational Execution Filter),0.5,0.3,1.66,54,DYNAMIC (3 wider-SL trades rejected by risk cap),18,12,24,33.3,55.6,1.48,211.06,3.91,0.129,150.12,Filter active: 500 total candidates rejected by risk cap.
+Experiment B (Operational Execution Filter),0.75,0.0,1.56,54,DYNAMIC (3 wider-SL trades rejected by risk cap),18,12,24,33.3,55.6,1.57,242.86,4.5,0.169,144.02,Filter active: 500 total candidates rejected by risk cap.
+Experiment B (Operational Execution Filter),0.75,0.15,1.86,52,DYNAMIC (5 wider-SL trades rejected by risk cap),17,11,24,32.7,53.8,1.4,173.62,3.34,0.108,148.82,Filter active: 504 total candidates rejected by risk cap.
+Experiment B (Operational Execution Filter),0.75,0.3,2.16,52,DYNAMIC (5 wider-SL trades rejected by risk cap),15,11,26,28.8,50.0,1.11,53.12,1.02,-0.039,146.54,Filter active: 506 total candidates rejected by risk cap.
