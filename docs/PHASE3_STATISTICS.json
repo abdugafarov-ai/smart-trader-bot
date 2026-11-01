@@ -33,8 +33,39 @@
         7.0
       ],
       "annualized_sharpe_ratio": 2.49,
+      "annualized_sharpe_ratio_95_ci": [
+        -9.2,
+        8.38
+      ],
       "median_max_drawdown_usd": 18.77,
       "p95_max_drawdown_usd": 29.53,
+      "max_consecutive_losses": 2,
+      "loss_streaks_distribution": {
+        "1": {
+          "count": 1,
+          "percentage": 50.0
+        },
+        "2": {
+          "count": 1,
+          "percentage": 50.0
+        },
+        "3": {
+          "count": 0,
+          "percentage": 0.0
+        },
+        "4": {
+          "count": 0,
+          "percentage": 0.0
+        },
+        "5": {
+          "count": 0,
+          "percentage": 0.0
+        },
+        "6+": {
+          "count": 0,
+          "percentage": 0.0
+        }
+      },
       "scientific_verdict": "STATISTICALLY INCONCLUSIVE (95% CI includes zero or negative values)",
       "null_hypothesis_rejected": false
     },
@@ -45,27 +76,58 @@
       "losses": 12,
       "net_profit_usd": 3.58,
       "net_profit_95_ci_usd": [
-        -261.96,
-        305.8
+        -260.38,
+        292.39
       ],
       "expectancy_usd": 0.12,
       "expectancy_95_ci_usd": [
-        -8.73,
-        10.19
+        -8.68,
+        9.75
       ],
       "expectancy_r": -0.008,
       "expectancy_95_ci_r": [
-        -0.413,
-        0.467
+        -0.415,
+        0.454
       ],
       "profit_factor": 1.01,
       "profit_factor_95_ci": [
         0.25,
-        3.44
+        3.34
       ],
       "annualized_sharpe_ratio": 0.08,
-      "median_max_drawdown_usd": 127.7,
-      "p95_max_drawdown_usd": 260.83,
+      "annualized_sharpe_ratio_95_ci": [
+        -9.39,
+        6.39
+      ],
+      "median_max_drawdown_usd": 125.82,
+      "p95_max_drawdown_usd": 258.46,
+      "max_consecutive_losses": 3,
+      "loss_streaks_distribution": {
+        "1": {
+          "count": 5,
+          "percentage": 62.5
+        },
+        "2": {
+          "count": 2,
+          "percentage": 25.0
+        },
+        "3": {
+          "count": 1,
+          "percentage": 12.5
+        },
+        "4": {
+          "count": 0,
+          "percentage": 0.0
+        },
+        "5": {
+          "count": 0,
+          "percentage": 0.0
+        },
+        "6+": {
+          "count": 0,
+          "percentage": 0.0
+        }
+      },
       "scientific_verdict": "STATISTICALLY INCONCLUSIVE (95% CI includes zero or negative values)",
       "null_hypothesis_rejected": false
     },
@@ -76,27 +138,58 @@
       "losses": 24,
       "net_profit_usd": 47.9,
       "net_profit_95_ci_usd": [
-        -116.54,
-        209.44
+        -118.37,
+        209.67
       ],
       "expectancy_usd": 0.98,
       "expectancy_95_ci_usd": [
-        -2.38,
-        4.27
+        -2.42,
+        4.28
       ],
       "expectancy_r": 0.093,
       "expectancy_95_ci_r": [
-        -0.263,
-        0.453
+        -0.261,
+        0.455
       ],
       "profit_factor": 1.2,
       "profit_factor_95_ci": [
         0.59,
-        2.13
+        2.14
       ],
       "annualized_sharpe_ratio": 1.31,
-      "median_max_drawdown_usd": 68.93,
-      "p95_max_drawdown_usd": 143.18,
+      "annualized_sharpe_ratio_95_ci": [
+        -3.45,
+        5.46
+      ],
+      "median_max_drawdown_usd": 69.04,
+      "p95_max_drawdown_usd": 142.94,
+      "max_consecutive_losses": 5,
+      "loss_streaks_distribution": {
+        "1": {
+          "count": 6,
+          "percentage": 50.0
+        },
+        "2": {
+          "count": 3,
+          "percentage": 25.0
+        },
+        "3": {
+          "count": 1,
+          "percentage": 8.3
+        },
+        "4": {
+          "count": 1,
+          "percentage": 8.3
+        },
+        "5": {
+          "count": 1,
+          "percentage": 8.3
+        },
+        "6+": {
+          "count": 0,
+          "percentage": 0.0
+        }
+      },
       "scientific_verdict": "STATISTICALLY INCONCLUSIVE (95% CI includes zero or negative values)",
       "null_hypothesis_rejected": false
     },
@@ -107,27 +200,58 @@
       "losses": 33,
       "net_profit_usd": 172.8,
       "net_profit_95_ci_usd": [
-        -177.51,
-        507.01
+        -180.25,
+        507.41
       ],
       "expectancy_usd": 2.3,
       "expectancy_95_ci_usd": [
-        -2.37,
-        6.76
+        -2.4,
+        6.77
       ],
       "expectancy_r": 0.11,
       "expectancy_95_ci_r": [
-        -0.124,
-        0.339
+        -0.126,
+        0.337
       ],
       "profit_factor": 1.26,
       "profit_factor_95_ci": [
-        0.77,
-        1.91
+        0.76,
+        1.92
       ],
       "annualized_sharpe_ratio": 1.64,
-      "median_max_drawdown_usd": 142.06,
-      "p95_max_drawdown_usd": 278.31,
+      "annualized_sharpe_ratio_95_ci": [
+        -1.74,
+        4.62
+      ],
+      "median_max_drawdown_usd": 141.91,
+      "p95_max_drawdown_usd": 284.71,
+      "max_consecutive_losses": 5,
+      "loss_streaks_distribution": {
+        "1": {
+          "count": 10,
+          "percentage": 52.6
+        },
+        "2": {
+          "count": 6,
+          "percentage": 31.6
+        },
+        "3": {
+          "count": 2,
+          "percentage": 10.5
+        },
+        "4": {
+          "count": 0,
+          "percentage": 0.0
+        },
+        "5": {
+          "count": 1,
+          "percentage": 5.3
+        },
+        "6+": {
+          "count": 0,
+          "percentage": 0.0
+        }
+      },
       "scientific_verdict": "STATISTICALLY INCONCLUSIVE (95% CI includes zero or negative values)",
       "null_hypothesis_rejected": false
     },
@@ -138,27 +262,58 @@
       "losses": 25,
       "net_profit_usd": 110.35,
       "net_profit_95_ci_usd": [
-        -182.61,
-        392.24
+        -176.17,
+        391.16
       ],
       "expectancy_usd": 1.94,
       "expectancy_95_ci_usd": [
-        -3.2,
-        6.88
+        -3.09,
+        6.86
       ],
       "expectancy_r": 0.059,
       "expectancy_95_ci_r": [
-        -0.222,
-        0.333
+        -0.216,
+        0.327
       ],
       "profit_factor": 1.26,
       "profit_factor_95_ci": [
-        0.67,
+        0.68,
         2.27
       ],
       "annualized_sharpe_ratio": 1.73,
-      "median_max_drawdown_usd": 118.87,
-      "p95_max_drawdown_usd": 244.03,
+      "annualized_sharpe_ratio_95_ci": [
+        -2.8,
+        6.21
+      ],
+      "median_max_drawdown_usd": 118.52,
+      "p95_max_drawdown_usd": 241.37,
+      "max_consecutive_losses": 5,
+      "loss_streaks_distribution": {
+        "1": {
+          "count": 6,
+          "percentage": 50.0
+        },
+        "2": {
+          "count": 2,
+          "percentage": 16.7
+        },
+        "3": {
+          "count": 2,
+          "percentage": 16.7
+        },
+        "4": {
+          "count": 1,
+          "percentage": 8.3
+        },
+        "5": {
+          "count": 1,
+          "percentage": 8.3
+        },
+        "6+": {
+          "count": 0,
+          "percentage": 0.0
+        }
+      },
       "scientific_verdict": "STATISTICALLY INCONCLUSIVE (95% CI includes zero or negative values)",
       "null_hypothesis_rejected": false
     },
@@ -169,27 +324,58 @@
       "losses": 26,
       "net_profit_usd": 180.84,
       "net_profit_95_ci_usd": [
-        -162.29,
-        527.03
+        -173.89,
+        530.15
       ],
       "expectancy_usd": 3.17,
       "expectancy_95_ci_usd": [
-        -2.85,
-        9.25
+        -3.05,
+        9.3
       ],
       "expectancy_r": 0.115,
       "expectancy_95_ci_r": [
-        -0.204,
-        0.447
+        -0.218,
+        0.449
       ],
       "profit_factor": 1.4,
       "profit_factor_95_ci": [
-        0.72,
+        0.7,
         2.61
       ],
       "annualized_sharpe_ratio": 2.34,
-      "median_max_drawdown_usd": 124.95,
-      "p95_max_drawdown_usd": 252.52,
+      "annualized_sharpe_ratio_95_ci": [
+        -2.17,
+        6.47
+      ],
+      "median_max_drawdown_usd": 126.43,
+      "p95_max_drawdown_usd": 258.93,
+      "max_consecutive_losses": 5,
+      "loss_streaks_distribution": {
+        "1": {
+          "count": 5,
+          "percentage": 41.7
+        },
+        "2": {
+          "count": 3,
+          "percentage": 25.0
+        },
+        "3": {
+          "count": 2,
+          "percentage": 16.7
+        },
+        "4": {
+          "count": 1,
+          "percentage": 8.3
+        },
+        "5": {
+          "count": 1,
+          "percentage": 8.3
+        },
+        "6+": {
+          "count": 0,
+          "percentage": 0.0
+        }
+      },
       "scientific_verdict": "STATISTICALLY INCONCLUSIVE (95% CI includes zero or negative values)",
       "null_hypothesis_rejected": false
     },
@@ -200,13 +386,13 @@
       "losses": 26,
       "net_profit_usd": 258.32,
       "net_profit_95_ci_usd": [
-        -118.97,
-        626.02
+        -116.52,
+        620.21
       ],
       "expectancy_usd": 4.53,
       "expectancy_95_ci_usd": [
-        -2.09,
-        10.98
+        -2.04,
+        10.88
       ],
       "expectancy_r": 0.18,
       "expectancy_95_ci_r": [
@@ -216,11 +402,42 @@
       "profit_factor": 1.57,
       "profit_factor_95_ci": [
         0.8,
-        2.89
+        2.87
       ],
       "annualized_sharpe_ratio": 2.93,
-      "median_max_drawdown_usd": 118.72,
-      "p95_max_drawdown_usd": 239.91,
+      "annualized_sharpe_ratio_95_ci": [
+        -1.25,
+        6.76
+      ],
+      "median_max_drawdown_usd": 120.38,
+      "p95_max_drawdown_usd": 244.22,
+      "max_consecutive_losses": 5,
+      "loss_streaks_distribution": {
+        "1": {
+          "count": 5,
+          "percentage": 41.7
+        },
+        "2": {
+          "count": 3,
+          "percentage": 25.0
+        },
+        "3": {
+          "count": 2,
+          "percentage": 16.7
+        },
+        "4": {
+          "count": 1,
+          "percentage": 8.3
+        },
+        "5": {
+          "count": 1,
+          "percentage": 8.3
+        },
+        "6+": {
+          "count": 0,
+          "percentage": 0.0
+        }
+      },
       "scientific_verdict": "STATISTICALLY INCONCLUSIVE (95% CI includes zero or negative values)",
       "null_hypothesis_rejected": false
     }

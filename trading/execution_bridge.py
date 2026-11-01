@@ -192,6 +192,7 @@ class ExecutionBridge:
         self.daily_lock_alerted_date: str = ""
         self.current_trade_date: str = get_broker_today_date_str()
         self.today_stats_cache: Dict[str, Any] = {}
+        self.order_in_flight: bool = False
 
     def has_confirmed_symbol_specs(self, symbol: str) -> bool:
         """Проверяет, подтверждены ли спецификации инструмента брокером MT5."""
@@ -929,6 +930,10 @@ class ExecutionBridge:
         # 1. Проверка активности автопилота
         if not self.enabled:
             return False, "Автопилот выключен"
+
+        # 1.1 Защита от дублирования при задержке обновления состояния (in-flight order lock)
+        if getattr(self, "order_in_flight", False):
+            return False, "Ордер уже находится в процессе отправки (in-flight)"
 
         # 2. Проверка Hard Daily Drawdown Lock
         if self.daily_loss_locked:

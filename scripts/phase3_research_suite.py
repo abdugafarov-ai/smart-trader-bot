@@ -193,6 +193,7 @@ def build_signal_ledger(df_m5: pd.DataFrame, df_m15: pd.DataFrame, df_h1: pd.Dat
                     "reason": close_reason,
                     "pnl_usd": round(trade_pnl, 2),
                     "r_multiple": round(r_mult, 3),
+                    "risk_usd": round(open_pos["risk_usd"], 2),
                     "mae_usd": round(open_pos["mae_dist"] * pos_lot * CONTRACT_SIZE, 2),
                     "mfe_usd": round(open_pos["mfe_dist"] * pos_lot * CONTRACT_SIZE, 2),
                 })
@@ -213,17 +214,18 @@ def build_signal_ledger(df_m5: pd.DataFrame, df_m15: pd.DataFrame, df_h1: pd.Dat
         h1_bull = h1_last_c > h1_eq
         h1_bear = h1_last_c < h1_eq
 
+        cur_atr = m15_atrs[m15_end - 1]
+        if np.isnan(cur_atr) or cur_atr <= 0:
+            cur_atr = 3.5
+
         # H1 slope for trend regime
-        h1_slope = (h1_last_c - h1_closes[h1_end - 10]) / max(0.1, cur_atr if 'cur_atr' in locals() else 3.5)
+        h1_slope = (h1_last_c - h1_closes[h1_end - 10]) / max(0.1, cur_atr)
 
         m15_h_slice = m15_highs[m15_end - 15 : m15_end]
         m15_l_slice = m15_lows[m15_end - 15 : m15_end]
         m15_prev_h = np.max(m15_highs[m15_end - 12 : m15_end - 2])
         m15_prev_l = np.min(m15_lows[m15_end - 12 : m15_end - 2])
         last_m15_c = m15_closes[m15_end - 1]
-        cur_atr = m15_atrs[m15_end - 1]
-        if np.isnan(cur_atr) or cur_atr <= 0:
-            cur_atr = 3.5
 
         # Classify Regimes (Zero-lookahead)
         if h1_slope > 0.6 and h1_bull:
@@ -235,9 +237,10 @@ def build_signal_ledger(df_m5: pd.DataFrame, df_m15: pd.DataFrame, df_h1: pd.Dat
         else:
             regime_trend = "WEAK_TREND"
 
-        if cur_atr < 2.80:
+        # Volatility regimes grounded in empirical tertiles (p33 ~ 6.0, p66 ~ 9.0)
+        if cur_atr < 6.0:
             regime_vol = "LOW_VOLATILITY"
-        elif cur_atr <= 4.50:
+        elif cur_atr <= 9.0:
             regime_vol = "MEDIUM_VOLATILITY"
         else:
             regime_vol = "HIGH_VOLATILITY"
@@ -584,16 +587,28 @@ def run_isolated_cost_experiments(
             gross_loss = float(abs(np.sum(pnl_arr[pnl_arr < 0])))
             pf = round(gross_win / gross_loss, 2) if gross_loss > 0 else 999.0
 
-            # Compute Max DD
-            eq_curve = INITIAL_BALANCE + np.cumsum(pnl_arr)
-            peak = np.maximum.accumulate(np.insert(eq_curve, 0, INITIAL_BALANCE))
-            dd_curve = peak[1:] - eq_curve
-            max_dd = float(np.max(dd_curve))
+            # Compute Intratrade Max Drawdown (accounting for adverse floating excursion)
+            peak_equity = INITIAL_BALANCE
+            cur_bal = INITIAL_BALANCE
+            intratrade_dd = 0.0
+            adj_r_list = []
+            for adj_pnl, t in zip(adjusted_pnls, baseline_trades):
+                t_risk = t.get("risk_usd", 25.0)
+                adj_r_list.append(adj_pnl / t_risk if t_risk > 0 else 0.0)
+                mae_drag = t.get("mae_usd", 0.0) + extra_friction_usd
+                intra_min = cur_bal - mae_drag
+                dd = peak_equity - intra_min
+                if dd > intratrade_dd:
+                    intratrade_dd = dd
+                cur_bal += adj_pnl
+                if cur_bal > peak_equity:
+                    peak_equity = cur_bal
+            max_dd = float(intratrade_dd)
 
             win_rate = round((wins_tp / total_trades) * 100.0, 1)
             non_loss_rate = round(((wins_tp + breakevens) / total_trades) * 100.0, 1)
             exp_usd = round(net_profit / total_trades, 2)
-            exp_r = round(exp_usd / 25.0, 3)
+            exp_r = round(float(np.mean(adj_r_list)), 3)
 
             cost_results.append({
                 "experiment": "Experiment A (Pure Cost Sensitivity)",
@@ -735,7 +750,7 @@ def run_market_regime_analysis(df_ledger: pd.DataFrame, baseline_trades: list[di
             tp_wr = round((wins / n_tr) * 100.0, 1)
             nl_wr = round(((wins + be) / n_tr) * 100.0, 1)
             exp_usd = round(net / n_tr, 2)
-            exp_r = round(exp_usd / 25.0, 3)
+            exp_r = round(float(sub_trades["r_multiple"].mean()), 3)
 
             # Max DD
             eq = INITIAL_BALANCE + np.cumsum(sub_trades["pnl_usd"].values)
@@ -786,7 +801,7 @@ def run_market_regime_analysis(df_ledger: pd.DataFrame, baseline_trades: list[di
             tp_wr = round((wins / n_tr) * 100.0, 1)
             nl_wr = round(((wins + be) / n_tr) * 100.0, 1)
             exp_usd = round(net / n_tr, 2)
-            exp_r = round(exp_usd / 25.0, 3)
+            exp_r = round(float(sub_trades["r_multiple"].mean()), 3)
 
             eq = INITIAL_BALANCE + np.cumsum(sub_trades["pnl_usd"].values)
             peak = np.maximum.accumulate(np.insert(eq, 0, INITIAL_BALANCE))
@@ -829,10 +844,15 @@ def run_market_regime_analysis(df_ledger: pd.DataFrame, baseline_trades: list[di
 # 4. OVERHAULED BLOCK BOOTSTRAP MONTE CARLO & CHALLENGE SIMULATION (Section 4)
 # =============================================================================
 
-def run_block_bootstrap_monte_carlo(trades: list[dict], n_simulations: int = 10000, seed: int = 42) -> dict:
+def run_block_bootstrap_monte_carlo(
+    trades: list[dict],
+    n_simulations: int = 10000,
+    seed: int = 42,
+    df_m5: pd.DataFrame = None,
+) -> dict:
     """
     Overhauled Monte Carlo Engine adhering to real FundingPips $5,000 2-Step Flex rules:
-    - Replaces i.i.d. draws with Circular Block Bootstrap (CBB) & Moving Block Bootstrap (MBB).
+    - Replaces i.i.d. draws with Circular Block Bootstrap (CBB).
     - Preserves serial correlation and empirical loss streaks.
     - Evaluates sensitivity across block lengths b in [1, 2, 3, 5, 8, 10, Daily].
     - Sequentially simulates Phase 1 ($500 / 10%) and Phase 2 ($400 / 8%).
@@ -846,15 +866,20 @@ def run_block_bootstrap_monte_carlo(trades: list[dict], n_simulations: int = 100
     pnls = np.array([t["pnl_usd"] for t in trades], dtype=np.float64)
     maes = np.array([t.get("mae_usd", 15.0) for t in trades], dtype=np.float64)
 
-    # Group trades by trading day for daily block bootstrap
-    day_groups = {}
+    # Build full calendar trading day timeline from M5 candles if provided
+    if df_m5 is not None:
+        m5_dates = sorted(list(set(pd.to_datetime(df_m5["time"]).dt.date)))
+    else:
+        trade_dates = sorted(list(set(t["entry_time"].date() for t in trades)))
+        m5_dates = pd.bdate_range(trade_dates[0], trade_dates[-1]).date.tolist()
+
+    day_to_trades = {d: [] for d in m5_dates}
     for idx, t in enumerate(trades):
-        d_str = t["entry_time"].strftime("%Y-%m-%d")
-        if d_str not in day_groups:
-            day_groups[d_str] = []
-        day_groups[d_str].append(idx)
-    days_list = list(day_groups.values())
-    n_days = len(days_list)
+        t_date = t["entry_time"].date()
+        if t_date in day_to_trades:
+            day_to_trades[t_date].append(idx)
+    calendar_days_list = [day_to_trades[d] for d in m5_dates]
+    n_calendar_days = len(calendar_days_list)
 
     block_lengths = [1, 2, 3, 5, 8, 10]
     horizons = [60, 120, 180, 252]
@@ -870,6 +895,7 @@ def run_block_bootstrap_monte_carlo(trades: list[dict], n_simulations: int = 100
             "static_equity_floor_usd": 4400.0,
             "n_simulations": n_simulations,
             "empirical_trades_count": n_empirical,
+            "calendar_trading_days": n_calendar_days,
             "random_seed": seed,
             "time_limit_policy": "NO TIME LIMIT (Confirmed for FundingPips 2 Step Flex)",
         },
@@ -878,8 +904,11 @@ def run_block_bootstrap_monte_carlo(trades: list[dict], n_simulations: int = 100
         "daily_block_bootstrap": {},
     }
 
-    # 1. Circular Block Bootstrap Sensitivity Study (Simulating 150-trade unconstrained sequences)
-    max_sim_trades = 200
+    # 1. Circular Block Bootstrap Sensitivity Study across block lengths b in [1, 2, 3, 5, 8, 10]
+    # Unconstrained simulation up to 500 trades per phase (1,000 trades total)
+    max_phase_trades = 500
+    trade_dates = [t["entry_time"].date() for t in trades]
+    trade_dates_arr = np.array(trade_dates)
 
     for b in block_lengths:
         p1_passes = 0
@@ -891,23 +920,25 @@ def run_block_bootstrap_monte_carlo(trades: list[dict], n_simulations: int = 100
         max_drawdowns = []
         trades_to_joint_pass = []
 
-        n_blocks = int(np.ceil(max_sim_trades / b))
-        block_starts = np.random.randint(0, n_empirical, size=(n_simulations, n_blocks))
+        n_blocks_needed = int(np.ceil((2 * max_phase_trades) / b))
+        block_starts = np.random.randint(0, n_empirical, size=(n_simulations, n_blocks_needed))
         offsets = np.arange(b)
         idx_grid = (block_starts[:, :, None] + offsets[None, None, :]) % n_empirical
-        sim_indices = idx_grid.reshape(n_simulations, -1)[:, :max_sim_trades]
+        sim_indices = idx_grid.reshape(n_simulations, -1)
 
         sim_pnls = pnls[sim_indices]
         sim_maes = maes[sim_indices]
+        sim_dts = trade_dates_arr[sim_indices]
 
         for s in range(n_simulations):
             s_pnls = sim_pnls[s]
             s_maes = sim_maes[s]
+            s_dates = sim_dts[s]
 
             # Simulate Phase 1
             bal = INITIAL_BALANCE
             day_start_bal = INITIAL_BALANCE
-            trades_today = 0
+            prev_trade_date = None
             p1_won = False
             p1_end_idx = None
             ruined = False
@@ -917,12 +948,11 @@ def run_block_bootstrap_monte_carlo(trades: list[dict], n_simulations: int = 100
             peak_bal = INITIAL_BALANCE
             sim_max_dd = 0.0
 
-            for ti in range(max_sim_trades):
-                # Simulated daily roll (average 1 trade per 1.5 days -> cluster of 1-3 trades/day)
-                trades_today += 1
-                if trades_today > np.random.randint(1, 4):
+            for ti in range(max_phase_trades):
+                cur_dt = s_dates[ti]
+                if prev_trade_date is not None and cur_dt != prev_trade_date:
                     day_start_bal = bal
-                    trades_today = 1
+                prev_trade_date = cur_dt
 
                 t_pnl = s_pnls[ti]
                 t_mae = s_maes[ti]
@@ -935,7 +965,7 @@ def run_block_bootstrap_monte_carlo(trades: list[dict], n_simulations: int = 100
                 else:
                     cur_streak = 0
 
-                # Intratrade floating drawdown
+                # Intratrade floating drawdown check
                 intratrade_min_eq = bal - t_mae
                 intratrade_daily_dd = day_start_bal - intratrade_min_eq
                 if intratrade_daily_dd >= DAILY_LOSS_LIMIT:
@@ -947,7 +977,7 @@ def run_block_bootstrap_monte_carlo(trades: list[dict], n_simulations: int = 100
                     ruined = True
                     break
 
-                # Post-trade balance
+                # Post-trade balance check
                 bal += t_pnl
                 if bal > peak_bal:
                     peak_bal = bal
@@ -964,7 +994,7 @@ def run_block_bootstrap_monte_carlo(trades: list[dict], n_simulations: int = 100
                     ruined = True
                     break
 
-                if not p1_won and bal >= (INITIAL_BALANCE + 500.0):
+                if bal >= (INITIAL_BALANCE + 500.0):
                     p1_won = True
                     p1_end_idx = ti
                     break
@@ -977,14 +1007,14 @@ def run_block_bootstrap_monte_carlo(trades: list[dict], n_simulations: int = 100
                 # Transition to Phase 2: Balance resets to $5,000.00
                 bal2 = INITIAL_BALANCE
                 day_start_bal2 = INITIAL_BALANCE
-                trades_today2 = 0
+                prev_trade_date2 = None
                 p2_won = False
 
-                for ti2 in range(p1_end_idx + 1, max_sim_trades):
-                    trades_today2 += 1
-                    if trades_today2 > np.random.randint(1, 4):
+                for ti2 in range(p1_end_idx + 1, p1_end_idx + 1 + max_phase_trades):
+                    cur_dt2 = s_dates[ti2]
+                    if prev_trade_date2 is not None and cur_dt2 != prev_trade_date2:
                         day_start_bal2 = bal2
-                        trades_today2 = 1
+                    prev_trade_date2 = cur_dt2
 
                     t_pnl2 = s_pnls[ti2]
                     t_mae2 = s_maes[ti2]
@@ -1034,103 +1064,126 @@ def run_block_bootstrap_monte_carlo(trades: list[dict], n_simulations: int = 100
             "p90_trades_to_pass": int(np.percentile(trades_to_joint_pass, 90)) if trades_to_joint_pass else 0,
         }
 
-    # 2. Daily Block Bootstrap (Grouping by calendar trading days)
-    print("  Executing Daily Block Bootstrap (Preserving Intraday Trade Clusters)...", flush=True)
+    # 2. Daily Calendar Block Bootstrap (Preserving Calendar & Weekly Trade Clusters)
+    # Evaluates sequential challenge under real calendar day progression up to 500 trading days (~2 years)
+    print("  Executing Daily Calendar Block Bootstrap (Preserving Calendar & Weekly Trade Clusters)...", flush=True)
     daily_p1_passes = 0
     daily_joint_passes = 0
     daily_dd_breaches = 0
     daily_floor_breaches = 0
     daily_trades_to_pass = []
     daily_days_to_pass = []
+    daily_drawdowns = []
+
+    block_size_days = 5  # 1 trading week block (preserving weekly clusters)
+    max_calendar_days = 500
 
     for _ in range(n_simulations):
-        # Sample trading days with replacement up to 200 days
-        sampled_day_idx = np.random.randint(0, n_days, size=150)
         bal = INITIAL_BALANCE
         p1_won = False
+        p2_won = False
         p1_pass_day = 0
         total_trades_count = 0
         ruined = False
+        day_count = 0
+        peak_bal = INITIAL_BALANCE
+        sim_dd = 0.0
 
         # Phase 1
-        for day_num, d_idx in enumerate(sampled_day_idx):
-            t_indices = days_list[d_idx]
-            day_start_b = bal
+        while day_count < max_calendar_days and not ruined and not p1_won:
+            start_d_idx = np.random.randint(0, n_calendar_days)
+            for b_i in range(block_size_days):
+                cur_d_idx = (start_d_idx + b_i) % n_calendar_days
+                day_count += 1
+                day_start_b = bal
+                t_indices = calendar_days_list[cur_d_idx]
 
-            for ti in t_indices:
-                total_trades_count += 1
-                t_pnl = pnls[ti]
-                t_mae = maes[ti]
+                for ti in t_indices:
+                    total_trades_count += 1
+                    t_pnl = pnls[ti]
+                    t_mae = maes[ti]
 
-                if (day_start_b - (bal - t_mae)) >= DAILY_LOSS_LIMIT:
-                    daily_dd_breaches += 1
-                    ruined = True
+                    if (day_start_b - (bal - t_mae)) >= DAILY_LOSS_LIMIT:
+                        daily_dd_breaches += 1
+                        ruined = True
+                        break
+                    if (bal - t_mae) <= STATIC_FLOOR:
+                        daily_floor_breaches += 1
+                        ruined = True
+                        break
+
+                    bal += t_pnl
+                    if bal > peak_bal:
+                        peak_bal = bal
+                    cur_dd = peak_bal - bal
+                    if cur_dd > sim_dd:
+                        sim_dd = cur_dd
+
+                    if (day_start_b - bal) >= DAILY_LOSS_LIMIT:
+                        daily_dd_breaches += 1
+                        ruined = True
+                        break
+                    if bal <= STATIC_FLOOR:
+                        floor_breaches += 1
+                        ruined = True
+                        break
+
+                    if bal >= (INITIAL_BALANCE + 500.0):
+                        p1_won = True
+                        p1_pass_day = day_count
+                        break
+
+                if p1_won or ruined or day_count >= max_calendar_days:
                     break
-                if (bal - t_mae) <= STATIC_FLOOR:
-                    daily_floor_breaches += 1
-                    ruined = True
-                    break
 
-                bal += t_pnl
-                if (day_start_b - bal) >= DAILY_LOSS_LIMIT:
-                    daily_dd_breaches += 1
-                    ruined = True
-                    break
-                if bal <= STATIC_FLOOR:
-                    daily_floor_breaches += 1
-                    ruined = True
-                    break
+        daily_drawdowns.append(sim_dd)
 
-                if not p1_won and bal >= (INITIAL_BALANCE + 500.0):
-                    p1_won = True
-                    p1_pass_day = day_num + 1
-                    break
-
-            if p1_won or ruined:
-                break
-
+        # Phase 2
         if p1_won and not ruined:
             daily_p1_passes += 1
-            # Phase 2
             bal2 = INITIAL_BALANCE
             p2_won = False
 
-            for day_num2, d_idx2 in enumerate(sampled_day_idx[p1_pass_day:]):
-                t_indices2 = days_list[d_idx2]
-                day_start_b2 = bal2
+            while day_count < max_calendar_days and not ruined and not p2_won:
+                start_d_idx2 = np.random.randint(0, n_calendar_days)
+                for b_i in range(block_size_days):
+                    cur_d_idx2 = (start_d_idx2 + b_i) % n_calendar_days
+                    day_count += 1
+                    day_start_b2 = bal2
+                    t_indices2 = calendar_days_list[cur_d_idx2]
 
-                for ti2 in t_indices2:
-                    total_trades_count += 1
-                    t_pnl2 = pnls[ti2]
-                    t_mae2 = maes[ti2]
+                    for ti2 in t_indices2:
+                        total_trades_count += 1
+                        t_pnl2 = pnls[ti2]
+                        t_mae2 = maes[ti2]
 
-                    if (day_start_b2 - (bal2 - t_mae2)) >= DAILY_LOSS_LIMIT:
-                        daily_dd_breaches += 1
-                        ruined = True
-                        break
-                    if (bal2 - t_mae2) <= STATIC_FLOOR:
-                        daily_floor_breaches += 1
-                        ruined = True
-                        break
+                        if (day_start_b2 - (bal2 - t_mae2)) >= DAILY_LOSS_LIMIT:
+                            daily_dd_breaches += 1
+                            ruined = True
+                            break
+                        if (bal2 - t_mae2) <= STATIC_FLOOR:
+                            daily_floor_breaches += 1
+                            ruined = True
+                            break
 
-                    bal2 += t_pnl2
-                    if (day_start_b2 - bal2) >= DAILY_LOSS_LIMIT:
-                        daily_dd_breaches += 1
-                        ruined = True
-                        break
-                    if bal2 <= STATIC_FLOOR:
-                        daily_floor_breaches += 1
-                        ruined = True
-                        break
+                        bal2 += t_pnl2
+                        if (day_start_b2 - bal2) >= DAILY_LOSS_LIMIT:
+                            daily_dd_breaches += 1
+                            ruined = True
+                            break
+                        if bal2 <= STATIC_FLOOR:
+                            floor_breaches += 1
+                            ruined = True
+                            break
 
-                    if bal2 >= (INITIAL_BALANCE + 400.0):
-                        p2_won = True
-                        daily_trades_to_pass.append(total_trades_count)
-                        daily_days_to_pass.append(p1_pass_day + day_num2 + 1)
-                        break
+                        if bal2 >= (INITIAL_BALANCE + 400.0):
+                            p2_won = True
+                            daily_trades_to_pass.append(total_trades_count)
+                            daily_days_to_pass.append(day_count)
+                            break
 
-                if p2_won or ruined:
-                    break
+                    if p2_won or ruined or day_count >= max_calendar_days:
+                        break
 
             if p2_won and not ruined:
                 daily_joint_passes += 1
@@ -1144,6 +1197,8 @@ def run_block_bootstrap_monte_carlo(trades: list[dict], n_simulations: int = 100
         "p90_trading_days_to_pass": int(np.percentile(daily_days_to_pass, 90)) if daily_days_to_pass else 0,
         "median_trades_to_pass": int(np.median(daily_trades_to_pass)) if daily_trades_to_pass else 0,
         "p90_trades_to_pass": int(np.percentile(daily_trades_to_pass, 90)) if daily_trades_to_pass else 0,
+        "median_max_drawdown_usd": round(float(np.median(daily_drawdowns)), 2),
+        "p95_max_drawdown_usd": round(float(np.percentile(daily_drawdowns, 95)), 2),
     }
 
     # 3. Fixed Trading Day Horizons Pass Rates
@@ -1152,8 +1207,14 @@ def run_block_bootstrap_monte_carlo(trades: list[dict], n_simulations: int = 100
         mc_results["horizon_pass_rates"][f"{h}_trading_days"] = {
             "trading_days_horizon": h,
             "joint_pass_rate_pct": round((pass_within_h / n_simulations) * 100.0, 2),
-            "interpretation": f"Probability of passing Phase 1 + Phase 2 strictly within {h} trading days.",
+            "interpretation": f"Probability of passing Phase 1 + Phase 2 strictly within {h} calendar trading days.",
         }
+
+    mc_results["horizon_pass_rates"]["unlimited_horizon"] = {
+        "trading_days_horizon": "UNLIMITED (No deadline confirmed for 2 Step Flex)",
+        "joint_pass_rate_pct": round((daily_joint_passes / n_simulations) * 100.0, 2),
+        "interpretation": "Probability of passing Phase 1 ($500) + Phase 2 ($400) without rule breaches under unlimited time.",
+    }
 
     out_path = os.path.join(DOCS_DIR, "PHASE3_MONTE_CARLO.json")
     with open(out_path, "w", encoding="utf-8") as f:
@@ -1276,7 +1337,7 @@ def compute_statistical_uncertainty(
         # Bootstrap Profit Factor
         boot_gw = np.sum(np.where(boot_pnls > 0, boot_pnls, 0.0), axis=1)
         boot_gl = np.abs(np.sum(np.where(boot_pnls < 0, boot_pnls, 0.0), axis=1))
-        boot_pf = np.where(boot_gl > 0, boot_gw / boot_gl, 999.0)
+        boot_pf = np.where(boot_gl > 0, boot_gw / np.maximum(boot_gl, 1e-9), 999.0)
         ci_pf = [round(float(np.percentile(boot_pf, 2.5)), 2), round(float(np.percentile(boot_pf, 97.5)), 2)]
 
         # Bootstrap Net PnL
@@ -1289,6 +1350,46 @@ def compute_statistical_uncertainty(
         boot_dds = np.max(boot_peaks[:, 1:] - boot_eq, axis=1)
         median_dd = round(float(np.median(boot_dds)), 2)
         p95_dd = round(float(np.percentile(boot_dds, 95)), 2)
+
+        # Bootstrap Sharpe Ratio CI
+        n_days = len(daily_returns)
+        if n_days >= 3:
+            d_blocks = int(np.ceil(n_days / b))
+            d_starts = np.random.randint(0, n_days, size=(n_bootstrap, d_blocks))
+            d_grid = (d_starts[:, :, None] + offsets[None, None, :]) % n_days
+            d_boot_idx = d_grid.reshape(n_bootstrap, -1)[:, :n_days]
+            d_boot = daily_ret_pct[d_boot_idx]
+            d_means = np.mean(d_boot, axis=1)
+            d_stds = np.std(d_boot, axis=1)
+            boot_sharpes = np.where(d_stds > 0, (d_means / d_stds) * np.sqrt(252), 0.0)
+            ci_sharpe = [round(float(np.percentile(boot_sharpes, 2.5)), 2), round(float(np.percentile(boot_sharpes, 97.5)), 2)]
+        else:
+            ci_sharpe = [annualized_sharpe, annualized_sharpe]
+
+        # Empirical Loss Streaks Distribution
+        sl_streaks = []
+        cur_streak = 0
+        for t in trades:
+            if t.get("reason") == "SL" or t["pnl_usd"] < -2.0:
+                cur_streak += 1
+            else:
+                if cur_streak > 0:
+                    sl_streaks.append(cur_streak)
+                cur_streak = 0
+        if cur_streak > 0:
+            sl_streaks.append(cur_streak)
+
+        streak_counts = {}
+        total_clusters = len(sl_streaks)
+        for k in range(1, 7):
+            if k == 6:
+                cnt = sum(1 for s in sl_streaks if s >= 6)
+                k_lbl = "6+"
+            else:
+                cnt = sum(1 for s in sl_streaks if s == k)
+                k_lbl = str(k)
+            pct = round((cnt / total_clusters) * 100.0, 1) if total_clusters > 0 else 0.0
+            streak_counts[k_lbl] = {"count": cnt, "percentage": pct}
 
         # Scientific Verdict
         is_proven = (ci_exp_usd[0] > 0.0)
@@ -1311,8 +1412,11 @@ def compute_statistical_uncertainty(
             "profit_factor": pf,
             "profit_factor_95_ci": ci_pf,
             "annualized_sharpe_ratio": annualized_sharpe,
+            "annualized_sharpe_ratio_95_ci": ci_sharpe,
             "median_max_drawdown_usd": median_dd,
             "p95_max_drawdown_usd": p95_dd,
+            "max_consecutive_losses": max(sl_streaks) if sl_streaks else 0,
+            "loss_streaks_distribution": streak_counts,
             "scientific_verdict": scientific_verdict,
             "null_hypothesis_rejected": is_proven,
         }
@@ -1450,7 +1554,7 @@ def run_phase3_full_suite():
     df_regime = run_market_regime_analysis(df_ledger, baseline_trades)
 
     # 4. Overhauled Block Bootstrap Monte Carlo Simulation
-    mc_results = run_block_bootstrap_monte_carlo(baseline_trades, n_simulations=10000, seed=42)
+    mc_results = run_block_bootstrap_monte_carlo(baseline_trades, n_simulations=10000, seed=42, df_m5=df_m5)
 
     # 5. Statistical Uncertainty & Confidence Intervals
     stats_report = compute_statistical_uncertainty(df_m5, df_m15, df_h1, n_bootstrap=10000, seed=42)
