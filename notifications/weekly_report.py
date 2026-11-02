@@ -53,6 +53,9 @@ class WeeklyReporter:
 
     async def _generate_and_send(self):
         """Генерирует отчёт за последние 7 дней и отправляет."""
+        if not self.bot:
+            logger.info("Weekly report notification skipped (no Telegram bot configured)")
+            return
         report = await self._build_report()
         if not report:
             return

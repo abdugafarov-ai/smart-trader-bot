@@ -575,6 +575,9 @@ class AutoSignalScanner:
             logger.error("News check error: %s", e, exc_info=True)
 
     async def _send_chart_to_all(self, chart_bytes: bytes, caption: str, symbol: str, reply_markup=None, caption_admin: str = None):
+        if not self.bot:
+            logger.info("Signal chart notification skipped for %s (no Telegram bot instance configured)", symbol)
+            return
         recipients = await self._get_notification_recipients()
         photo = BufferedInputFile(chart_bytes, filename=f"signal_{symbol}.png")
         for uid in recipients:
@@ -593,6 +596,9 @@ class AutoSignalScanner:
                     logger.error("Fallback text also failed for %d: %s", uid, e2)
 
     async def _send_to_all(self, text: str, reply_markup=None, text_admin: str = None):
+        if not self.bot:
+            logger.info("Text notification skipped (no Telegram bot instance configured): %s", text[:60].strip())
+            return
         recipients = await self._get_notification_recipients()
         for uid in recipients:
             t = text_admin if (uid == config.ADMIN_ID and text_admin) else text

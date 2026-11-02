@@ -11,6 +11,12 @@ import json
 import logging
 from aiohttp import web
 from datetime import datetime, timezone
+import sys
+from pathlib import Path
+
+ROOT_DIR = Path(__file__).resolve().parent.parent
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
 
 import config
 from db.database import (
@@ -28,9 +34,23 @@ _MAX_ORDERS_LOG = 500
 _bot_instance = None
 
 
+async def _ensure_bot_instance():
+    """Lazily initialize bot instance if running in standalone mode and BOT_TOKEN is present."""
+    global _bot_instance
+    if not _bot_instance and getattr(config, "BOT_TOKEN", None):
+        try:
+            from aiogram import Bot
+            from aiogram.client.default import DefaultBotProperties
+            _bot_instance = Bot(token=config.BOT_TOKEN, default=DefaultBotProperties(protect_content=True))
+        except Exception as e:
+            logger.debug("Could not initialize fallback Telegram bot in bridge: %s", e)
+    return _bot_instance
+
+
 async def _send_telegram_notification(text: str, photo_bytes: bytes = None, text_admin: str = None):
     """Рассылает уведомление об исполнении/закрытии всем пользователям бота (с защитой контента от утечек)."""
     global _bot_instance
+    await _ensure_bot_instance()
     if not _bot_instance:
         return
     try:
@@ -66,6 +86,7 @@ async def _send_telegram_notification(text: str, photo_bytes: bytes = None, text
 async def _send_admin_only(text: str, photo_bytes: bytes = None):
     """Отправляет уведомление ИСКЛЮЧИТЕЛЬНО администратору (ручные сделки, ошибки брокера, статус терминала)."""
     global _bot_instance
+    await _ensure_bot_instance()
     if not _bot_instance or not config.ADMIN_ID:
         return
     try:
@@ -1624,9 +1645,32 @@ async def handle_web_history(request: web.Request) -> web.Response:
         return web.Response(text=f"<h1>Error loading history: {e}</h1>", content_type="text/html", status=500)
 
 
+async def _on_server_startup(app: web.Application):
+    try:
+        from db.database import init_db
+        from db.users import init_users_table
+        from trading.execution_bridge import bridge_manager
+        await init_db()
+        await init_users_table()
+        await bridge_manager.load_settings_from_db()
+    except Exception as e:
+        logger.warning("Server startup hook error: %s", e)
+
+
+async def _on_server_shutdown(app: web.Application):
+    global _bot_instance
+    if _bot_instance and hasattr(_bot_instance, "session") and _bot_instance.session:
+        try:
+            await _bot_instance.session.close()
+        except Exception as e:
+            logger.debug("Error closing fallback bot session: %s", e)
+
+
 def create_webapp_app() -> web.Application:
     """Создает приложение aiohttp для локального MT5 моста."""
     app = web.Application()
+    app.on_startup.append(_on_server_startup)
+    app.on_shutdown.append(_on_server_shutdown)
     app.router.add_get("/", handle_status)
     app.router.add_get("/health", handle_status)
     app.router.add_get("/history", handle_web_history)
@@ -1648,7 +1692,7 @@ async def start_webapp_server(host: str = None, port: int = None, bot=None) -> w
     global _bot_instance
     if bot:
         _bot_instance = bot
-    host = "127.0.0.1"
+    host = host or getattr(config, "WEBAPP_HOST", "127.0.0.1")
     port = port or config.WEBAPP_PORT
     app = create_webapp_app()
     runner = web.AppRunner(app)
@@ -1657,3 +1701,15 @@ async def start_webapp_server(host: str = None, port: int = None, bot=None) -> w
     await site.start()
     logger.info("🚀 Smart Trader MT5 Bridge running at http://%s:%d", host, port)
     return runner
+
+
+if __name__ == "__main__":
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    )
+    host = "127.0.0.1"
+    port = getattr(config, "WEBAPP_PORT", 8080) or 8080
+    logger.info("Starting standalone MT5 Bridge on http://%s:%d", host, port)
+    app = create_webapp_app()
+    web.run_app(app, host=host, port=port)
