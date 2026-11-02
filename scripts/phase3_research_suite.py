@@ -1211,9 +1211,9 @@ def run_block_bootstrap_monte_carlo(
         }
 
     mc_results["horizon_pass_rates"]["unlimited_horizon"] = {
-        "trading_days_horizon": "UNLIMITED (No deadline confirmed for 2 Step Flex)",
+        "trading_days_horizon": "500-day simulation cap (Evaluation capped at 500 trading days)",
         "joint_pass_rate_pct": round((daily_joint_passes / n_simulations) * 100.0, 2),
-        "interpretation": "Probability of passing Phase 1 ($500) + Phase 2 ($400) without rule breaches under unlimited time.",
+        "interpretation": "Evaluated horizon: 500-day simulation cap. Represents a finite simulation horizon cap (~24 months), not an unconstrained or infinite horizon.",
     }
 
     out_path = os.path.join(DOCS_DIR, "PHASE3_MONTE_CARLO.json")

@@ -60,17 +60,17 @@ The codebase has undergone an end-to-end institutional refactoring, rigorous sta
 
 ### Decoupled Execution Cost Sensitivity (Upgraded Strategy):
 - **Experiment A1 (`RESEARCH_XAUUSD_FIXED002` - Pure Friction Drag on Frozen $N=44$ Trades, Fixed Lot 0.02):**
-  - Total Friction $0.35/oz (Spread $0.35 + Slip $0.00): 44 trades, PF 1.18, Net +$68.78, MaxDD $133.38 (Headroom +$466.62)
-  - Total Friction $0.65/oz (Spread $0.50 + Slip $0.15): 44 trades, PF 1.11, Net +$42.38, MaxDD $145.98 (Headroom +$454.02)
-  - Total Friction $0.90/oz (Spread $0.75 + Slip $0.15): 44 trades, PF 1.05, Net +$20.38, MaxDD $156.48 (Headroom +$443.52)
-  - Total Friction $1.05/oz (Spread $0.75 + Slip $0.30): 44 trades, PF 1.02, Net +$7.18, MaxDD $162.78 (Headroom +$437.22)
-  *(Net PnL drops monotonically from +$68.78 to +$7.18; all 9 cells remain profitable with headroom to $600 floor $\ge \$437.22$).*
+  - Total Friction $0.35/oz (Spread $0.35 + Slip $0.00): 44 trades, PF 1.18, Net +$68.78, Exp +0.111R, MaxDD $133.38 (Headroom +$466.62)
+  - Total Friction $0.65/oz (Spread $0.50 + Slip $0.15): 44 trades, PF 1.11, Net +$42.38, Exp +0.074R, MaxDD $145.98 (Headroom +$454.02)
+  - Total Friction $0.90/oz (Spread $0.75 + Slip $0.15): 44 trades, PF 1.05, Net +$20.38, Exp +0.043R, MaxDD $156.48 (Headroom +$443.52)
+  - Total Friction $1.05/oz (Spread $0.75 + Slip $0.30): 44 trades, PF 1.02, Net +$7.18, Exp +0.024R, MaxDD $162.78 (Headroom +$437.22)
+  *(Net PnL drops monotonically from +$68.78 to +$7.18 and Expectancy from +0.111R to +0.024R; all 9 cells remain profitable with headroom to $600 floor $\ge \$437.22$).*
 - **Experiment A2 (Dynamic Risk 0.25% - Pure Friction Drag on Frozen $N=44$ Trades):**
-  - Total Friction $0.35/oz (Spread $0.35 + Slip $0.00): 44 trades, PF 1.22, Net +$44.69, MaxDD $64.85 (Headroom +$535.15)
-  - Total Friction $0.65/oz (Spread $0.50 + Slip $0.15): 44 trades, PF 1.14, Net +$29.39, MaxDD $72.65 (Headroom +$527.35)
-  - Total Friction $0.90/oz (Spread $0.75 + Slip $0.15): 44 trades, PF 1.08, Net +$16.64, MaxDD $79.15 (Headroom +$520.85)
-  - Total Friction $1.05/oz (Spread $0.75 + Slip $0.30): 44 trades, PF 1.04, Net +$8.99, MaxDD $83.05 (Headroom +$516.95)
-  *(Net PnL drops monotonically from +$44.69 to +$8.99; all 9 cells remain profitable with headroom to $600 floor $\ge \$516.95$).*
+  - Total Friction $0.35/oz (Spread $0.35 + Slip $0.00): 44 trades, PF 1.22, Net +$44.69, Exp +0.111R, MaxDD $64.85 (Headroom +$535.15)
+  - Total Friction $0.65/oz (Spread $0.50 + Slip $0.15): 44 trades, PF 1.14, Net +$29.39, Exp +0.074R, MaxDD $72.65 (Headroom +$527.35)
+  - Total Friction $0.90/oz (Spread $0.75 + Slip $0.15): 44 trades, PF 1.08, Net +$16.64, Exp +0.043R, MaxDD $79.15 (Headroom +$520.85)
+  - Total Friction $1.05/oz (Spread $0.75 + Slip $0.30): 44 trades, PF 1.04, Net +$8.99, Exp +0.024R, MaxDD $83.05 (Headroom +$516.95)
+  *(Net PnL drops monotonically from +$44.69 to +$8.99 and Expectancy from +0.111R to +0.024R; all 9 cells remain profitable with headroom to $600 floor $\ge \$516.95$).*
 - **Experiment B (Dynamic Pre-Trade Risk Filter Response):**
   - Spread $0.35–$0.75 + Slip $0.00: 44 trades, PF 1.22–1.37, Net +$44.69 to +$67.85
   - Spread $0.75 + Slip $0.15 ($0.90 Total): 40 trades (4 wider-SL setups rejected by min-lot risk budget), PF 1.19, Net +$32.57

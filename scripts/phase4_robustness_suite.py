@@ -19,6 +19,34 @@ import pandas as pd
 from scripts.intraday_gold_engine import IntradaySimulator, calculate_atr, CONTRACT_SIZE, COMMISSION_PER_LOT
 
 
+STUDENT_T_95_CRIT = {
+    1: 12.706, 2: 4.303, 3: 3.182, 4: 2.776, 5: 2.571,
+    6: 2.447, 7: 2.365, 8: 2.306, 9: 2.262, 10: 2.228,
+    11: 2.201, 12: 2.179, 13: 2.1604, 14: 2.145, 15: 2.131,
+    16: 2.120, 17: 2.110, 18: 2.101, 19: 2.093, 20: 2.086,
+    21: 2.080, 22: 2.074, 23: 2.069, 24: 2.064, 25: 2.060,
+    26: 2.056, 27: 2.052, 28: 2.048, 29: 2.045, 30: 2.042,
+    40: 2.021, 60: 2.000, 120: 1.980,
+}
+
+
+def get_t_crit_95(df: int) -> float:
+    """Returns two-tailed 95% Student-t critical value for given degrees of freedom."""
+    if df <= 0:
+        return 1.960
+    if df in STUDENT_T_95_CRIT:
+        return STUDENT_T_95_CRIT[df]
+    if df < 30:
+        for k in sorted(STUDENT_T_95_CRIT.keys()):
+            if k >= df:
+                return STUDENT_T_95_CRIT[k]
+    elif df < 60:
+        return 2.010
+    elif df < 120:
+        return 1.990
+    return 1.960
+
+
 def calculate_expectancy_ci(
     trades: list[dict],
     alpha: float = 0.05,
@@ -66,7 +94,7 @@ def calculate_expectancy_ci(
     if n > 1:
         std_usd = float(np.std(pnls, ddof=1))
         std_r = float(np.std(rs, ddof=1))
-        t_crit = 2.1604 if n == 14 else (2.0 if n >= 30 else 2.20)
+        t_crit = get_t_crit_95(n - 1)
         se_usd = std_usd / math.sqrt(n)
         se_r = std_r / math.sqrt(n)
         ci_t_usd = [round(mean_usd - t_crit * se_usd, 2), round(mean_usd + t_crit * se_usd, 2)]
@@ -103,7 +131,7 @@ def calculate_expectancy_ci(
     block_sensitivity = {}
 
     for b in block_sizes:
-        effective_b = min(b, D) if D > 0 else 1
+        effective_b = min(b, max(1, D - 1)) if D > 1 else 1
         n_blocks = int(np.ceil(D / effective_b))
         starts = np.random.randint(0, D, size=(n_bootstraps, n_blocks))
         offsets = np.arange(effective_b)
@@ -129,7 +157,7 @@ def calculate_expectancy_ci(
         # Daily returns for Sharpe Ratio
         d_pnls = p_days[boot_days]
         d_means = np.mean(d_pnls, axis=1)
-        d_stds = np.std(d_pnls, axis=1, ddof=1)
+        d_stds = np.std(d_pnls, axis=1, ddof=1 if D > 1 else 0)
         with np.errstate(divide='ignore', invalid='ignore'):
             boot_sharpe = np.where(d_stds > 1e-9, (d_means / d_stds) * np.sqrt(252), 0.0)
 
@@ -585,6 +613,7 @@ def run_phase4_robustness():
         for sl in slippages:
             extra_drag_per_oz = round(((sp + sl) - base_spread), 3)
             adj_pnls = []
+            adj_rs = []
             gw = 0.0
             gl = 0.0
 
@@ -597,9 +626,15 @@ def run_phase4_robustness():
                 else:
                     gl += abs(adj)
 
+                # 1R trade risk in USD
+                t_risk = abs(t["pnl_usd"] / t["r_multiple"]) if t.get("r_multiple", 0.0) != 0 else (abs(t["entry"] - t["sl"]) * t["lot"] * CONTRACT_SIZE)
+                if t_risk <= 0:
+                    t_risk = abs(t["entry"] - t["sl"]) * t["lot"] * CONTRACT_SIZE
+                adj_rs.append(adj / t_risk if t_risk > 0 else 0.0)
+
             pf = round(gw / gl, 2) if gl > 0 else 999.0
             net_pnl = round(sum(adj_pnls), 2)
-            exp_r = round(float(np.mean([t["r_multiple"] for t in trades_upg_fixed])), 3)
+            exp_r = round(float(np.mean(adj_rs)), 3)
 
             # Compute Max DD on frozen sample
             eq_curve = 5000.0 + np.cumsum(adj_pnls)
@@ -636,6 +671,7 @@ def run_phase4_robustness():
         for sl in slippages:
             extra_drag_per_oz = round(((sp + sl) - base_spread), 3)
             adj_pnls = []
+            adj_rs = []
             gw = 0.0
             gl = 0.0
 
@@ -649,9 +685,15 @@ def run_phase4_robustness():
                 else:
                     gl += abs(adj)
 
+                # 1R trade risk in USD
+                t_risk = abs(t["pnl_usd"] / t["r_multiple"]) if t.get("r_multiple", 0.0) != 0 else (abs(t["entry"] - t["sl"]) * t_lot * CONTRACT_SIZE)
+                if t_risk <= 0:
+                    t_risk = abs(t["entry"] - t["sl"]) * t_lot * CONTRACT_SIZE
+                adj_rs.append(adj / t_risk if t_risk > 0 else 0.0)
+
             pf = round(gw / gl, 2) if gl > 0 else 999.0
             net_pnl = round(sum(adj_pnls), 2)
-            exp_r = round(float(np.mean([t["r_multiple"] for t in trades_upg_dyn])), 3)
+            exp_r = round(float(np.mean(adj_rs)), 3)
 
             eq_curve = 5000.0 + np.cumsum(adj_pnls)
             peaks = np.maximum.accumulate(np.insert(eq_curve, 0, 5000.0))

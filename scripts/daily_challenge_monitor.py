@@ -479,7 +479,7 @@ async def main():
         print("=" * 80)
 
     if args.confirm_launch is not None:
-        user_id = args.confirm_launch or str(getattr(config, "ADMIN_ID", "admin_operator"))
+        user_id = args.confirm_launch or str(getattr(config, "ADMIN_ID", 0))
         token = args.token or ""
         if not token and sys.stdin.isatty():
             print("⚠️ Confirmation token required. Enter one-time or configured CHALLENGE_LAUNCH_TOKEN:")
