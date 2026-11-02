@@ -10,7 +10,7 @@ if ($existing) {
 }
 
 Write-Host "Starting Smart Trader MT5 Bridge on http://127.0.0.1:8080..."
-$proc = Start-Process -FilePath "python.exe" -ArgumentList "webapp/server.py" -WorkingDirectory $botDir -WindowStyle Hidden -PassThru
+$proc = Start-Process -FilePath "python.exe" -ArgumentList "-u webapp/server.py" -WorkingDirectory $botDir -WindowStyle Hidden -RedirectStandardOutput "$botDir\webapp.log" -RedirectStandardError "$botDir\webapp_err.log" -PassThru
 Start-Sleep -Seconds 2
 
 $check = Get-NetTCPConnection -LocalPort 8080 -State Listen -ErrorAction SilentlyContinue

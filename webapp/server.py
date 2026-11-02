@@ -14,6 +14,13 @@ from datetime import datetime, timezone
 import sys
 from pathlib import Path
 
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 ROOT_DIR = Path(__file__).resolve().parent.parent
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
@@ -1704,9 +1711,16 @@ async def start_webapp_server(host: str = None, port: int = None, bot=None) -> w
 
 
 if __name__ == "__main__":
+    log_handlers = [logging.StreamHandler(sys.stdout)]
+    try:
+        log_handlers.append(logging.FileHandler(ROOT_DIR / "webapp.log", encoding="utf-8"))
+    except Exception:
+        pass
     logging.basicConfig(
         level=logging.INFO,
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        handlers=log_handlers,
+        force=True
     )
     host = "127.0.0.1"
     port = getattr(config, "WEBAPP_PORT", 8080) or 8080

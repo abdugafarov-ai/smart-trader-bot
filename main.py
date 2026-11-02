@@ -2,7 +2,16 @@ import asyncio
 import logging
 import os
 import sys
+
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 import argparse
+from pathlib import Path
 from typing import Optional
 
 from aiogram import Bot, Dispatcher
@@ -96,9 +105,18 @@ async def _install_safe_polling_listener(dp: Dispatcher, max_conflict_retries: i
 
 
 async def main():
+    base_dir = Path(__file__).resolve().parent
+    log_handlers = [logging.StreamHandler(sys.stdout)]
+    try:
+        log_handlers.append(logging.FileHandler(base_dir / "bot.log", encoding="utf-8"))
+    except Exception:
+        pass
+
     logging.basicConfig(
         level=logging.INFO,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        handlers=log_handlers,
+        force=True
     )
     
     args = parse_arguments()

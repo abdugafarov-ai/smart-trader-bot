@@ -1,45 +1,36 @@
-# Start Smart Trader Bot & MT5 Bridge as detached background processes
+# Start Smart Trader Complex (MT5 Bridge Server + Telegram Bot / Signal Engine)
 $ErrorActionPreference = "SilentlyContinue"
 $botDir = "C:\Users\user\.gemini\antigravity\scratch\smart_trader_bot"
 
-Write-Host "======================================================"
-Write-Host "  Starting Smart Trader Bot & MT5 Bridge Services     "
-Write-Host "======================================================"
-
-# 1. Start or verify MT5 REST Bridge
+# 1. Start REST Bridge Server if not running
 $bridgeConn = Get-NetTCPConnection -LocalPort 8080 -State Listen -ErrorAction SilentlyContinue
 if ($bridgeConn) {
-    Write-Host "[OK] MT5 REST Bridge is already running on port 8080 (PID: $($bridgeConn.OwningProcess))"
+    Write-Host "REST Bridge Server is already running on port 8080 (PID: $($bridgeConn.OwningProcess))"
 } else {
-    Write-Host "[..] Starting MT5 REST Bridge (webapp/server.py)..."
-    $p1 = Start-Process -FilePath "python.exe" -ArgumentList "webapp/server.py" -WorkingDirectory $botDir -WindowStyle Hidden -PassThru
-    Start-Sleep -Seconds 2
-    $checkBridge = Get-NetTCPConnection -LocalPort 8080 -State Listen -ErrorAction SilentlyContinue
-    if ($checkBridge) {
-        Write-Host "[OK] MT5 REST Bridge started (PID: $($checkBridge.OwningProcess))"
+    Write-Host "Starting REST Bridge Server on http://127.0.0.1:8080..."
+    $bridgeProc = Start-Process -FilePath "python.exe" -ArgumentList "-u", "webapp/server.py" -WorkingDirectory $botDir -WindowStyle Hidden -PassThru
+    Start-Sleep -Seconds 3
+    $check = Get-NetTCPConnection -LocalPort 8080 -State Listen -ErrorAction SilentlyContinue
+    if ($check) {
+        Write-Host "REST Bridge Server started successfully (PID: $($check.OwningProcess))"
     } else {
-        Write-Host "[FAIL] Failed to start MT5 REST Bridge on port 8080"
+        Write-Host "Warning: Port 8080 not listening yet."
     }
 }
 
-# 2. Start or verify Telegram Bot & Signal Scanner
-$mainProc = Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like "*python*main.py*" }
-if ($mainProc) {
-    Write-Host "[OK] Telegram Bot & Signal Scanner is already running (PID: $($mainProc.ProcessId))"
+# 2. Start Telegram Bot / Signal Engine if not running
+$existingBot = Get-CimInstance Win32_Process -Filter "CommandLine like '%python%main.py%'" -ErrorAction SilentlyContinue
+if ($existingBot) {
+    Write-Host "Telegram Bot / Signal Engine is already running (PID: $($existingBot.ProcessId))"
 } else {
-    Write-Host "[..] Starting Telegram Bot & Signal Engine (main.py)..."
-    $p2 = Start-Process -FilePath "python.exe" -ArgumentList "main.py" -WorkingDirectory $botDir -WindowStyle Hidden -PassThru
-    Start-Sleep -Seconds 2
-    $checkMain = Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like "*python*main.py*" }
-    if ($checkMain) {
-        Write-Host "[OK] Telegram Bot & Signal Engine started (PID: $($checkMain.ProcessId))"
-    } else {
-        Write-Host "[FAIL] Failed to start Telegram Bot (main.py)"
-    }
+    Write-Host "Starting Telegram Bot / Signal Engine (main.py)..."
+    $botProc = Start-Process -FilePath "python.exe" -ArgumentList "-u", "main.py" -WorkingDirectory $botDir -WindowStyle Hidden -PassThru
+    Start-Sleep -Seconds 3
+    Write-Host "Telegram Bot / Signal Engine started (PID: $($botProc.Id))"
 }
 
-Write-Host ""
-Write-Host "Health Probe:"
+Write-Host "`n=== Health Check ==="
 curl.exe -s http://127.0.0.1:8080/health
 Write-Host ""
-Write-Host "Services successfully running in background."
+curl.exe -s http://127.0.0.1:8080/api/v1/bridge/orders
+Write-Host ""

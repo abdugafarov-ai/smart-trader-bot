@@ -1,24 +1,29 @@
-# Stop Smart Trader Bot & MT5 Bridge processes
+# Stop Smart Trader Complex (MT5 Bridge Server + Telegram Bot / Signal Engine)
 $ErrorActionPreference = "SilentlyContinue"
 
-Write-Host "Stopping Smart Trader services..."
+Write-Host "Stopping Smart Trader processes..."
 
-# 1. Stop processes listening on port 8080
-$bridgeConnections = Get-NetTCPConnection -LocalPort 8080 -State Listen -ErrorAction SilentlyContinue
-if ($bridgeConnections) {
-    foreach ($c in $bridgeConnections) {
-        Write-Host "Stopping MT5 Bridge process PID $($c.OwningProcess)..."
-        Stop-Process -Id $c.OwningProcess -Force -ErrorAction SilentlyContinue
+# Stop bot
+$botProcs = Get-CimInstance Win32_Process -Filter "CommandLine like '%python%main.py%'" -ErrorAction SilentlyContinue
+if ($botProcs) {
+    foreach ($p in $botProcs) {
+        Write-Host "Stopping main.py process (PID: $($p.ProcessId))..."
+        Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue
     }
 }
 
-# 2. Stop main.py processes
-$mainProcs = Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like "*python*main.py*" }
-if ($mainProcs) {
-    foreach ($p in $mainProcs) {
-        Write-Host "Stopping main.py process PID $($p.ProcessId)..."
+# Stop server on port 8080
+$serverProcs = Get-CimInstance Win32_Process -Filter "CommandLine like '%python%webapp/server.py%'" -ErrorAction SilentlyContinue
+if ($serverProcs) {
+    foreach ($p in $serverProcs) {
+        Write-Host "Stopping webapp/server.py process (PID: $($p.ProcessId))..."
         Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue
     }
+}
+
+$conn = Get-NetTCPConnection -LocalPort 8080 -State Listen -ErrorAction SilentlyContinue
+if ($conn) {
+    Stop-Process -Id $conn.OwningProcess -Force -ErrorAction SilentlyContinue
 }
 
 Start-Sleep -Seconds 1

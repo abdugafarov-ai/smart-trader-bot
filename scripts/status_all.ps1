@@ -17,7 +17,7 @@ if ($bridgeConn) {
 }
 
 # 2. Telegram Bot & Signal Scanner Status
-$mainProcs = Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like "*python*main.py*" }
+$mainProcs = Get-CimInstance Win32_Process | Where-Object { ($_.Name -like "*python*") -and ($_.CommandLine -like "*main.py*") }
 if ($mainProcs) {
     foreach ($p in $mainProcs) {
         Write-Host "[ONLINE] Telegram Bot / Signal Engine active (PID: $($p.ProcessId))"
@@ -30,3 +30,18 @@ Write-Host ""
 Write-Host "Checking Bridge Orders endpoint:"
 curl.exe -s http://127.0.0.1:8080/api/v1/bridge/orders
 Write-Host ""
+
+# 3. Log tails for fast diagnosis
+if (Test-Path "$botDir\bot.log") {
+    $botLogSize = (Get-Item "$botDir\bot.log").Length
+    Write-Host "--- bot.log (tail 3, size: $botLogSize bytes) ---"
+    Get-Content "$botDir\bot.log" -Tail 3 -ErrorAction SilentlyContinue
+    Write-Host ""
+}
+
+if (Test-Path "$botDir\webapp.log") {
+    $webLogSize = (Get-Item "$botDir\webapp.log").Length
+    Write-Host "--- webapp.log (tail 3, size: $webLogSize bytes) ---"
+    Get-Content "$botDir\webapp.log" -Tail 3 -ErrorAction SilentlyContinue
+    Write-Host ""
+}
