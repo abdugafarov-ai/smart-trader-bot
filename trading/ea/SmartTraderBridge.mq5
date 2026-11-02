@@ -679,6 +679,7 @@ void ParseAndExecuteOrders(string json)
       double sl    = ExtractDouble(block, "\"stop_loss\":");
       double tp1   = ExtractDouble(block, "\"tp1\":");
       double tp2   = ExtractDouble(block, "\"tp2\":");
+      double tp    = (tp2 > 0) ? tp2 : ((tp1 > 0) ? tp1 : ExtractDouble(block, "\"take_profit\":"));
       if(sl <= 0 || tp <= 0)
       {
          PrintFormat("⛔ [SmartTrader] ОТМЕНА: некорректный SL/TP (sl=%.5f, tp=%.5f) по %s", sl, tp, broker_symbol);
